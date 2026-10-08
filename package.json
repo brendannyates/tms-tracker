@@ -1,0 +1,15 @@
+{
+  "name": "tms-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Excel task-pane add-in for the San Rafael MagVenture TMS tracker",
+  "scripts": {
+    "check": "node --check taskpane.js",
+    "start": "http-server -S -C ~/.office-addin-dev-certs/localhost.crt -K ~/.office-addin-dev-certs/localhost.key -p 3000",
+    "certs": "office-addin-dev-certs install"
+  },
+  "devDependencies": {
+    "http-server": "14.1.1",
+    "office-addin-dev-certs": "^1.0.0"
+  }
+}

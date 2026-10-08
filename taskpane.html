@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TMS Tracker</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--ink:#1c2a33;--mute:#62727d;--line:#dde3e8;--bg:#fff;--wash:#f3f6f8;--acc:#0f6e6e;--acc-w:#e2f1f1;--red:#b3261e;--red-w:#fbe9e7;--amb:#8a5a00;--amb-w:#fdf1d8}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.45 "Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line)}
+h1{font-size:15px;margin:0;font-weight:650}
+h2{font-size:13px;margin:0 0 6px;font-weight:650}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:5px 10px;border-radius:4px}
+button:hover{background:var(--wash)}
+button:focus-visible,input:focus-visible,select:focus-visible,[data-tab]:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.pri:hover{background:#0b5858}
+button:disabled{opacity:.5;cursor:default}
+.tabs,.seg{display:flex;border-bottom:1px solid var(--line)}
+.tabs button,.seg button{flex:1;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 4px;background:none}
+.tabs button.on,.seg button.on{border-bottom-color:var(--acc);color:var(--acc);font-weight:650}
+.seg{background:var(--wash)}
+.seg button{font-size:12px;padding:6px 2px}
+section{padding:12px}
+.banner{margin:12px;padding:10px;border-radius:4px;background:var(--amb-w);color:var(--amb)}
+.group{margin-bottom:16px}
+.group h2 .n{color:var(--mute);font-weight:400;margin-left:4px}
+.item{padding:6px 8px;border-left:3px solid var(--line);margin-bottom:4px;background:var(--wash);border-radius:0 4px 4px 0}
+.item[data-tab]{cursor:pointer}
+.item[data-tab]:hover{background:var(--acc-w)}
+.item.red{border-left-color:var(--red)}.item.amb{border-left-color:#c98a00}.item.grn{border-left-color:var(--acc)}
+.item b{font-weight:650}
+.sub{color:var(--mute);font-size:12px}
+.none{color:var(--mute);font-style:italic}
+.chip{display:inline-block;padding:0 6px;border-radius:9px;font-size:11px;background:var(--wash);border:1px solid var(--line)}
+.chip.red{background:var(--red-w);color:var(--red);border-color:#f0c4be}
+.chip.amb{background:var(--amb-w);color:var(--amb);border-color:#ecd49b}
+.day{margin-bottom:10px}
+.day h2{display:flex;justify-content:space-between;padding-bottom:3px;border-bottom:1px solid var(--line)}
+.day.today h2{color:var(--acc)}
+.wk{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+th{color:var(--mute);font-weight:600}
+td.num,th.num{text-align:right}
+tr[data-tab]{cursor:pointer}tr[data-tab]:hover{background:var(--acc-w)}
+label{display:block;margin:8px 0 2px;font-weight:600;font-size:12px}
+input,select{width:100%;font:inherit;padding:5px 6px;border:1px solid #b9c4cc;border-radius:4px;background:#fff}
+input[type=checkbox]{width:auto;margin-right:6px}
+.chk{display:flex;align-items:flex-start;font-weight:400;margin-top:10px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.hint{color:var(--mute);font-size:12px;margin-top:3px}
+.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+.foot{margin-top:18px;padding-top:10px;border-top:1px solid var(--line)}
+#toast{position:fixed;left:12px;right:12px;bottom:12px;padding:8px 10px;border-radius:4px;background:var(--ink);color:#fff;display:none}
+#toast.err{background:var(--red)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <h1>TMS Tracker</h1>
+  <button id="refresh" title="Re-read every patient tab">Refresh</button>
+</header>
+
+<div id="setup" class="banner" hidden>
+  <span id="setupMsg"></span>
+  <div class="actions"><button class="pri" id="btnSetup">Add tracker columns</button></div>
+</div>
+
+<nav class="tabs" id="mainTabs">
+  <button data-view="dash" class="on">Dashboard</button>
+  <button data-view="imp">Import</button>
+  <button data-view="add">Add patient</button>
+</nav>
+
+<section id="v-dash">
+  <nav class="seg" id="dashTabs" style="margin:-12px -12px 12px">
+    <button data-d="att" class="on">Attention</button>
+    <button data-d="week">This week</button>
+    <button data-d="fu">Follow-up</button>
+    <button data-d="roster">Roster</button>
+    <button data-d="proto">Protocols</button>
+  </nav>
+  <div id="dashBody"></div>
+  <div class="foot">
+    <div class="row2">
+      <div><label for="cfgAuth">Warn on auth expiry within (days)</label><input id="cfgAuth" type="number" min="1"></div>
+      <div><label for="cfgProto">Warn on protocol update within (days)</label><input id="cfgProto" type="number" min="1"></div>
+    </div>
+    <div class="actions"><button id="publish">Copy dashboard to a sheet</button></div>
+    <label class="chk"><input type="checkbox" id="gridMonday" checked> Set the Active Patients week grid to start this Monday</label>
+    <div class="actions"><button id="btnGrid">Fill Active Patients week grid</button></div>
+    <div class="hint">Fills blank cells only, from each tab's dates: MT, Daily Tx, MTR, F/U, Missed, Different Clinic.</div>
+  </div>
+</section>
+
+<section id="v-imp" hidden>
+  <h2>Update schedules from NextGen</h2>
+  <div class="hint">The file is read in this pane only. MRNs are used to match tabs and are never written anywhere.</div>
+  <label for="file">Appointment list (.csv or .xlsx)</label>
+  <input type="file" id="file" accept=".csv,.xlsx,.xls">
+
+  <div id="mapBox" hidden>
+    <div class="row2">
+      <div><label for="mMrn">MRN</label><select id="mMrn"></select></div>
+      <div><label for="mDate">Date</label><select id="mDate"></select></div>
+      <div><label for="mTime">Time (optional)</label><select id="mTime"></select></div>
+      <div><label for="mStatus">Status</label><select id="mStatus"></select></div>
+    </div>
+    <div class="row2">
+      <div><label for="mType">Appointment type (optional)</label><select id="mType"></select></div>
+      <div><label for="mFuTxt">is a follow-up if it contains</label><input id="mFuTxt" value="F/U|follow"></div>
+    </div>
+    <div class="hint">With a type column, follow-ups go to the F/U rows and treatments to the other rows. Without one, dates fill rows in order.</div>
+    <div class="row2">
+      <div><label for="mFilterCol">Only rows where</label><select id="mFilterCol"></select></div>
+      <div><label for="mFilterTxt">contains</label><input id="mFilterTxt" placeholder="e.g. TMS"></div>
+    </div>
+    <label for="fromDate">Update appointments from</label>
+    <input type="date" id="fromDate">
+    <div class="hint">Earlier dates are never touched. The window ends at the last date in the file.</div>
+    <label class="chk"><input type="checkbox" id="chkAddMiss"> Add NextGen no-shows and cancellations that are not on the tab yet, as Miss rows (x plus a note)</label>
+    <label class="chk"><input type="checkbox" id="chkClearMiss"> Also clear existing Miss rows in the window. Their freebie marks are lost.</label>
+    <label class="chk"><input type="checkbox" id="chkAbsent"> Also clear window dates for active patients who are not in this file</label>
+    <div class="actions"><button class="pri" id="btnPreview">Preview changes</button></div>
+  </div>
+
+  <div id="planBox" hidden>
+    <div id="planBody"></div>
+    <div class="actions"><button class="pri" id="btnApply">Apply to workbook</button><button id="btnCancelPlan">Cancel</button></div>
+  </div>
+</section>
+
+<section id="v-add" hidden>
+  <h2>Add patient</h2>
+  <div class="hint">Copies the New Template tab, names it by LASFIR (SMIJAN, then SMIJAN 2 for a later course), and adds it to Active Patients. Names are not saved; the tab gets the LASFIR code.</div>
+  <div class="row2">
+    <div><label for="apLast">Last name</label><input id="apLast" autocomplete="off"></div>
+    <div><label for="apFirst">First name</label><input id="apFirst" autocomplete="off"></div>
+  </div>
+  <label for="apCode">LASFIR</label>
+  <input id="apCode" maxlength="6" placeholder="Fills in from the names, or type it">
+  <div class="row2">
+    <div><label for="apCourse">Course #</label><input id="apCourse" type="number" min="1" value="1"></div>
+    <div><label for="apTxs"># of Txs approved</label><input id="apTxs" type="number" min="1"></div>
+  </div>
+  <label for="apMrn">MRN</label><input id="apMrn" autocomplete="off">
+  <div class="hint" id="apTab"></div>
+  <div class="actions"><button class="pri" id="btnAdd">Create tab</button></div>
+</section>
+
+<div id="toast" role="status"></div>
+<script src="taskpane.js"></script>
+</body>
+</html>
