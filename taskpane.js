@@ -1247,7 +1247,8 @@ async function buildPlan() {
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
     if (!p) continue;
     const pl = planTab(p, appts, from, maxDate, o);
-    const c = clin.get(mrn); if (!p.provider && c) pl.e2 = Object.entries(c).sort((a, b) => b[1] - a[1])[0][0];
+    // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
+    const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
     plans.push(pl);
   }
@@ -1261,6 +1262,8 @@ function renderPlan() {
   let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
   h += ch.length ? `<table><thead><tr><th>Tab</th><th class="num">Dates</th><th class="num">Types</th><th class="num">Cleared</th><th class="num">Missed</th></tr></thead><tbody>${ch.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.set}</td><td class="num">${p.types}</td><td class="num">${p.cleared}</td><td class="num">${p.miss}</td></tr>`).join("")}
     <tr><th>Total</th><th class="num">${tot("set")}</th><th class="num">${tot("types")}</th><th class="num">${tot("cleared")}</th><th class="num">${tot("miss")}</th></tr></tbody></table>` : `<div class="none">The tracker already matches this report.</div>`;
+  const pv = ch.filter(p => p.e2).length;
+  if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
   if (state.pendingNew.length) h += `<div class="sub" style="margin-top:6px">${state.pendingNew.length} patient${state.pendingNew.length > 1 ? "s" : ""} in the report ${state.pendingNew.length > 1 ? "have" : "has"} no tracker yet. See the top of the dashboard.</div>`;
   h += `<div class="actions"><button class="pri" data-act="apply">Apply</button></div>`;
   $("planBody").innerHTML = h; $("planBox").hidden = false;
@@ -1341,7 +1344,7 @@ async function makePrintout(tab, from, to) {
       const pl = ws.pageLayout; pl.orientation = Excel.PageOrientation.landscape; pl.paperSize = Excel.PaperType.letter; pl.centerHorizontally = true;
       pl.zoom = { scale: 93 }; pl.leftMargin = 28.8; pl.rightMargin = 28.8; pl.topMargin = 36; pl.bottomMargin = 36;
       pl.setPrintArea(`A1:G${last}`); pl.setPrintTitleRows("$10:$10");   // fixed scale: long schedules run onto more pages instead of shrinking
-      if (logo) { const sh = ws.shapes.addImage(logo); sh.left = PRINT_COLS.slice(0, 3).reduce((a, w) => a + charPt(w), 0) + 14.25; sh.top = 13.5; sh.width = 210.75; sh.height = 87; sh.name = "Logo"; }
+      if (logo) { const sh = ws.shapes.addImage(logo); sh.left = (PRINT_COLS.reduce((a, w) => a + charPt(w), 0) - 210.75) / 2; sh.top = 13.5;   // centered over A:G sh.width = 210.75; sh.height = 87; sh.name = "Logo"; }
       ws.activate(); await ctx.sync();
     });
     await logSchedule(p);

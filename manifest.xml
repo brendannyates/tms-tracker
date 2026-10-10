@@ -12,7 +12,7 @@
   xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
   xsi:type="TaskPaneApp">
   <Id>afbdb1d9-a40c-42cb-ac3f-80bba9a06bdf</Id>
-  <Version>1.1.0.0</Version>
+  <Version>1.1.0.1</Version>
   <ProviderName>Radial</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="TMS Tracker"/>

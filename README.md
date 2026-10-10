@@ -120,7 +120,7 @@ Chair (hours and holiday closures come from the Clinic Schedule sheet) and Proto
 - **No setup needed:** the report's columns are detected automatically. There is no mapping and no ignore pattern to manage.
 - **Preview:** upload the file and the preview appears with Apply below it.
 - **Device:** each patient's device is decided by where their daily treatments are booked. A Brainsway patient's MT on a provider schedule is ignored on a MagV tracker.
-- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. The provider fills E2 if it is blank.
+- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule printout uses E2.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations are noted and their date cleared.
 - **Measures:** they are re-planned only after a significant disruption: an MTR or F/U moved, or 2 or more missed visits within a week.
 
