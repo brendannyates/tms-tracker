@@ -1,10 +1,8 @@
 node_modules/
-.env
-.env.*
-!.env.example
-*.xlsx
-*.xls
-*.csv
-*.tsv
-*.log
 .DS_Store
+*.log
+# never commit patient data: real workbooks or NextGen exports
+*.xls
+*.xlsx
+*.xlsm
+*.csv

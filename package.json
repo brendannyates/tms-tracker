@@ -1,15 +1,13 @@
 {
-  "name": "tms-tracker",
-  "version": "1.0.0",
+  "name": "tms-tracker-addin",
+  "version": "1.1.0",
   "private": true,
-  "description": "Excel task-pane add-in for the San Rafael MagVenture TMS tracker",
+  "description": "TMS patient tracker task-pane add-in for Excel on the web",
   "scripts": {
+    "certs": "npx office-addin-dev-certs install",
+    "start": "npx http-server . -S -C ~/.office-addin-dev-certs/localhost.crt -K ~/.office-addin-dev-certs/localhost.key -p 3000 -c-1",
+    "validate": "npx office-addin-manifest validate manifest.xml",
     "check": "node --check taskpane.js",
-    "start": "http-server -S -C ~/.office-addin-dev-certs/localhost.crt -K ~/.office-addin-dev-certs/localhost.key -p 3000",
-    "certs": "office-addin-dev-certs install"
-  },
-  "devDependencies": {
-    "http-server": "14.1.1",
-    "office-addin-dev-certs": "^1.0.0"
+    "set-host": "node scripts/set-host.mjs"
   }
 }

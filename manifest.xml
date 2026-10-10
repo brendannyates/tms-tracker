@@ -1,21 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Hosted on GitHub Pages. -->
+<!--
+  TMS Tracker: Excel on the web task-pane add-in.
+  Pilot host: GitHub Pages (https://brendannyates.github.io/tms-tracker, served from main).
+  For local development, run npm run set-host with https://localhost:3000 (see README), then npm start.
+  For the team, host these files on an internal HTTPS location approved by Product/Engineering and run
+  npm run set-host with that URL. The hosted files contain no PHI.
+-->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
   xsi:type="TaskPaneApp">
   <Id>afbdb1d9-a40c-42cb-ac3f-80bba9a06bdf</Id>
-  <Version>1.0.0.1</Version>
+  <Version>1.1.0.0</Version>
   <ProviderName>Radial</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="TMS Tracker"/>
-  <Description DefaultValue="MagVenture TMS patient tracker: NextGen import, freebies, auth flags, weekly schedule."/>
+  <Description DefaultValue="TMS patient tracker: today's visits and outcomes, NextGen appointment import, freebies, authorization and benefit flags, measures, chair schedule, and patient schedule printouts."/>
   <IconUrl DefaultValue="https://brendannyates.github.io/tms-tracker/assets/icon-32.png"/>
   <HighResolutionIconUrl DefaultValue="https://brendannyates.github.io/tms-tracker/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://brendannyates.github.io/tms-tracker/"/>
+  <SupportUrl DefaultValue="https://brendannyates.github.io/tms-tracker/README.md"/>
+  <AppDomains>
+    <AppDomain>https://brendannyates.github.io</AppDomain>
+  </AppDomains>
   <Hosts>
     <Host Name="Workbook"/>
   </Hosts>
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="ExcelApi" MinVersion="1.9"/>
+    </Sets>
+  </Requirements>
   <DefaultSettings>
     <SourceLocation DefaultValue="https://brendannyates.github.io/tms-tracker/taskpane.html"/>
   </DefaultSettings>
@@ -70,7 +85,7 @@
         <bt:String id="Button.Label" DefaultValue="TMS Tracker"/>
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="Button.Tip" DefaultValue="Open the TMS tracker dashboard, NextGen import, and add-patient tools."/>
+        <bt:String id="Button.Tip" DefaultValue="Open the TMS Tracker: today's visits, Attention items, patients, NextGen import, and schedule printouts."/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

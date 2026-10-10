@@ -7,152 +7,315 @@
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
-:root{--ink:#1c2a33;--mute:#62727d;--line:#dde3e8;--bg:#fff;--wash:#f3f6f8;--acc:#0f6e6e;--acc-w:#e2f1f1;--red:#b3261e;--red-w:#fbe9e7;--amb:#8a5a00;--amb-w:#fdf1d8}
+:root{--ink:#1c2a33;--mute:#5f6f7a;--line:#dde3e8;--bg:#fff;--wash:#f3f6f8;--acc:#0f6e6e;--acc-w:#e2f1f1;--red:#b3261e;--red-w:#fbe9e7;--amb:#8a5a00;--amb-w:#fdf1d8;
+  --mt:#66FFFF;--mt-w:#dcffff;--mtr:#92D050;--mtr-w:#e6f3d6;--fu:#FF99CC;--fu-w:#ffe6f1;--alt:#FF9900;--alt-w:#ffeccc}
 *{box-sizing:border-box}
 body{margin:0;font:13px/1.45 "Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
 header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line)}
 h1{font-size:15px;margin:0;font-weight:650}
 h2{font-size:13px;margin:0 0 6px;font-weight:650}
-button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:5px 10px;border-radius:4px}
+h3{font-size:14px;margin:0 0 4px}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:4px 9px;border-radius:4px}
 button:hover{background:var(--wash)}
-button:focus-visible,input:focus-visible,select:focus-visible,[data-tab]:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,[data-tab]:focus-visible,[data-pt]:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 button.pri:hover{background:#0b5858}
-button:disabled{opacity:.5;cursor:default}
+button.sm{padding:1px 8px;font-size:12px;margin:3px 4px 0 0}
 .tabs,.seg{display:flex;border-bottom:1px solid var(--line)}
-.tabs button,.seg button{flex:1;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 4px;background:none}
+.tabs button,.seg button{flex:1 0 auto;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 6px;background:none}
 .tabs button.on,.seg button.on{border-bottom-color:var(--acc);color:var(--acc);font-weight:650}
-.seg{background:var(--wash)}
-.seg button{font-size:12px;padding:6px 2px}
+.seg{background:var(--wash);overflow-x:auto}
+.seg button{font-size:12px;padding:6px 8px}
 section{padding:12px}
-.banner{margin:12px;padding:10px;border-radius:4px;background:var(--amb-w);color:var(--amb)}
-.group{margin-bottom:16px}
+.banner{margin:10px 12px 0;padding:8px 10px;border-radius:4px;background:var(--amb-w);color:var(--amb);font-size:12.5px}
+.banner.red{background:var(--red-w);color:var(--red)}
+.banner details{margin-top:6px;color:var(--ink)}
+.banner summary{cursor:pointer;font-weight:600}
+.banner ol{margin:6px 0 0 18px;padding:0}
+.banner img{vertical-align:middle;border:1px solid var(--line)}
+.bctl{display:flex;gap:4px;justify-content:flex-end;margin-top:4px}
+.bctl button{background:transparent;border-color:currentColor;color:inherit}
+.group{margin-bottom:14px}
 .group h2 .n{color:var(--mute);font-weight:400;margin-left:4px}
 .item{padding:6px 8px;border-left:3px solid var(--line);margin-bottom:4px;background:var(--wash);border-radius:0 4px 4px 0}
 .item[data-tab]{cursor:pointer}
 .item[data-tab]:hover{background:var(--acc-w)}
 .item.red{border-left-color:var(--red)}.item.amb{border-left-color:#c98a00}.item.grn{border-left-color:var(--acc)}
-.item b{font-weight:650}
 .sub{color:var(--mute);font-size:12px}
-.none{color:var(--mute);font-style:italic}
+.none{color:var(--mute);font-style:italic;font-size:12.5px}
 .chip{display:inline-block;padding:0 6px;border-radius:9px;font-size:11px;background:var(--wash);border:1px solid var(--line)}
 .chip.red{background:var(--red-w);color:var(--red);border-color:#f0c4be}
 .chip.amb{background:var(--amb-w);color:var(--amb);border-color:#ecd49b}
+.chip.c-mt{background:var(--mt-w);border-color:var(--mt)}.chip.c-mtr{background:var(--mtr-w);border-color:var(--mtr)}.chip.c-fu{background:var(--fu-w);border-color:var(--fu)}.chip.c-alt{background:var(--alt-w);border-color:var(--alt)}
+/* visit cards: colored by event type, matching the tab's row highlight */
+.card{border:1px solid var(--line);border-left:5px solid #c9d2d9;border-radius:6px;padding:8px 10px;margin-bottom:8px;background:#fff}
+.card.c-mt{background:var(--mt-w);border-color:#9ef0f0;border-left-color:var(--mt)}
+.card.c-mtr{background:var(--mtr-w);border-color:#c3e4a0;border-left-color:var(--mtr)}
+.card.c-fu{background:var(--fu-w);border-color:#ffc6e0;border-left-color:var(--fu)}
+.card.c-alt{background:var(--alt-w);border-color:#ffd18a;border-left-color:var(--alt)}
+.ch{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cact{margin-left:auto}
+.lnk{cursor:pointer;color:var(--acc);text-decoration:underline;font-weight:650}
+.mline{margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inl{display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:600;font-size:12px}
+.inl select{width:auto}
+.cl{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px}
+.ck{display:flex;gap:6px;align-items:center;font-weight:400;margin:0;font-size:12.5px}
+.ck.off{color:var(--mute)}
+.meas{margin-top:6px}
+.mbtn{background:var(--amb-w);border-color:#e3b94f;color:var(--amb);font-weight:650}
+details.nt{margin-top:6px;border:1px solid var(--line);border-radius:4px;padding:4px 8px;background:rgba(255,255,255,.7)}
+details.nt summary{cursor:pointer;font-weight:600;font-size:12.5px}
+details.nt label{margin-top:6px}
+details.nt .nq{display:grid;grid-template-columns:1fr 110px;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
+details.nt .nq input{grid-column:1/3}
+details.nt textarea{width:100%;font:inherit;font-size:12px;padding:5px 6px;border:1px solid #b9c4cc;border-radius:4px}
+details.nt .ntext{font-family:Consolas,"Courier New",monospace;font-size:11.5px;background:#fff}
+.bl{font-size:11.5px;color:var(--mute);background:var(--wash);border-radius:4px;padding:4px 6px;margin:2px 0 6px}
+details.group>summary.gs,details.var>summary{cursor:pointer;font-weight:650;margin-bottom:6px}
+.var{border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:var(--wash)}
+.vg{margin:4px 0;font-size:12.5px}
+.vg .n{color:var(--mute)}
 .day{margin-bottom:10px}
 .day h2{display:flex;justify-content:space-between;padding-bottom:3px;border-bottom:1px solid var(--line)}
 .day.today h2{color:var(--acc)}
-.wk{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.wk{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:10px}
+.slot{display:grid;grid-template-columns:64px 1fr;gap:6px;border-bottom:1px solid var(--line);padding:3px 0;min-height:24px}
+.slot .t{color:var(--mute);font-size:12px}
+.slot.bad{background:var(--red-w)}
+.slot.closed{background:var(--wash);color:var(--mute)}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
 th{color:var(--mute);font-weight:600}
 td.num,th.num{text-align:right}
-tr[data-tab]{cursor:pointer}tr[data-tab]:hover{background:var(--acc-w)}
+tr[data-pt],tr[data-tab]{cursor:pointer}tr[data-pt]:hover{background:var(--acc-w)}
+.tscroll{overflow-x:auto;margin:0 -12px;padding:0 12px}
+table.pts{min-width:620px}
+td.dc{text-align:center;font-weight:600}
+td.dc.x{color:var(--red)}td.dc.c-mt{background:var(--mt-w)}td.dc.c-mtr{background:var(--mtr-w)}td.dc.c-fu{background:var(--fu-w)}td.dc.c-alt{background:var(--alt-w)}
+.pth{font-size:16px;margin:4px 0 8px}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:10px}
+.fct{display:flex;flex-direction:column;font-size:12px}
+.fct span{color:var(--mute);font-size:11.5px}
+.bal{margin:8px 0;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:#fff}
+.pe .g2p{display:grid;grid-template-columns:70px 1fr 80px;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
 label{display:block;margin:8px 0 2px;font-weight:600;font-size:12px}
 input,select{width:100%;font:inherit;padding:5px 6px;border:1px solid #b9c4cc;border-radius:4px;background:#fff}
-input[type=checkbox]{width:auto;margin-right:6px}
-.chk{display:flex;align-items:flex-start;font-weight:400;margin-top:10px}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+input[type=checkbox],input[type=radio]{width:auto;margin:0}
+.chk{display:flex;align-items:flex-start;gap:6px;font-weight:400;margin-top:8px}
+.row2,.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.g3w{display:grid;grid-template-columns:40px 1fr 1fr 1fr;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
+.g3w.hdr{color:var(--mute);font-size:11px}
+.g4r{display:grid;grid-template-columns:1fr 1fr 1.2fr 28px;gap:4px;align-items:center;margin-bottom:3px}
+.row3{display:grid;grid-template-columns:76px 1fr 1fr;gap:6px;align-items:end;margin-bottom:4px}
+.row3 span{font-size:12px;padding-bottom:6px}
+.row3.w4{grid-template-columns:44px 1fr 1fr 1fr}
 .hint{color:var(--mute);font-size:12px;margin-top:3px}
 .actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
 .foot{margin-top:18px;padding-top:10px;border-top:1px solid var(--line)}
-#toast{position:fixed;left:12px;right:12px;bottom:12px;padding:8px 10px;border-radius:4px;background:var(--ink);color:#fff;display:none}
+#toast{position:fixed;left:12px;right:12px;bottom:12px;padding:8px 10px;border-radius:4px;background:var(--ink);color:#fff;display:none;z-index:30}
 #toast.err{background:var(--red)}
+#modal{position:fixed;inset:0;background:rgba(28,42,51,.45);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
+#modalBody{background:#fff;border-radius:8px;padding:14px 16px;max-width:360px;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand img{height:30px;width:auto;flex:none}
+.brand .tt{display:flex;flex-direction:column;min-width:0;line-height:1.2}
+.brand b{font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hact{display:flex;gap:6px;flex:none}
+#refresh,#btnSettings{font-size:15px;padding:3px 9px}
+#btnSettings.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.tabs button{flex:1}
+.toggle{display:inline-flex;border:1px solid var(--acc);border-radius:6px;overflow:hidden}
+.toggle button{border:0;border-radius:0;padding:5px 16px;background:#fff;color:var(--acc);font-weight:600}
+.toggle button+button{border-left:1px solid var(--acc)}
+.toggle button.on{background:var(--acc);color:#fff}
+details.att{border:1px solid var(--line);border-radius:6px;background:var(--wash);padding:6px 10px;margin-bottom:12px}
+details.att>summary{cursor:pointer;font-size:13px}
+.att .cnt{display:inline-block;min-width:20px;padding:0 6px;border-radius:9px;background:var(--red);color:#fff;font-size:11px;text-align:center}
+.att .group h2{font-size:12px}
+.fchips{display:flex;flex-wrap:wrap;gap:4px}
+[data-act=addPt]{white-space:nowrap;flex:none}
+.fchips button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.fchips button.on .n{color:#fff}
+body.wide .sch-layout{display:grid;grid-template-columns:minmax(220px,32%) 1fr;gap:14px;align-items:start}
+body.wide details.att{position:sticky;top:6px;max-height:calc(100vh - 12px);overflow:auto;margin:0}
+/* visit card: time first, then patient and MRN; secondary actions in the ⋯ menu */
+.card{padding:0;overflow:visible}
+.chead{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:start;padding:10px 10px 6px}
+.ctime{font-size:20px;font-weight:700;line-height:1;letter-spacing:-.3px;padding-top:2px}
+.ctime span{display:block;font-size:11px;font-weight:600;color:var(--mute);margin-top:2px;letter-spacing:.3px}
+.cname{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:14px}
+.cbody{padding:0 10px 10px 84px}
+.pay{display:flex;align-items:center;gap:12px;font-size:12.5px;margin-bottom:2px}
+.done{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
+.chip.ok{background:var(--acc-w);border-color:#9fd0d0;color:var(--acc)}
+details.kebab{position:relative}
+details.kebab>summary{list-style:none;cursor:pointer;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:18px;color:var(--mute)}
+details.kebab>summary::-webkit-details-marker{display:none}
+details.kebab>summary:hover,details.kebab[open]>summary{background:rgba(0,0,0,.06);color:var(--ink)}
+details.kebab .menu{position:absolute;right:0;top:30px;z-index:5;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.14);padding:4px;min-width:170px;display:flex;flex-direction:column}
+details.kebab .menu button{border:0;background:none;text-align:left;margin:0;padding:6px 10px;font-size:12.5px}
+details.kebab .menu button:hover{background:var(--wash)}
+body:not(.wide) .cbody{padding-left:10px}
+body:not(.wide) .chead{grid-template-columns:62px 1fr auto;gap:8px}
+body:not(.wide) .ctime{font-size:18px}
+.tglwrap{display:flex;justify-content:center}
+/* Attention collapses sideways into a rail when it sits on the left */
+body.wide details.att>summary{list-style:none;display:flex;align-items:center;gap:6px}
+body.wide details.att>summary::-webkit-details-marker{display:none}
+body.wide .attTog{margin-left:auto}
+body.wide .attTog::before{content:"\2039";font-size:18px;color:var(--mute)}
+body.wide.attc .sch-layout{grid-template-columns:40px 1fr}
+body.wide.attc #attBody{display:none}
+body.wide.attc details.att{padding:8px 0}
+body.wide.attc details.att>summary{writing-mode:vertical-rl;transform:rotate(180deg);justify-content:flex-end;width:100%;align-items:center}
+body.wide.attc .attTog{margin:0 0 6px}
+body.wide.attc .attTog::before{content:"\203A"}
 [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <header>
-  <h1>TMS Tracker</h1>
-  <button id="refresh" title="Re-read every patient tab">Refresh</button>
+  <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><div class="tt"><b id="wbTitle">TMS Tracker</b><span id="devTag" class="sub"></span></div></div>
+  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
 </header>
+
+<div id="reportBanner" class="banner red" hidden>
+  <b id="reportMsg"></b>
+  <details>
+    <summary>How to run the report</summary>
+    <ol>
+      <li>Navigate to NextGen PM.</li>
+      <li>Locate the "Reports" menu option on the top-left.</li>
+      <li>Click "Memorized".</li>
+      <li>Change the Report Type drop-down to "Appointment Reports" and select "1 Appt List - ALL TMS".</li>
+      <li>Select "OK" to run the report.</li>
+      <li>Export the report by clicking the x symbol beside the bar graph icon <img src="assets/export-icon.png" alt="Export icon: spreadsheet x next to a bar graph" height="16">.</li>
+      <li>Copy the file from your NextGen File Explorer and upload it on the Import page here.</li>
+    </ol>
+  </details>
+  <span class="bctl"><button class="sm" data-banner="reportBanner" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="reportBanner" data-bact="dismiss">Dismiss</button></span>
+</div>
+
+<div id="newPtBanner" class="banner red" hidden>
+  <b>New patients in NextGen need a tracker (<span id="newPtCount"></span>)</b>
+  <div id="newPtList" style="color:var(--ink);margin-top:6px"></div>
+  <span class="bctl"><button class="sm" data-banner="newPtBanner" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="newPtBanner" data-bact="dismiss">Dismiss</button></span>
+</div>
+
+<div id="skipNote" class="banner" hidden>
+  <span id="skipText"></span>
+  <span class="bctl"><button class="sm" data-banner="skipNote" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="skipNote" data-bact="dismiss">Dismiss</button></span>
+</div>
 
 <div id="setup" class="banner" hidden>
   <span id="setupMsg"></span>
-  <div class="actions"><button class="pri" id="btnSetup">Add tracker columns</button></div>
+  <div class="actions" style="margin-top:6px"><button class="pri" id="btnSetup">Update tabs</button></div>
+  <span class="bctl"><button class="sm" data-banner="setup" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="setup" data-bact="dismiss">Dismiss</button></span>
 </div>
 
-<nav class="tabs" id="mainTabs">
-  <button data-view="dash" class="on">Dashboard</button>
-  <button data-view="imp">Import</button>
-  <button data-view="add">Add patient</button>
+<nav class="tabs" id="mainTabs" style="margin-top:10px">
+  <button data-view="sch" class="on">Schedule</button>
+  <button data-view="pts">Patients</button>
+  <button data-view="clinic">Clinic</button>
 </nav>
 
-<section id="v-dash">
-  <nav class="seg" id="dashTabs" style="margin:-12px -12px 12px">
-    <button data-d="att" class="on">Attention</button>
-    <button data-d="week">This week</button>
-    <button data-d="fu">Follow-up</button>
-    <button data-d="roster">Roster</button>
-    <button data-d="proto">Protocols</button>
-  </nav>
-  <div id="dashBody"></div>
-  <div class="foot">
-    <div class="row2">
-      <div><label for="cfgAuth">Warn on auth expiry within (days)</label><input id="cfgAuth" type="number" min="1"></div>
-      <div><label for="cfgProto">Warn on protocol update within (days)</label><input id="cfgProto" type="number" min="1"></div>
+<section id="v-sch">
+  <div class="sch-layout">
+    <details class="att" id="attWrap" open><summary><b>Attention</b> <span class="cnt" id="attCount">0</span><span class="attTog" aria-hidden="true"></span></summary><div id="attBody"></div></details>
+    <div>
+      <div class="tglwrap"><div class="toggle" id="schToggle" role="group" aria-label="Schedule range"><button data-sv="today" class="on" aria-pressed="true">Today</button><button data-sv="week" aria-pressed="false">Week</button></div></div>
+      <div id="schBody" style="margin-top:10px"></div>
     </div>
-    <div class="actions"><button id="publish">Copy dashboard to a sheet</button></div>
-    <label class="chk"><input type="checkbox" id="gridMonday" checked> Set the Active Patients week grid to start this Monday</label>
-    <div class="actions"><button id="btnGrid">Fill Active Patients week grid</button></div>
-    <div class="hint">Fills blank cells only, from each tab's dates: MT, Daily Tx, MTR, F/U, Missed, Different Clinic.</div>
+  </div>
+</section>
+
+<section id="v-pts" hidden><div id="ptsBody"></div></section>
+
+<section id="v-clinic" hidden>
+  <div class="toggle" id="clinicTabs" role="group" aria-label="Clinic"><button data-cv="chair" class="on" aria-pressed="true">Chair</button><button data-cv="proto" aria-pressed="false">Protocols</button></div>
+  <div id="clinicBody" style="margin-top:10px"></div>
+</section>
+
+<section id="v-settings" hidden>
+  <div class="wk"><button id="setBack">&#8249; Back</button></div>
+  <h2>Settings</h2>
+  <div id="settingsBox">
+    <div class="row2">
+      <div><label for="cfgLoc">This clinic (NextGen location)</label><input id="cfgLoc"></div>
+      <div><label for="cfgDevice">Tracker device</label><select id="cfgDevice"><option value="auto">From the workbook name</option><option value="MagV">MagVenture</option><option value="Brainsway">Brainsway</option></select></div>
+      <div><label for="cfgAuth">Auth warning (calendar days)</label><input id="cfgAuth" type="number" min="1"></div>
+      <div><label for="cfgProto">Protocol warning (business days)</label><input id="cfgProto" type="number" min="1"></div>
+      <div><label for="cfgRecent">Recent visit window (days)</label><input id="cfgRecent" type="number" min="1"></div>
+      <div><label for="cfgExt">External report stale after (days)</label><input id="cfgExt" type="number" min="1"></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="gridMonday" checked> Start the Active Patients week grid this Monday</label>
+    <div class="actions"><button id="btnGrid">Update Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button></div>
   </div>
 </section>
 
 <section id="v-imp" hidden>
-  <h2>Update schedules from NextGen</h2>
-  <div class="hint">The file is read in this pane only. MRNs are used to match tabs and are never written anywhere.</div>
-  <label for="file">Appointment list (.csv or .xlsx)</label>
+  <h2>Import appointment list</h2>
+  <div class="hint">Upload the "1 Appt List - ALL TMS" export. The preview appears right away; nothing changes until you apply it.</div>
+  <label>Report type</label>
+  <label class="chk"><input type="radio" name="rtype" value="all" checked> ALL TMS for this clinic</label>
+  <label class="chk"><input type="radio" name="rtype" value="ps"> Patient-specific (one external patient, all locations)</label>
+  <label for="file">Appointment list</label>
   <input type="file" id="file" accept=".csv,.xlsx,.xls">
-
-  <div id="mapBox" hidden>
-    <div class="row2">
-      <div><label for="mMrn">MRN</label><select id="mMrn"></select></div>
-      <div><label for="mDate">Date</label><select id="mDate"></select></div>
-      <div><label for="mTime">Time (optional)</label><select id="mTime"></select></div>
-      <div><label for="mStatus">Status</label><select id="mStatus"></select></div>
-    </div>
-    <div class="row2">
-      <div><label for="mType">Appointment type (optional)</label><select id="mType"></select></div>
-      <div><label for="mFuTxt">is a follow-up if it contains</label><input id="mFuTxt" value="F/U|follow"></div>
-    </div>
-    <div class="hint">With a type column, follow-ups go to the F/U rows and treatments to the other rows. Without one, dates fill rows in order.</div>
-    <div class="row2">
-      <div><label for="mFilterCol">Only rows where</label><select id="mFilterCol"></select></div>
-      <div><label for="mFilterTxt">contains</label><input id="mFilterTxt" placeholder="e.g. TMS"></div>
-    </div>
-    <label for="fromDate">Update appointments from</label>
-    <input type="date" id="fromDate">
-    <div class="hint">Earlier dates are never touched. The window ends at the last date in the file.</div>
-    <label class="chk"><input type="checkbox" id="chkAddMiss"> Add NextGen no-shows and cancellations that are not on the tab yet, as Miss rows (x plus a note)</label>
-    <label class="chk"><input type="checkbox" id="chkClearMiss"> Also clear existing Miss rows in the window. Their freebie marks are lost.</label>
-    <label class="chk"><input type="checkbox" id="chkAbsent"> Also clear window dates for active patients who are not in this file</label>
-    <div class="actions"><button class="pri" id="btnPreview">Preview changes</button></div>
-  </div>
-
-  <div id="planBox" hidden>
-    <div id="planBody"></div>
-    <div class="actions"><button class="pri" id="btnApply">Apply to workbook</button><button id="btnCancelPlan">Cancel</button></div>
-  </div>
+  <div id="planBox" hidden><div id="planBody" style="margin-top:12px"></div></div>
 </section>
 
 <section id="v-add" hidden>
+  <div class="wk"><button id="apBack">&#8249; Patients</button></div>
   <h2>Add patient</h2>
-  <div class="hint">Copies the New Template tab, names it by LASFIR (SMIJAN, then SMIJAN 2 for a later course), and adds it to Active Patients. Names are not saved; the tab gets the LASFIR code.</div>
+  <div class="hint" id="apNote"></div>
+  <div class="hint">Copies New Template and names the tab by LASFIR (SMIJAN, then SMIJAN 2 for a later course). Names are not saved. The protocol is chosen at the MT.</div>
   <div class="row2">
     <div><label for="apLast">Last name</label><input id="apLast" autocomplete="off"></div>
     <div><label for="apFirst">First name</label><input id="apFirst" autocomplete="off"></div>
-  </div>
-  <label for="apCode">LASFIR</label>
-  <input id="apCode" maxlength="6" placeholder="Fills in from the names, or type it">
-  <div class="row2">
+    <div><label for="apCode">LASFIR</label><input id="apCode" maxlength="6" placeholder="From the names, or type it"></div>
     <div><label for="apCourse">Course #</label><input id="apCourse" type="number" min="1" value="1"></div>
-    <div><label for="apTxs"># of Txs approved</label><input id="apTxs" type="number" min="1"></div>
+    <div><label for="apMrn">MRN</label><input id="apMrn" autocomplete="off"></div>
+    <div><label for="apDob">DOB</label><input id="apDob" type="date"></div>
+    <div><label for="apHome">Home clinic</label><input id="apHome" value="SRL" autocomplete="off"></div>
+    <div><label for="apMd">MD required on-site</label><select id="apMd"><option value=""></option><option>Yes</option><option>No</option></select></div>
   </div>
-  <label for="apMrn">MRN</label><input id="apMrn" autocomplete="off">
+  <h2 style="margin-top:14px">Coverage</h2>
+  <div class="row2">
+    <div><label for="apIns">Insurance</label><input id="apIns" autocomplete="off"></div>
+    <div><label for="apInsType">Insurance type</label><select id="apInsType"><option value=""></option><option>Commercial</option><option>Medicare</option><option>Medicaid</option><option>Kaiser</option><option>VA</option><option>Other</option></select></div>
+    <div><label for="apAuthStart">Auth start</label><input id="apAuthStart" type="date"></div>
+    <div><label for="apAuthExp">Auth expires</label><input id="apAuthExp" type="date"></div>
+  </div>
+  <label for="apAssess">Auth assessment</label><input id="apAssess" autocomplete="off">
+  <div class="row2">
+    <div><label for="apPlan">Plan type</label><select id="apPlan"><option value=""></option><option>Flat copay</option><option>Co-insurance</option></select></div>
+    <div id="apFlatBox" hidden><label for="apFlat">Flat copay per visit</label><input id="apFlat" type="number" min="0" step="0.01"></div>
+    <div><label for="apBidf">BIDF estimated course cost</label><input id="apBidf" type="number" min="0" step="0.01"></div>
+    <div><label for="apOop">Out-of-pocket max remaining</label><input id="apOop" type="number" min="0" step="0.01"></div>
+    <div><label for="apDed">Deductible remaining</label><input id="apDed" type="number" min="0" step="0.01"></div>
+  </div>
+  <h2 style="margin-top:14px">Authorization by code</h2>
+  <div class="row2">
+    <div><label for="apTxs"># of treatments</label><input id="apTxs" type="number" min="1" value="36"></div>
+    <div><label for="apMtr">MTR (90869) approved</label><select id="apMtr"><option value=""></option><option>Yes</option><option>No</option></select></div>
+  </div>
+  <div class="row3" style="margin:8px 0 2px"><span></span><span class="sub">Auth qty</span><span class="sub">Patient pays</span></div>
+  <div id="apBill"></div>
+  <div class="hint">90867 is always 1, 90869 is 1 if approved, and 90868 is the rest. Change any quantity if the payer differs.</div>
+  <h2 style="margin-top:14px">Availability <span class="sub" style="font-weight:400">(can also wait until the MT)</span></h2>
+  <div class="row3 w4"><span></span><span class="sub">Available?</span><span class="sub">Earliest start</span><span class="sub">Latest start</span></div>
+  <div id="apWeek"></div>
+  <label>Dates away (vacation, work, other)</label>
+  <div id="apRanges"></div>
+  <button class="sm" data-apact="add">Add another</button>
   <div class="hint" id="apTab"></div>
   <div class="actions"><button class="pri" id="btnAdd">Create tab</button></div>
 </section>
 
+<div id="modal" hidden><div id="modalBody" role="dialog" aria-modal="true"></div></div>
 <div id="toast" role="status"></div>
 <script src="taskpane.js"></script>
 </body>
