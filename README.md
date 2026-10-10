@@ -20,6 +20,7 @@ Tested in Node and in a headless browser with sample data:
 |---|---|
 | `manifest.xml` | Office add-in manifest (version 1.1). Requires ExcelApi 1.9, which Excel on the web supports. Points to the GitHub Pages pilot host, `https://brendannyates.github.io/tms-tracker`, served from `main`. |
 | `taskpane.html`, `taskpane.js` | The add-in. A single static page with no build step. |
+| `schedule.html` | The patient schedule window: print or save as PDF. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
 | `demo/tms-tracker-demo.html` | A self-contained demo with fictional patients. Open it in a browser; no Excel needed. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
@@ -109,7 +110,7 @@ Monday to Friday visits with a one-line variance summary per day.
   - **Measures over time.**
   - **Appointments:** upcoming by default, with all visits on request.
   - **Availability editor:** weekly hours plus as many date ranges as needed.
-  - **Buttons:** Print schedule, Save a copy, Open tab.
+  - **Buttons:** Print or save schedule, Open tab.
 
 ### Clinic
 
@@ -120,7 +121,7 @@ Chair (hours and holiday closures come from the Clinic Schedule sheet) and Proto
 - **No setup needed:** the report's columns are detected automatically. There is no mapping and no ignore pattern to manage.
 - **Preview:** upload the file and the preview appears with Apply below it.
 - **Device:** each patient's device is decided by where their daily treatments are booked. A Brainsway patient's MT on a provider schedule is ignored on a MagV tracker.
-- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule printout uses E2.
+- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule uses E2.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations are noted and their date cleared.
 - **Measures:** they are re-planned only after a significant disruption: an MTR or F/U moved, or 2 or more missed visits within a week.
 
@@ -137,10 +138,12 @@ Chair (hours and holiday closures come from the Clinic Schedule sheet) and Proto
 
 **Print schedule** (in a visit card's ⋯ menu, or **Print or save schedule** in the patient view) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
 
-- **Print** builds the Patient Schedule sheet in the clinic template (no patient-name column) at the template's column widths. It prints Letter landscape at a fixed scale, so a long schedule runs onto more pages, with the header row repeated, instead of shrinking to fit one page. Press Ctrl+P.
-- **Save a copy** downloads the same range as `SMIJOH schedule 10.6.xlsx` in Excel on the web. If the download is blocked, it gives you that name to use with Print to PDF.
+**Open schedule** opens the schedule in its own window (`schedule.html`), not in a workbook tab. Nothing is added to the workbook. The window shows the clinic logo centered over the table, the report's "As of" time, and the visits (no patient-name column).
 
-Both write "Schedule provided m/d" to Notes and the date to Z13. The file contains the MRN, so keep it only where PHI is allowed.
+- **Print** opens the browser's print dialog, Letter landscape. Long schedules run onto more pages with the header row repeated.
+- **Save as PDF** downloads `SMIJOH schedule 10.6.pdf`. If it fails, use Print and choose Save as PDF.
+
+Either one writes "Schedule provided m/d" to Notes and the date to Z13. The schedule contains the MRN, so keep it only where PHI is allowed. Excel may ask you to allow the window the first time.
 
 ## Open items
 

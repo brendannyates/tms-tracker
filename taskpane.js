@@ -1285,17 +1285,9 @@ async function applyPlan() {
   } catch (e) { fail(e); }
 }
 
-/* ---------- patient schedule: printout in the clinic template, and an optional saved copy ---------- */
-const PRINT_SHEET = "Patient Schedule", PRINT_COLS = [24.3, 11.1, 17.7, 22.7, 23.6, 26.3, 16.1];
-const charPt = w => (w * 7 + 5) * 0.75;
+/* ---------- patient schedule: opens in a dialog window (schedule.html) to print or save as PDF ---------- */
 const pad2 = n => String(n).padStart(2, "0");
 const apptTypeName = r => r.type === "MT" ? (device() === "Brainsway" ? "MT BW" : "MT MagV") : r.type === "MTR" ? "MT Redo" : r.type === "F/U" ? (r.tele ? "Telepsych TMS F/U" : "TMS Follow Up") : "TMS Treatment";
-async function logoBase64() {
-  try {
-    const b = await (await fetch("assets/logo.png")).blob();
-    return await new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(String(f.result).split(",")[1]); f.onerror = rej; f.readAsDataURL(b); });
-  } catch { return null; }
-}
 function scheduleRows(p, from, to) {
   const t = todaySerial(), loc = state.cfg.location, lo = Math.max(from ?? t, t), hi = to ?? Infinity;
   return p.rows.filter(r => r.date != null && r.date >= lo && r.date <= hi && !r.delivered && !r.miss).sort(cmp)
@@ -1309,11 +1301,11 @@ function printModal(tab) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const t = todaySerial(), lastVisit = Math.max(t, ...p.rows.filter(r => r.date != null && !r.delivered && !r.miss).map(r => r.date));
   const quick = [["14", "Next 14 days", t + 14], ["30", "Next 30 days", t + 30], ["all", "Rest of course", lastVisit]];
-  showModal(`<h3>Schedule for ${esc(p.tab)}</h3><p class="sub">Choose the visits to include. Long schedules print on more than one page.</p>
+  showModal(`<h3>Schedule for ${esc(p.tab)}</h3><p class="sub">Choose the visits to include. The schedule opens in a window where you can print it or save it as a PDF.</p>
     <div class="fchips" style="margin:8px 0">${quick.map(([k, l, to], i) => `<button class="sm${i === 0 ? " on" : ""}" data-prq="${to}">${l}</button>`).join("")}</div>
     <div class="row2"><label>From<input type="date" id="prFrom" value="${serialToInput(t)}"></label><label>To<input type="date" id="prTo" value="${serialToInput(t + 14)}"></label></div>
     <div class="sub" id="prCount"></div>
-    <div class="actions"><button class="pri" data-act="doPrint" data-t="${esc(tab)}">Print</button><button data-act="doSave" data-t="${esc(tab)}">Save a copy</button><button data-mclose>Cancel</button></div>`);
+    <div class="actions"><button class="pri" data-act="doPrint" data-t="${esc(tab)}">Open schedule</button><button data-mclose>Cancel</button></div>`);
   prCount(tab);
 }
 function prRange() { return [inputToSerial($("prFrom").value), inputToSerial($("prTo").value)]; }
@@ -1324,45 +1316,22 @@ async function logSchedule(p) {
   if (r) pairs.push([`S${r.row}`, [...r.note.split("; ").filter(x => x && !/^Schedule provided /.test(x)), tagText].join("; ")]);
   await writeCells(p.tab, pairs);
 }
-async function makePrintout(tab, from, to) {
+function openSchedule(tab, from, to) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const body = scheduleRows(p, from, to); if (!body.length) return toast("No scheduled visits in that date range.", true);
-  const logo = await logoBase64(), last = 10 + body.length;
-  try {
-    await Excel.run(async ctx => {
-      const old = ctx.workbook.worksheets.getItemOrNullObject(PRINT_SHEET); await ctx.sync(); if (!old.isNullObject) old.delete();
-      const ws = ctx.workbook.worksheets.add(PRINT_SHEET); ws.showGridlines = false;
-      const all = ws.getRange(`A1:G${Math.max(last, 12)}`); all.format.font.name = "Aptos Narrow"; all.format.font.size = 11; all.format.horizontalAlignment = "Center"; all.format.verticalAlignment = "Center"; all.format.fill.color = "#FFFFFF";
-      PRINT_COLS.forEach((w, i) => { ws.getRangeByIndexes(0, i, 1, 1).getEntireColumn().format.columnWidth = charPt(w); });
-      const hdr = a => { const r = ws.getRange(a); r.format.fill.color = "#156082"; r.format.font.color = "#FFFFFF"; r.format.font.bold = true; };
-      ws.getRange("A7").values = [[`As of: ${asOfText()}`]]; hdr("A7");
-      ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight"].forEach(e => { const b = ws.getRange("A7").format.borders.getItem(e); b.style = "Continuous"; b.weight = "Thin"; });
-      ws.getRange("A10:G10").values = [["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"]]; hdr("A10:G10");
-      ws.getRange(`A11:G${last}`).values = body;
-      ws.getRange(`C11:C${last}`).numberFormat = [["m/d/yyyy"]]; ws.getRange(`D11:D${last}`).numberFormat = [["h:mm AM/PM"]];
-      body.forEach((r, i) => { if (i % 2 === 0) ws.getRange(`A${11 + i}:G${11 + i}`).format.fill.color = "#D9D9D9"; });
-      const pl = ws.pageLayout; pl.orientation = Excel.PageOrientation.landscape; pl.paperSize = Excel.PaperType.letter; pl.centerHorizontally = true;
-      pl.zoom = { scale: 93 }; pl.leftMargin = 28.8; pl.rightMargin = 28.8; pl.topMargin = 36; pl.bottomMargin = 36;
-      pl.setPrintArea(`A1:G${last}`); pl.setPrintTitleRows("$10:$10");   // fixed scale: long schedules run onto more pages instead of shrinking
-      if (logo) { const sh = ws.shapes.addImage(logo); sh.left = (PRINT_COLS.reduce((a, w) => a + charPt(w), 0) - 210.75) / 2; sh.top = 13.5;   // centered over A:G sh.width = 210.75; sh.height = 87; sh.name = "Logo"; }
-      ws.activate(); await ctx.sync();
+  if (!Office.context.requirements.isSetSupported("DialogApi", "1.2")) return toast("This version of Excel can't open the schedule window.", true);
+  const d = serialToDate(todaySerial());
+  const data = JSON.stringify({ fname: `${p.code} schedule ${d.getUTCMonth() + 1}.${d.getUTCDate()}.pdf`, asOf: `As of: ${asOfText()}`,
+    rows: body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]]) });
+  Office.context.ui.displayDialogAsync(new URL("schedule.html", location.href).href, { height: 80, width: 70 }, res => {
+    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "A schedule window is already open." : "The schedule window was blocked. Allow pop-ups for Excel and try again.", true);
+    const dlg = res.value; let logged = false;
+    dlg.addEventHandler(Office.EventType.DialogMessageReceived, async m => {
+      if (m.message === "ready") dlg.messageChild(data);
+      else if (m.message === "close") dlg.close();
+      else if ((m.message === "printed" || m.message === "saved") && !logged) { logged = true; try { await logSchedule(p); await refresh(); } catch (e) { fail(e); } }
     });
-    await logSchedule(p);
-    toast(`Printout for ${p.tab} is ready on the Patient Schedule sheet. Press Ctrl+P.${logo ? "" : " The logo could not be loaded."}`);
-    await refresh();
-  } catch (e) { fail(e); }
-}
-async function saveCopy(tab, from, to) {
-  const p = state.patients.find(x => x.tab === tab); if (!p) return;
-  const body = scheduleRows(p, from, to); if (!body.length) return toast("No scheduled visits in that date range.", true);
-  const d = serialToDate(todaySerial()), fname = `${p.code} schedule ${d.getUTCMonth() + 1}.${d.getUTCDate()}.xlsx`;
-  try {
-    const aoa = [["Mindful Health Solutions"], ["Appointment schedule"], [`As of: ${asOfText()}`], [], ["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"],
-      ...body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]])];
-    const sh = XLSX.utils.aoa_to_sheet(aoa); sh["!cols"] = PRINT_COLS.map(w => ({ wch: w }));
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sh, "Schedule"); XLSX.writeFile(wb, fname);
-    await logSchedule(p); toast(`Saved ${fname}. Keep it only where PHI is allowed.`); await refresh();
-  } catch (e) { toast(`Download was blocked. Use Print schedule, then Print to PDF and name it "${fname.replace(".xlsx", "")}".`, true); }
+  });
 }
 
 /* ---------- wiring ---------- */
@@ -1416,8 +1385,7 @@ Office.onReady(info => {
         classify: () => freebieModal(t, row), missKind: () => markMiss(t, row, v), undoMiss: () => undoMiss(t, row), pulses: () => markPulses(t, row, el), saveMeas: () => saveMeasures(t, row, el), moveMeas: () => moveMeasures(t, row, el),
         measToggle: () => { const k = `meas|${t}|${row}`; if (state.open.has(k)) state.open.delete(k); else state.open.add(k); renderDash(); },
         mtSave: () => saveMT(t, row, el), protoSave: () => saveProtocol(t, el), print: () => printModal(t), saveCopy: () => printModal(t),
-        doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); makePrintout(t, f, to); },
-        doSave: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); saveCopy(t, f, to); },
+        doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); openSchedule(t, f, to); },
         copyNote: () => noteAction("copyNote", t, row, el), resetNote: () => noteAction("resetNote", t, row, el),
         ptBack: () => { state.ptMode = "list"; renderDash(); }, addPt: () => show("add"), ptFilter: () => { state.ptFilter = v; renderDash(); }, ptAll: () => { state.ptAll = !state.ptAll; renderDash(); },
         balPay: () => balanceAction(t, "pay", el), balClear: () => balanceAction(t, "clear", el), extend: () => addExtension(t, el), availSave: () => saveAvailability(t),
