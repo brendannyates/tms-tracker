@@ -356,7 +356,7 @@ function renderBanners() {
   show("skipNote", parts.length > 0);
   const n = state.fix.size, o = state.old.length, msg = [];
   if (n) msg.push(`${n} tab${n === 1 ? "" : "s"} need the before-deductible cost column and the updated PR formula in column A`);
-  if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is kept, renamed "(old)", so you can check it and delete it`);
+  if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is deleted once its entries are copied over`);
   $("setupMsg").innerHTML = msg.join(". ") + ".";
   $("btnSetup").disabled = o > 0 && !state.templateOk;
   show("setup", n + o > 0);
@@ -993,7 +993,8 @@ async function ensureCost(ctx, ws) {
   ws.getRange(`X${COST_FIRST}:Y${COST_FIRST + 4}`).numberFormat = Array(5).fill(["$#,##0.00", "$#,##0.00"]);
   a.formulas = a.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i) : v[0]]);
 }
-/* copy an earlier-layout tab's entries into a fresh copy of New Template; the earlier tab is kept as "NAME (old)" */
+/* copy an earlier-layout tab's entries into a fresh copy of New Template. Every copied cell is read back from the new tab;
+   only when all of them match is the earlier tab deleted. Otherwise it stays as "NAME (old)". */
 async function rebuildTab(ctx, name) {
   const old = ctx.workbook.worksheets.getItem(name), tpl = ctx.workbook.worksheets.getItem("New Template");
   const src = old.getRange("A1:AN49"); src.load("formulas"); old.load("position"); await ctx.sync();
@@ -1002,7 +1003,7 @@ async function rebuildTab(ctx, name) {
   const txt = a => String(at(a) ?? "").trim();
   const pos = old.position; old.name = `${name} (old)`.slice(0, 31);
   const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
-  const put = (a, v) => { ws.getRange(a).values = [[v]]; };
+  const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); };
   ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
   for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
   const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N6", assess);
@@ -1022,24 +1023,44 @@ async function rebuildTab(ctx, name) {
   if (txt("AD25") === "WEEKLY AVAILABILITY") for (let i = 0; i < 5; i++) ["AF", "AG"].forEach((c, j) => { const v = at(`${c}${27 + i}`); if (typeof v === "number") put(`${j ? "X" : "W"}${WK_FIRST + i}`, v); });
   if (txt("Y26") === "Type") {
     const rg = []; for (let r = 27; r <= 48; r++) if (AV_TYPE.includes(txt("Y" + r))) rg.push(["Y", "Z", "AA", "AB"].map(c => at(c + r)));
-    rg.slice(0, AV_LAST - AV_FIRST + 1).forEach((v, i) => ws.getRange(`V${AV_FIRST + i}:Y${AV_FIRST + i}`).values = [v]);
+    rg.slice(0, AV_LAST - AV_FIRST + 1).forEach((v, i) => ["V", "W", "X", "Y"].forEach((c, j) => put(`${c}${AV_FIRST + i}`, v[j])));
   }
   const fb = old.getRange("U4"); fb.load("values"); await ctx.sync();
   put("N7", txt("T1") === "Freebies allowed" && typeof fb.values[0][0] === "number" ? fb.values[0][0] : Math.max(0, 3 - used));
   await ctx.sync();
+  /* check the transfer, then delete the earlier tab */
+  const back = ws.getRange("A1:Y49"); back.load("values"); await ctx.sync();
+  const same = (a, b) => (a === "" || a == null) ? (b === "" || b == null) : typeof a === "number" ? typeof b === "number" && Math.abs(a - b) < 1e-9 : String(a) === String(b);
+  const bad = [...wrote].filter(([a, v]) => { const m = a.match(/^([A-Z]+)(\d+)$/), c = m[1].split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1; return !same(v, back.values[+m[2] - 1][c]); }).map(([a]) => a);
+  if (!bad.length) { old.delete(); await ctx.sync(); }
+  return { name, deleted: !bad.length, bad };
+}
+/* rebuilding deletes the earlier tabs, so it asks first */
+function setupClick() {
+  if (state.old.length && !state.templateOk) return toast("New Template must match the current layout before earlier tabs can be rebuilt.", true);
+  if (!state.old.length) return setupColumns();
+  const n = state.old.length;
+  showModal(`<h3>Update tabs</h3><p class="sub">${n} tab${n > 1 ? "s" : ""} (${state.old.map(esc).join(", ")}) will be rebuilt from New Template. Each earlier tab is deleted once every copied entry checks out on the new tab. If anything doesn't match, the earlier tab is kept as "(old)".</p>
+    <p class="sub">To get a deleted tab back, use the workbook's version history (File > Info > Previous versions).</p>
+    <div class="actions"><button class="pri" data-act="setupGo">Rebuild and delete</button><button data-mclose>Cancel</button></div>`);
 }
 async function setupColumns() {
   if (POPOUT) return callPane("setupColumns", []);
   try {
     if (state.old.length && !state.templateOk) return toast("New Template must match the current layout before earlier tabs can be rebuilt.", true);
+    const res = [];
     await Excel.run(async ctx => {
       const ws = n => ctx.workbook.worksheets.getItem(n);
       if (state.fix.has("New Template")) await ensureCost(ctx, ws("New Template"));
-      for (const n of state.old) await rebuildTab(ctx, n);
+      for (const n of state.old) res.push(await rebuildTab(ctx, n));
       for (const n of state.fix.keys()) if (n !== "New Template") await ensureCost(ctx, ws(n));
       await ctx.sync();
     });
-    toast(state.old.length ? `Tabs updated. Check the rebuilt tabs, then delete the "(old)" copies.` : "Tabs updated."); await refresh();
+    const kept = res.filter(x => !x.deleted), done = res.length - kept.length;
+    toast(!res.length ? "Tabs updated." : kept.length
+      ? `Tabs updated. ${done} earlier tab${done === 1 ? "" : "s"} deleted. Kept ${kept.map(x => `${x.name} (old)`).join(", ")}: ${kept.map(x => x.bad.slice(0, 3).join(", ")).join("; ")} didn't copy over. Check those cells, then delete the "(old)" tab.`
+      : `Tabs updated. ${done} tab${done === 1 ? "" : "s"} rebuilt from New Template and the earlier ${done === 1 ? "tab" : "tabs"} deleted.`, kept.length > 0);
+    await refresh();
   } catch (e) { fail(e); }
 }
 
@@ -1479,7 +1500,7 @@ Office.onReady(info => {
     if (a) {
       const t = el.dataset.t, v = el.dataset.v, row = +el.dataset.row;
       const acts = {
-        apply: () => applyPlan(), newTracker: () => startTracker(v), status: () => setStatus(t, v), rmAP: () => removeFromAP(t), mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(),
+        apply: () => applyPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v), status: () => setStatus(t, v), rmAP: () => removeFromAP(t), mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(),
         classify: () => freebieModal(t, row), missKind: () => markMiss(t, row, v), undoMiss: () => undoMiss(t, row), pulses: () => markPulses(t, row, el), saveMeas: () => saveMeasures(t, row, el), moveMeas: () => moveMeasures(t, row, el),
         measToggle: () => { const k = `meas|${t}|${row}`; if (state.open.has(k)) state.open.delete(k); else state.open.add(k); renderDash(); },
         mtSave: () => saveMT(t, row, el), protoSave: () => saveProtocol(t, el), print: () => printModal(t),
@@ -1514,7 +1535,7 @@ Office.onReady(info => {
     if (el.dataset.dk && el.tagName === "SELECT" && draftInput(el)) renderDash();
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
-  $("refresh").onclick = () => refresh(); $("btnGrid").onclick = () => fillGrid($("gridMonday").checked); $("btnSetup").onclick = setupColumns; $("btnMeas").onclick = placeMeasuresClick;
+  $("refresh").onclick = () => refresh(); $("btnGrid").onclick = () => fillGrid($("gridMonday").checked); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
   $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
