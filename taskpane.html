@@ -106,7 +106,24 @@ input[type=checkbox],input[type=radio]{width:auto;margin:0}
 .chk{display:flex;align-items:flex-start;gap:6px;font-weight:400;margin-top:8px}
 .row2,.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
-.g3w{display:grid;grid-template-columns:40px 1fr 1fr 1fr;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
+.g3w{display:grid;grid-template-columns:40px 1fr 1fr;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
+table.cost{table-layout:fixed}
+table.cost th:nth-child(1){width:48px}table.cost th:nth-child(3),table.cost th:nth-child(4){width:30%}
+table.cost td{padding:3px 4px}
+table.cost input{width:100%;min-width:0;text-align:right;padding:3px 5px}
+details.ben .g3{margin-bottom:8px}
+body:not(.wide) details.ben .g3{grid-template-columns:1fr 1fr}
+body:not(.wide) details.ben .g3 label:last-child{grid-column:1/3}
+header{gap:8px;flex-wrap:wrap}
+header .brand{flex:1 1 190px}
+.hact{flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+body:not(.wide) .hact button{padding:3px 7px}
+.item.bidf{margin:2px 0 6px}
+#schedOverlay{position:fixed;inset:0;z-index:40;background:#fff}
+#schedFrame{width:100%;height:100%;border:0}
+/* pop-out window: more room, so content gets a comfortable max width */
+body.popout #btnPop,body.popout #popNote{display:none!important}
+body.popout section{max-width:1280px;margin:0 auto}
 .g3w.hdr{color:var(--mute);font-size:11px}
 .g4r{display:grid;grid-template-columns:1fr 1fr 1.2fr 28px;gap:4px;align-items:center;margin-bottom:3px}
 .row3{display:grid;grid-template-columns:76px 1fr 1fr;gap:6px;align-items:end;margin-bottom:4px}
@@ -179,8 +196,13 @@ body.wide.attc .attTog::before{content:"\203A"}
 <body>
 <header>
   <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><div class="tt"><b id="wbTitle">TMS Tracker</b><span id="devTag" class="sub"></span></div></div>
-  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
+  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnPop" title="Open in a new window" aria-label="Open in a new window">&#x29C9;</button><button id="btnFull" title="Full screen" aria-label="Full screen">&#x26F6;</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
 </header>
+
+<div id="popNote" class="banner" hidden>
+  <b>The tracker is open in another window.</b> Keep this pane open: that window reads and saves through it.
+  <div class="actions" style="margin-top:6px"><button class="sm" id="popClose">Close the other window</button></div>
+</div>
 
 <div id="reportBanner" class="banner red" hidden>
   <b id="reportMsg"></b>
@@ -249,7 +271,6 @@ body.wide.attc .attTog::before{content:"\203A"}
       <div><label for="cfgAuth">Auth warning (calendar days)</label><input id="cfgAuth" type="number" min="1"></div>
       <div><label for="cfgProto">Protocol warning (business days)</label><input id="cfgProto" type="number" min="1"></div>
       <div><label for="cfgRecent">Recent visit window (days)</label><input id="cfgRecent" type="number" min="1"></div>
-      <div><label for="cfgExt">External report stale after (days)</label><input id="cfgExt" type="number" min="1"></div>
     </div>
     <label class="chk"><input type="checkbox" id="gridMonday" checked> Start the Active Patients week grid this Monday</label>
     <div class="actions"><button id="btnGrid">Update Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button></div>
@@ -282,31 +303,28 @@ body.wide.attc .attTog::before{content:"\203A"}
     <div><label for="apHome">Home clinic</label><input id="apHome" value="SRL" autocomplete="off"></div>
     <div><label for="apMd">MD required on-site</label><select id="apMd"><option value=""></option><option>Yes</option><option>No</option></select></div>
   </div>
-  <h2 style="margin-top:14px">Coverage</h2>
+  <h2 style="margin-top:14px">Authorization</h2>
   <div class="row2">
     <div><label for="apIns">Insurance</label><input id="apIns" autocomplete="off"></div>
-    <div><label for="apInsType">Insurance type</label><select id="apInsType"><option value=""></option><option>Commercial</option><option>Medicare</option><option>Medicaid</option><option>Kaiser</option><option>VA</option><option>Other</option></select></div>
+    <div><label for="apAssess">Auth assessment</label><input id="apAssess" autocomplete="off"></div>
     <div><label for="apAuthStart">Auth start</label><input id="apAuthStart" type="date"></div>
     <div><label for="apAuthExp">Auth expires</label><input id="apAuthExp" type="date"></div>
+    <div><label for="apTxs"># of TXs (D2)</label><input id="apTxs" type="number" min="1" value="36"></div>
+    <div><label for="apRedos"># of MT redos (D4)</label><input id="apRedos" type="number" min="0" value="0"></div>
+    <div><label for="apMtr">MTR approved</label><select id="apMtr"><option value=""></option><option>Yes</option><option>No</option></select></div>
   </div>
-  <label for="apAssess">Auth assessment</label><input id="apAssess" autocomplete="off">
+  <div class="hint">A standard course is 36 treatments: the MT (90867), an MT redo (90869) when authorized, and the rest daily (90868).</div>
+  <h2 style="margin-top:14px">Benefits <span class="sub" style="font-weight:400">(BIDF)</span></h2>
   <div class="row2">
-    <div><label for="apPlan">Plan type</label><select id="apPlan"><option value=""></option><option>Flat copay</option><option>Co-insurance</option></select></div>
-    <div id="apFlatBox" hidden><label for="apFlat">Flat copay per visit</label><input id="apFlat" type="number" min="0" step="0.01"></div>
+    <div><label for="apDed">Deductible remaining</label><input id="apDed" autocomplete="off" placeholder="$ or N/A"></div>
+    <div><label for="apOop">Out-of-pocket max remaining</label><input id="apOop" autocomplete="off" placeholder="$ or N/A"></div>
     <div><label for="apBidf">BIDF estimated course cost</label><input id="apBidf" type="number" min="0" step="0.01"></div>
-    <div><label for="apOop">Out-of-pocket max remaining</label><input id="apOop" type="number" min="0" step="0.01"></div>
-    <div><label for="apDed">Deductible remaining</label><input id="apDed" type="number" min="0" step="0.01"></div>
   </div>
-  <h2 style="margin-top:14px">Authorization by code</h2>
-  <div class="row2">
-    <div><label for="apTxs"># of treatments</label><input id="apTxs" type="number" min="1" value="36"></div>
-    <div><label for="apMtr">MTR (90869) approved</label><select id="apMtr"><option value=""></option><option>Yes</option><option>No</option></select></div>
-  </div>
-  <div class="row3" style="margin:8px 0 2px"><span></span><span class="sub">Auth qty</span><span class="sub">Patient pays</span></div>
+  <div class="row3" style="margin:10px 0 2px"><span class="sub">Cost by code</span><span class="sub">PR</span><span class="sub">Before ded.</span></div>
   <div id="apBill"></div>
-  <div class="hint">90867 is always 1, 90869 is 1 if approved, and 90868 is the rest. Change any quantity if the payer differs.</div>
+  <div class="hint">PR is the patient's cost per visit. Fill Before ded. only when a deductible applies; visits charge that amount until the deductible is used up.</div>
   <h2 style="margin-top:14px">Availability <span class="sub" style="font-weight:400">(can also wait until the MT)</span></h2>
-  <div class="row3 w4"><span></span><span class="sub">Available?</span><span class="sub">Earliest start</span><span class="sub">Latest start</span></div>
+  <div class="row3"><span></span><span class="sub">Earliest start</span><span class="sub">Latest start</span></div>
   <div id="apWeek"></div>
   <label>Dates away (vacation, work, other)</label>
   <div id="apRanges"></div>
@@ -316,6 +334,7 @@ body.wide.attc .attTog::before{content:"\203A"}
 </section>
 
 <div id="modal" hidden><div id="modalBody" role="dialog" aria-modal="true"></div></div>
+<div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule" allow="fullscreen"></iframe></div>
 <div id="toast" role="status"></div>
 <script src="taskpane.js"></script>
 </body>

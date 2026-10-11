@@ -34,6 +34,7 @@ tr{break-inside:avoid}
   <span class="msg" id="msg">Loading the schedule…</span>
   <button class="pri" id="print" disabled>Print</button>
   <button id="pdf" disabled>Save as PDF</button>
+  <button id="full" hidden>Full screen</button>
   <button id="close">Close</button>
 </div>
 <main class="page">
@@ -46,7 +47,9 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const HEAD = ["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"];
 let data = null;
-const tell = m => { try { Office.context.ui.messageParent(m); } catch { /* opened outside Excel */ } };
+/* embed=1: shown over the add-in page in an iframe (when another add-in window is already open); otherwise an Office dialog window */
+const EMBED = /[?&]embed=1\b/.test(location.search);
+const tell = m => { try { if (EMBED) parent.postMessage({ sched: m }, location.origin); else Office.context.ui.messageParent(m); } catch { /* opened outside Excel */ } };
 
 function render(d) {
   data = d;
@@ -77,9 +80,11 @@ function savePdf() {
 
 $("print").onclick = () => { window.print(); tell("printed"); };
 $("pdf").onclick = () => { try { savePdf(); } catch (e) { $("msg").textContent = `Could not build the PDF (${e.message}). Use Print and choose Save as PDF instead.`; } };
-$("close").onclick = () => { tell("close"); };
+$("close").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); tell("close"); };
+if (document.fullscreenEnabled) { $("full").hidden = false; $("full").onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { $("full").hidden = true; }); }
+document.addEventListener("fullscreenchange", () => { $("full").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen"; });
 
-Office.onReady(() => {
+if (!EMBED) Office.onReady(() => {
   Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, a => { try { render(JSON.parse(a.message)); } catch { $("msg").textContent = "The schedule could not be read. Close this window and try again."; } },
     () => tell("ready"));
 });
