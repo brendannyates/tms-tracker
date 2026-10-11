@@ -75,7 +75,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 
 | Menu | What it holds |
 |---|---|
-| Schedule | A Today / Week toggle. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
+| Schedule | A Day / Week toggle. Day opens on today; Prev and Next step through weekdays, and Back to today returns. Each day shows that weekday's hours from the Clinic Schedule tab, or "Clinic closed" with the reason when the date is listed in column G. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
 | Patients | The roster with filters: All, Active, Follow-up not scheduled, No upcoming visit. **Add patient** is here. Selecting a patient opens the patient view. |
 | Clinic | Chair and Protocols. |
 

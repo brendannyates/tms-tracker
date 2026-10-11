@@ -44,7 +44,7 @@ const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael" },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apNames: new Set(), closures: new Map(), wbName: "", clinic: null, report: null,
-  view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
+  view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dayOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
   open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null
 };
 /* Pop-out: the same page opened in an Office dialog window (?popout=1). A dialog cannot reach the workbook, so it asks the
@@ -514,15 +514,23 @@ function varianceHtml(day, open) {
   return `<details class="group var" data-open="var|${day}"${open || state.open.has("var|" + day) ? " open" : ""}><summary class="gs">Schedule variances <span class="sub">${v.actual} of ${v.expected} patients in treatment are being treated</span></summary>
     ${lines.length || gradTxt ? lines.map(([k, a]) => `<div class="vg"><b>${esc(k)}</b> <span class="n">${a.length}</span><div>${a.map(([p, d]) => `${ptLink(p)}${d ? ` <span class="sub">${esc(d)}</span>` : ""}`).join(", ")}</div></div>`).join("") + gradTxt : '<div class="none">No variances</div>'}</details>`;
 }
+/* a day's hours: that weekday's hours on Clinic Schedule, unless the date is listed in G as closed */
+function hoursOf(day) {
+  if (state.closures.has(day)) return { closed: true, txt: `Closed: ${state.closures.get(day)}` };
+  const h = state.clinic?.days[dow(day)];
+  if (!h || h.open == null || h.close == null) return null;
+  return { closed: false, txt: `${fmtTime(h.open)}–${fmtTime(h.close)}${h.bs != null && h.be != null ? `, break ${fmtTime(h.bs)}–${fmtTime(h.be)}` : ""}` };
+}
 function viewToday() {
-  const t = todaySerial(), P = state.patients;
+  const t = todaySerial() + state.dayOffset, P = state.patients, lbl = state.dayOffset ? "this day" : "today", hrs = hoursOf(t);
   const todays = P.flatMap(p => p.rows.filter(r => r.date === t).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 0) - (b.r.time ?? 0));
   const tx = todays.filter(({ r }) => r.type !== "F/U"), fu = todays.filter(({ r }) => r.type === "F/U");
-  let h = `<div class="wk"><b>${DAYS[dow(t)]} ${fmtDateY(t)}</b><span class="sub">${tx.length} treatment${tx.length === 1 ? "" : "s"}, ${fu.length} follow-up${fu.length === 1 ? "" : "s"}</span></div>`;
-  if (state.closures.has(t)) h += `<div class="item red"><b>Clinic closed</b> ${esc(state.closures.get(t))}</div>`;
+  let h = `<div class="wk"><button data-act="dprev">‹ Prev</button><b>${DAYS[dow(t)]} ${fmtDateY(t)}</b><button data-act="dnext">Next ›</button></div>`;
+  h += `<div class="sub" style="margin:-4px 0 10px">${tx.length} treatment${tx.length === 1 ? "" : "s"}, ${fu.length} follow-up${fu.length === 1 ? "" : "s"}${hrs && !hrs.closed ? `. Open ${esc(hrs.txt)}` : ""}${state.dayOffset ? ' <button class="sm" data-act="dthis">Back to today</button>' : ""}</div>`;
+  if (hrs?.closed) h += `<div class="item red"><b>Clinic closed</b> ${esc(state.closures.get(t))}</div>`;
   h += varianceHtml(t, false);
-  h += `<div class="group"><h2>Treatments today<span class="n">${tx.length}</span></h2>${tx.length ? tx.map(({ p, r }) => visitCard(p, r)).join("") : '<div class="none">No treatments scheduled today</div>'}</div>`;
-  h += `<div class="group"><h2>Follow-ups today<span class="n">${fu.length}</span></h2>${fu.length ? fu.map(({ p, r }) => visitCard(p, r)).join("") : '<div class="none">No follow-ups today</div>'}</div>`;
+  h += `<div class="group"><h2>Treatments ${lbl}<span class="n">${tx.length}</span></h2>${tx.length ? tx.map(({ p, r }) => visitCard(p, r)).join("") : `<div class="none">No treatments scheduled ${lbl}</div>`}</div>`;
+  h += `<div class="group"><h2>Follow-ups ${lbl}<span class="n">${fu.length}</span></h2>${fu.length ? fu.map(({ p, r }) => visitCard(p, r)).join("") : `<div class="none">No follow-ups ${lbl}</div>`}</div>`;
   return h;
 }
 
@@ -534,7 +542,8 @@ function viewWeek() {
     const day = start + i, v = variances(day);
     const rows = P.flatMap(p => p.rows.filter(r => r.date === day).map(r => ({ p, r }))).sort((x, y) => (x.r.time ?? 0) - (y.r.time ?? 0));
     const note = Object.entries(v.groups).filter(([, a]) => a.length).map(([k, a]) => `${a.length} ${k.toLowerCase()}`).join(", ");
-    html += `<div class="day${day === t ? " today" : ""}"><h2><span>${DAYS[i]} ${fmtDate(day)}</span><span class="n">${v.actual} of ${v.expected} treated</span></h2>${note ? `<div class="sub" style="margin-bottom:4px">Variances: ${esc(note)}</div>` : ""}`;
+    const hrs = hoursOf(day);
+    html += `<div class="day${day === t ? " today" : ""}"><h2><span>${DAYS[i]} ${fmtDate(day)}</span><span class="n">${v.actual} of ${v.expected} treated</span></h2>${hrs ? `<div class="${hrs.closed ? "item red" : "sub"}" style="margin-bottom:4px">${esc(hrs.closed ? hrs.txt : `Open ${hrs.txt}`)}</div>` : ""}${note ? `<div class="sub" style="margin-bottom:4px">Variances: ${esc(note)}</div>` : ""}`;
     html += rows.length ? rows.map(({ p, r }) => {
       const chips = [r.type && r.type !== "Daily" ? `<span class="chip ${cardCls(r)}">${esc(r.type)}${r.tele ? " tele" : ""}</span>` : "", r.action ? `<span class="chip">${esc(r.action)}</span>` : "", r.measX ? `<span class="chip">Measures</span>` : "",
         r.delivered ? `<span class="chip">Done</span>` : "", r.miss ? `<span class="chip amb">Missed</span>` : "", r.alt ? `<span class="chip amb">Other clinic</span>` : "",
@@ -1514,6 +1523,9 @@ Office.onReady(info => {
         avDel: () => { readAvailEditor($("ptsBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); renderDash(); },
         prev: () => { state.weekOffset--; renderDash(); }, next: () => { state.weekOffset++; renderDash(); }, this: () => { state.weekOffset = 0; renderDash(); },
         sthis: () => { state.schedOffset = 0; renderDash(); },
+        dthis: () => { state.dayOffset = 0; renderDash(); },
+        dprev: () => { do { state.dayOffset--; } while ([0, 6].includes(dow(todaySerial() + state.dayOffset))); renderDash(); },
+        dnext: () => { do { state.dayOffset++; } while ([0, 6].includes(dow(todaySerial() + state.dayOffset))); renderDash(); },
         sprev: () => { do { state.schedOffset--; } while ([0, 6].includes(dow(todaySerial() + state.schedOffset))); renderDash(); },
         snext: () => { do { state.schedOffset++; } while ([0, 6].includes(dow(todaySerial() + state.schedOffset))); renderDash(); }
       };
