@@ -1,24 +1,28 @@
 /* TMS Tracker: Excel (web) task-pane add-in. A light augmentation over the organization's patient tracker template.
-   One tab per course (LASFIR or "LASFIR 2") cloned from "New Template". Information stays where the template already keeps it:
-   provider E2, care navigator (TAS) E4, insurance E6, MD on-site D6, status D7, protocol J1:N5 (site label in O), home clinic S9.
+   One tab per course (LASFIR or "LASFIR 2") cloned from "New Template". Information stays where the template keeps it:
+   header A1:H7 (MRN A4, # of txs D2, # of MT redos D4, MD on-site D6, status D7, provider E2, TAS E4, insurance E6, auth F4:G4,
+   update protocol by G2, progress note sent G6), protocol J2:O4, auth assessment N6, remaining freebies N7, visit log A10:T49
+   (time in T), home clinic S9, and the benefits block V1:Y48 (BIDF W1, deductible W4, OOP max W5, MTR approved W6,
+   extensions W7, last schedule W8, cost by code V11:Y16, weekly availability V19:X24, dates away V28:Y48).
    PHI: MRNs are read into memory to match NextGen rows; they are never sent anywhere. Names typed in Add patient become LASFIR. */
 "use strict";
 
 /* ---------- tab layout ---------- */
 const LOG_FIRST = 10, LOG_LAST = 49;
-const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, freebie: 19, time: 20, rep: 34, cop: 35 }; // 0-based in A:AJ
-const BILL_FIRST = 18, AV_FIRST = 27, AV_LAST = 48;
+const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, time: 19 }; // 0-based in A:T
+const COST_FIRST = 12, WK_FIRST = 20, AV_FIRST = 29, AV_LAST = 48;
 const BILL = [
   { k: "MT", code: "90867", label: "MT" }, { k: "Daily", code: "90868", label: "Daily" }, { k: "MTR", code: "90869", label: "MTR / MT redo" },
   { k: "FUo", code: "99214", label: "F/U in-office" }, { k: "FUt", code: "99214", label: "F/U telehealth" }
 ];
+const BEFORE_HDR = "Before ded.";
 const TAB_RE = /^([A-Z]{1,6})(?: (\d+))?$/;
 const ACTIVE = ["Pending Start", "In Progress", "Tapering"];
 const STATUSES = ["Pending Start", "In Progress", "Tapering", "Paused", "Discontinued", "Complete"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const AV_TYPE = ["Unavailable", "Available"], FREEBIE = ["Used", "Waived"];
+const AV_TYPE = ["Unavailable", "Available"];
+const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
-const PLAN_TYPES = ["Flat copay", "Co-insurance"], INS_TYPES = ["Commercial", "Medicare", "Medicaid", "Kaiser", "VA", "Other"];
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
 const TELE_TAG = "Tele";
@@ -37,14 +41,19 @@ function device() {
 const chairName = () => DEVICES[device()].chair;
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", extDays: 7 },
-  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, templateOk: true, pendingNew: [],
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael" },
+  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apNames: new Set(), closures: new Map(), wbName: "", clinic: null, report: null,
   view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
   open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null
 };
+/* Pop-out: the same page opened in an Office dialog window (?popout=1). A dialog cannot reach the workbook, so it asks the
+   task pane (which stays open) to do every read and write, and the pane sends back a snapshot of what it read. */
+const POPOUT = /[?&]popout=1\b/.test(location.search);
+const pop = { dlg: null, calls: 0 };                                   // task pane side
+const rpc = { id: 0, wait: new Map(), parts: [], snapWait: [] };       // pop-out side
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc =s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 /* ---------- dates and times ---------- */
 const utcSerial = (y, m, d) => Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 864e5);
@@ -107,12 +116,20 @@ const billIdx = r => r.type === "MT" ? 0 : r.type === "Daily" || r.type === "Tap
 
 /* ---------- UI helpers ---------- */
 let toastTimer;
-function toast(msg, err) { const t = $("toast"); t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", err ? 9000 : 4500); }
+function toast(msg, err) {
+  if (pop.dlg && pop.calls > 0) toChild({ k: "toast", msg, err: !!err });   // a pop-out asked for this action: show the result there too
+  const t = $("toast"); t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", err ? 9000 : 4500); }
 const fail = e => { console.error(e); toast(e.message || String(e), true); };
 function showModal(html) { $("modalBody").innerHTML = html; $("modal").hidden = false; const f = $("modalBody").querySelector("button"); if (f) f.focus(); }
 function closeModal() { $("modal").hidden = true; $("modalBody").innerHTML = ""; }
 
 /* ---------- read the workbook ---------- */
+/* a missed visit's freebie decision lives in Notes ("Freebie used" or "Freebie waived"); N7 counts the freebies left */
+const freebieOf = note => /\bfreebie used\b/i.test(note) ? "Used" : /\bfreebie waived\b/i.test(note) ? "Waived" : "";
+const withFreebie = (note, v) => [...String(note || "").split("; ").filter(x => x && !/^freebie (used|waived)$/i.test(x)), ...(v ? [FREEBIE_TAG[v]] : [])].join("; ");
+const isNA = v => /^n\/?a$/i.test(String(v ?? "").trim());
+/* current template: Time in T8 and the cost table header in V11 */
+const isCurrent = (t8, v11) => String(t8).trim().toLowerCase() === "time" && String(v11).trim().toLowerCase() === "code";
 function parseLog(vals) {
   const blank = x => x === "" || x == null;
   return vals.map((v, i) => {
@@ -122,29 +139,30 @@ function parseLog(vals) {
       date: isNum(v[C.date]) ? Math.floor(v[C.date]) : null, time: isNum(v[C.time]) ? Math.round(v[C.time] * 1440) : null,
       pulses: [v[C.L], v[C.R], v[C.O]].map(x => blank(x) ? null : x), delivered: [v[C.L], v[C.R], v[C.O]].some(x => !blank(x)),
       type: String(v[C.type] || ""), miss: String(v[C.miss]).trim().toLowerCase() === "x", action: String(v[C.action] || ""),
-      alt: String(v[C.alt]).trim().toLowerCase() === "x", note, tele: /\btele/i.test(note), freebie: String(v[C.freebie] || ""),
+      alt: String(v[C.alt]).trim().toLowerCase() === "x", note, tele: /\btele/i.test(note), freebie: freebieOf(note),
       phq: String(v[C.phq] ?? "").trim(), gad: String(v[C.gad] ?? "").trim(),
-      measX: [v[C.phq], v[C.gad]].some(x => String(x).trim().toLowerCase() === "x"), measVal: [v[C.phq], v[C.gad]].some(x => !blank(x) && String(x).trim().toLowerCase() !== "x"),
-      reportDone: String(v[C.rep] ?? "").trim().toLowerCase() === "x", copayDone: String(v[C.cop] ?? "").trim().toLowerCase() === "x"
+      measX: [v[C.phq], v[C.gad]].some(x => String(x).trim().toLowerCase() === "x"), measVal: [v[C.phq], v[C.gad]].some(x => !blank(x) && String(x).trim().toLowerCase() !== "x")
     };
   });
 }
 async function refresh() {
+  if (POPOUT) return callPane("refresh", []);
   try {
     await Excel.run(async ctx => {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
-      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:S8") }));
-      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); }); await ctx.sync();
+      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11") }));
+      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); }); await ctx.sync();
       const ok = x => String(x.a1.values[0][0]).trim().toUpperCase() === "PATIENT:" && String(x.a3.values[0][0]).trim().toUpperCase() === "MRN:" && SIG.every(([i, w]) => String(x.h.values[0][i]).trim().toLowerCase() === w);
-      const okNames = new Set(sg.filter(ok).map(x => x.name));
+      const cur = x => ok(x) && isCurrent(x.h.values[0][17], x.v11.values[0][0]);
+      const okNames = new Set(sg.filter(cur).map(x => x.name));
       state.templateOk = okNames.has("New Template");
-      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && !ok(x)).map(x => x.name), other: sheets.items.filter(s => !TAB_RE.test(s.name) && !KNOWN_SHEETS.includes(s.name)).length };
+      state.old = sg.filter(x => x.name !== "New Template" && ok(x) && !cur(x)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
+      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && !ok(x)).map(x => x.name), other: sheets.items.filter(s => !TAB_RE.test(s.name) && !KNOWN_SHEETS.includes(s.name) && !/ \(old\)$/.test(s.name)).length };
       const L = sheets.items.filter(s => okNames.has(s.name)).map(s => {
-        const g = a => { const r = s.getRange(a); r.load("values"); return r; };
-        return { name: s.name, mrn: g("A4"), d2: g("D2"), d67: g("D6:D7"), e2: g("E2"), e4: g("E4"), e6: g("E6"), fg4: g("F4:G4"), g2: g("G2"), f7h7: g("F7:H7"),
-          prot: g("J2:O4"), m67: g("M6:M7"), ben: g("Y6:Z15"), mark: g("Y16"), bill: g("Y18:AE22"), av: g(`Y${AV_FIRST}:AB${AV_LAST}`), wk: g("AD25:AG31"),
-          log: g(`A${LOG_FIRST}:AJ${LOG_LAST}`), fb: g("T1:U4"), ai8: g("AI8"), s9: g("S9"), an1: g("AN1"), o1: g("O1"), v8: g("V8"), x8: g("X8"), ak8: g("AK8"), z1: g("Z1") };
+        const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
+        return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
+          wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_LAST}`), s9: g("S9") };
       });
       const prW = ctx.workbook.worksheets.getItemOrNullObject("Protocols"), csW = ctx.workbook.worksheets.getItemOrNullObject("Clinic Schedule"), apW = ctx.workbook.worksheets.getItemOrNullObject("Active Patients");
       await ctx.sync();
@@ -154,37 +172,35 @@ async function refresh() {
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
       for (const l of L) {
-        const f = { full: l.mark.values[0][0] !== "BILLING AND AUTH BY CODE" };
-        if (!f.full) {
-          f.weekly = l.wk.values[0][0] !== "WEEKLY AVAILABILITY"; f.freebie = l.fb.values[0][0] !== "Freebies allowed";
-          f.today = l.ai8.values[0][0] !== "Report done"; f.benefits = l.ben.values[1][0] !== "Plan type"; f.site = l.o1.values[0][0] !== "Site";
-          f.legacy = l.v8.values[0][0] === "Tele" || l.x8.values[0][0] === "Provider" || l.ak8.values[0][0] === "Location";
-        }
+        const cv = l.cost.values, f = { cost: String(cv[0][3]).trim() !== BEFORE_HDR || !/LET\(/.test(String(l.a10.formulas[0][0])) };
         if (Object.values(f).some(Boolean)) state.fix.set(l.name, f);
         if (l.name === "New Template") continue;
-        const m = l.name.match(TAB_RE), pv = l.prot.values, bv = l.ben.values, fb = l.fb.values;
+        const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, w = l.w18.values.map(r => r[0]), H = (a, c) => h[a - 2][c];
         const mins = [0, 1, 2].map(i => pv[i][4]).filter(x => typeof x === "number");
         const m9 = String(l.s9.values[0][0] || "").match(/home\s*clinic\s*:\s*(.*)$/i), home = m9 ? m9[1].trim() : "";
+        const money0 = v => typeof v === "number" ? v : null;
         state.tabs.push({ name: l.name, code: m[1], course: +(m[2] || 1) });
         const p = {
-          tab: l.name, code: m[1], course: +(m[2] || 1), mrn: normMrn(l.mrn.values[0][0]), mrnRaw: String(l.mrn.values[0][0] || "").trim(),
-          txApproved: typeof l.d2.values[0][0] === "number" ? l.d2.values[0][0] : 36, mdReq: String(l.d67.values[0][0] || ""), status: String(l.d67.values[1][0] || ""),
-          provider: String(l.e2.values[0][0] || "").trim(), tas: String(l.e4.values[0][0] || "").trim(),
-          insurance: String(l.e6.values[0][0] || ""), kaiser: /kaiser/i.test(String(l.e6.values[0][0] || "")),
-          authStart: isNum(l.fg4.values[0][0]) ? l.fg4.values[0][0] : null, authExp: isNum(l.fg4.values[0][1]) ? l.fg4.values[0][1] : null,
-          updateBy: isNum(l.g2.values[0][0]) ? l.g2.values[0][0] : null,
-          txEnd: isNum(l.f7h7.values[0][0]) ? l.f7h7.values[0][0] : null, txRem: typeof l.f7h7.values[0][2] === "number" ? l.f7h7.values[0][2] : null,
-          pref: String(l.m67.values[0][0] || ""), authAssess: String(l.m67.values[1][0] || ""),
+          tab: l.name, code: m[1], course: +(m[2] || 1), mrn: normMrn(H(4, 0)), mrnRaw: String(H(4, 0) || "").trim(),
+          txApproved: typeof H(2, 3) === "number" ? H(2, 3) : 36, mtRedos: typeof H(4, 3) === "number" ? H(4, 3) : 0, mdReq: String(H(6, 3) || ""), status: String(H(7, 3) || ""),
+          provider: String(H(2, 4) || "").trim(), tas: String(H(4, 4) || "").trim(),
+          insurance: String(H(6, 4) || ""), kaiser: /kaiser/i.test(String(H(6, 4) || "")),
+          authStart: isNum(H(4, 5)) ? H(4, 5) : null, authExp: isNum(H(4, 6)) ? H(4, 6) : null,
+          updateBy: isNum(H(2, 6)) ? H(2, 6) : null, progSent: isNum(H(6, 6)) ? Math.floor(H(6, 6)) : null,
+          txEnd: isNum(H(7, 5)) ? H(7, 5) : null, txRem: typeof H(7, 7) === "number" ? H(7, 7) : null,
+          authAssess: String(l.n67.values[0][0] || ""), freebiesLeft: typeof l.n67.values[1][0] === "number" ? l.n67.values[1][0] : null,
           protoRows: [0, 1, 2].map(i => ({ n: i + 1, row: 2 + i, hz: pv[i][0], dur: pv[i][1], trains: pv[i][2], wait: pv[i][3], site: String(pv[i][5] || "") })),
           protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null,
-          freebiesAllowed: fb[0][0] === "Freebies allowed" && typeof fb[0][1] === "number" ? fb[0][1] : typeof l.z1.values[0][0] === "number" ? l.z1.values[0][0] : 3,
-          home, external: !!home && !/^(srl|san rafael)$/i.test(home), extAsOf: isNum(l.an1.values[0][0]) ? Math.floor(l.an1.values[0][0]) : null,
-          ben: bv[1][0] === "Plan type" ? { plan: String(bv[1][1] || ""), insType: String(bv[2][1] || ""), dedRem: num(bv[3][1], null), oopRem: num(bv[4][1], null), mtr: String(bv[5][1] || ""), ext: num(bv[6][1], 0), lastSched: isNum(bv[7][1]) ? Math.floor(bv[7][1]) : null, bidf: num(bv[9][1], null) } : { plan: "", insType: "", dedRem: null, oopRem: null, mtr: "", ext: 0, lastSched: null, bidf: null },
-          bill: l.bill.values.map(v => ({ auth: typeof v[2] === "number" ? v[2] : null, used: typeof v[3] === "number" ? v[3] : 0, left: typeof v[4] === "number" ? v[4] : null, charge: typeof v[5] === "number" ? v[5] : null, copay: typeof v[6] === "number" ? v[6] : null })),
+          home, external: !!home && !/^(srl|san rafael)$/i.test(home),
+          ben: { bidf: money0(w[0]), dedNA: isNA(w[3]), dedRem: money0(w[3]), dedBlank: w[3] === "" || w[3] == null, oopNA: isNA(w[4]), oopRem: money0(w[4]),
+            mtr: String(w[5] || ""), ext: typeof w[6] === "number" ? w[6] : 0, lastSched: isNum(w[7]) ? Math.floor(w[7]) : null },
+          cost: BILL.map((b, i) => ({ after: money0(cv[i + 1][2]), before: money0(cv[i + 1][3]) })),
           rows: parseLog(l.log.values),
-          week: Object.fromEntries([1, 2, 3, 4, 5].map(d => { const v = l.wk.values[d + 1] || []; return [d, { avail: String(v[1] || ""), from: isNum(v[2]) ? Math.round(v[2] * 1440) : null, to: isNum(v[3]) ? Math.round(v[3] * 1440) : null }]; })),
+          week: Object.fromEntries([1, 2, 3, 4, 5].map(d => { const v = l.wk.values[d - 1] || []; return [d, { from: isNum(v[0]) ? Math.round(v[0] * 1440) : null, to: isNum(v[1]) ? Math.round(v[1] * 1440) : null }]; })),
           avail: l.av.values.filter(v => AV_TYPE.includes(v[0]) && isNum(v[1])).map(v => ({ type: v[0], from: Math.floor(v[1]), to: isNum(v[2]) ? Math.floor(v[2]) : Math.floor(v[1]), note: String(v[3] || "") }))
         };
+        p.mtrAuth = p.mtRedos > 0 || /^y/i.test(p.ben.mtr);
+        p.lastSched = p.ben.lastSched;
         state.patients.push(p);
       }
       state.patients.sort((a, b) => a.code.localeCompare(b.code) || a.course - b.course);
@@ -200,12 +216,23 @@ async function refresh() {
     state.report = Office.context.document.settings.get("tms_report") || null;
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
+    if (pop.dlg) sendSnap();
   } catch (e) { fail(e); }
 }
 const num = (v, d) => (v === "" || v == null || isNaN(Number(v))) ? d : Number(v);
 
-/* payment (patient responsibility) for a visit: column A's PR value, else the billing table for that visit type */
-const payOf = (p, r) => typeof r.pr === "number" ? r.pr : ((p.bill[billIdx(r)] || {}).copay ?? null);
+/* payment (patient responsibility) for a visit: column A's PR value (its formula applies the deductible), else the cost table */
+const payOf = (p, r) => typeof r.pr === "number" ? r.pr : r.miss ? null : ((p.cost[billIdx(r)] || {}).after ?? null);
+/* BIDF (benefits) info a patient still needs before visits can be priced: cost per code, the deductible (or N/A), the OOP max (or N/A) */
+function bidfMissing(p) {
+  const out = [], c = p.cost, need = [0, 1, 3].concat(p.mtrAuth ? [2] : []).concat(p.rows.some(r => r.type === "F/U" && r.tele) ? [4] : []);
+  const noAfter = need.filter(i => c[i].after == null).map(i => BILL[i].label);
+  if (noAfter.length) out.push(`cost for ${noAfter.join(", ")}`);
+  if (p.ben.dedBlank) out.push("deductible remaining (or N/A)");
+  else if (p.ben.dedRem > 0) { const nb = need.filter(i => c[i].before == null).map(i => BILL[i].label); if (nb.length) out.push(`before-deductible cost for ${nb.join(", ")}`); }
+  if (!p.ben.oopNA && p.ben.oopRem == null) out.push("out-of-pocket max remaining (or N/A)");
+  return out;
+}
 const happened = (r, today) => r.date != null && r.date <= today && !r.alt && (r.delivered || (r.type === "F/U" && !r.miss));
 function baselineOf(p) {
   const mt = p.rows.find(r => r.type === "MT" && /baseline/i.test(r.note)); if (!mt) return null;
@@ -226,6 +253,7 @@ function derive(p) {
   const noTech = tx.filter(r => !r.tech && r.date != null);
   const decisions = rows.filter(r => r.miss && !r.freebie);
   const used = rows.filter(r => r.freebie === "Used").length, waived = rows.filter(r => r.freebie === "Waived").length;
+  const left = p.freebiesLeft != null ? Math.max(0, p.freebiesLeft) : Math.max(0, 3 - used);
   const fu = rows.filter(r => r.type === "F/U");
   const fuNext = fu.filter(r => r.date != null && r.date >= today && !r.delivered && !r.miss).sort(cmp)[0];
   const fuStatus = !fu.length ? "none" : fuNext ? "scheduled" : fu.every(r => r.delivered || r.date != null && r.date < today) ? "done" : "not scheduled";
@@ -251,11 +279,9 @@ function derive(p) {
       if (p.txEnd != null && p.txEnd > p.authExp) authFlags.push(`Treatments run to ${fmtDate(p.txEnd)}, past auth expiry`);
       if (sched.some(r => r.date > p.authExp)) authFlags.push("Visits booked past auth expiry");
     }
-    BILL.forEach((b, i) => {
-      const bl = p.bill[i], n = sched.filter(r => billIdx(r) === i).length;
-      if (bl.auth != null) { if (bl.left != null && n > bl.left) authFlags.push(`${n} ${b.label} scheduled, ${Math.max(0, bl.left)} authorized left`); }
-      else if (n > 0 || bl.used > 0) authFlags.push(`Auth qty not entered for ${b.label}`);
-    });
+    const txBooked = rows.filter(r => r.type !== "F/U" && r.type !== "" && !r.miss && (r.delivered || r.date != null)).length;
+    if (txBooked > total) authFlags.push(`${txBooked} treatments booked or done, ${total} authorized (D2)`);
+    if (!p.mtrAuth && sched.some(r => r.type === "MTR")) authFlags.push("MT redo (90869) booked, but D4 and MTR approved don't show it authorized");
   }
   /* protocol: renewal cadence from G2 (business days) and Action = Protocol; entered at the MT */
   const protoFlags = [];
@@ -265,9 +291,7 @@ function derive(p) {
     if (pa) protoFlags.push(`Protocol action at the ${fmtDate(pa.date)} visit`);
     if (!p.protoRows.some(x => isNum(x.hz)) && rows.some(r => r.type === "MT" && r.delivered)) protoFlags.push("Protocol not entered in J2:M4 since the MT");
   }
-  /* payments, balance, BIDF and out-of-pocket max */
-  const owed = rows.filter(r => happened(r, today) && !r.copayDone && (payOf(p, r) || 0) > 0);
-  const balance = owed.reduce((s, r) => s + payOf(p, r), 0);
+  /* patient cost so far and projected, the BIDF estimate and out-of-pocket max */
   const accrued = rows.filter(r => happened(r, today)).reduce((s, r) => s + (payOf(p, r) || 0), 0);
   const futurePay = sched.filter(r => !r.alt).map(r => ({ r, v: payOf(p, r) || 0 }));
   const projected = accrued + futurePay.reduce((s, x) => s + x.v, 0);
@@ -283,28 +307,23 @@ function derive(p) {
   /* only dates the patient said they are away; weekday preferences are for scheduling, not flags */
   const awayConflicts = [];
   if (active) for (const r of sched) { const w = p.avail.find(w => w.type === "Unavailable" && w.from <= r.date && r.date <= w.to); if (w) awayConflicts.push({ r, why: `away ${fmtDate(w.from)}\u2013${fmtDate(w.to)}${w.note ? ` (${w.note})` : ""}` }); }
-  const scheduleOut = [];
-  if (active) BILL.forEach((b, i) => {
-    const bl = p.bill[i]; if (bl.auth == null || bl.auth <= 0) return;
-    const n = bl.auth - bl.used - sched.filter(r => billIdx(r) === i).length;
-    if (n > 0) scheduleOut.push({ label: b.label, code: b.code, n });
-  });
   const closedConflicts = sched.filter(r => state.closures.has(r.date)).map(r => ({ r, why: state.closures.get(r.date) }));
   const byDay = new Map(); rows.filter(r => r.date != null && r.date >= today && !r.miss && !r.alt).forEach(r => byDay.set(r.date, (byDay.get(r.date) || 0) + 1));
   const sameDay = p.kaiser ? [] : [...byDay.entries()].filter(([, n]) => n > 1).map(([d]) => d).sort((a, b) => a - b);
   const measDue = rows.filter(r => r.measX && r.date != null && r.date < today && !r.miss);
   const lastRow = rows.filter(r => r.type !== "F/U" && r.date != null).sort(cmp).pop();
-  return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left: Math.max(0, p.freebiesAllowed - used), fu, fuNext, fuStatus, stale, suggest,
-    authFlags, protoFlags, benFlags, owed, balance, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, scheduleOut, grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
+  const bidf = bidfMissing(p), todayVisit = rows.some(r => r.date === today && !r.miss && !r.alt);
+  return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest,
+    authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && todayVisit && bidf.length > 0,
+    grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
 }
 const isUnavail = (p, day) => p.avail.some(w => w.type === "Unavailable" && w.from <= day && day <= w.to);
 function availText(p) {
   const t = todaySerial(), parts = [];
   const un = p.avail.filter(w => w.type === "Unavailable" && w.to >= t).sort((a, b) => a.from - b.from)[0];
   if (un) parts.push((un.from <= t ? `Away until ${fmtDate(un.to)}` : `Away ${fmtDate(un.from)}\u2013${fmtDate(un.to)}`) + (un.note ? ` (${un.note})` : ""));
-  const wkTxt = [1, 2, 3, 4, 5].map(d => { const w = p.week[d]; if (!w) return ""; if (w.avail === "No") return `${DAYS[d]} no`; const a = []; if (w.from != null) a.push(`from ${fmtTime(w.from)}`); if (w.to != null) a.push(`by ${fmtTime(w.to)}`); return a.length ? `${DAYS[d]} ${a.join(" ")}` : ""; }).filter(Boolean);
+  const wkTxt = [1, 2, 3, 4, 5].map(d => { const w = p.week[d]; if (!w) return ""; const a = []; if (w.from != null) a.push(`from ${fmtTime(w.from)}`); if (w.to != null) a.push(`by ${fmtTime(w.to)}`); return a.length ? `${DAYS[d]} ${a.join(" ")}` : ""; }).filter(Boolean);
   if (wkTxt.length) parts.push("Weekly: " + wkTxt.join(", "));
-  if (p.pref) parts.push(`Prefers ${p.pref}`);
   return parts.join("; ");
 }
 const trackerTitle = () => String(state.wbName || "").replace(/\.(xlsx|xlsm|xls)$/i, "").replace(/_/g, " ").replace(/\s{2,}/g, " ").trim() || "TMS Tracker";
@@ -332,12 +351,15 @@ function renderBanners() {
   const sk = state.skipped, parts = [];
   if (sk.layout.length) parts.push(`${sk.layout.length} tab${sk.layout.length > 1 ? "s" : ""} in an older layout (${sk.layout.map(esc).join(", ")})`);
   if (sk.other) parts.push(`${sk.other} tab${sk.other > 1 ? "s" : ""} not named by LASFIR`);
-  if (!state.templateOk) parts.push("the New Template tab does not match the current layout");
+  if (!state.templateOk) parts.push("the New Template tab does not match the current layout (Time in T8, Code in V11)");
   $("skipText").innerHTML = parts.length ? `Left untouched: ${parts.join("; ")}. The add-in only reads and writes tabs that match the current template.` : "";
   show("skipNote", parts.length > 0);
-  const n = state.fix.size;
-  $("setupMsg").textContent = `${n} tab${n === 1 ? "" : "s"} (including New Template) need the tracker updates.`;
-  show("setup", n > 0);
+  const n = state.fix.size, o = state.old.length, msg = [];
+  if (n) msg.push(`${n} tab${n === 1 ? "" : "s"} need the before-deductible cost column and the updated PR formula in column A`);
+  if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is kept, renamed "(old)", so you can check it and delete it`);
+  $("setupMsg").innerHTML = msg.join(". ") + ".";
+  $("btnSetup").disabled = o > 0 && !state.templateOk;
+  show("setup", n + o > 0);
   $("newPtList").innerHTML = state.pendingNew.map(newPtItem).join("");
   $("newPtCount").textContent = state.pendingNew.length;
   show("newPtBanner", state.pendingNew.length > 0);
@@ -378,15 +400,11 @@ function attentionHtml() {
   return gi(`No appointment in ${state.cfg.recentDays}+ days: pause or discontinue?`, P.filter(p => p.d.stale).map(p => item(p, "", `${p.d.txDone}/${p.d.total} treatments, last ${p.d.lastTx ? fmtDate(p.d.lastTx) : "none"}`, "red", null, btn("status", p.tab, "Paused", "Paused") + btn("status", p.tab, "Discontinued", "Discontinued"))), "Nobody is stale")
     + gi("Status update suggested", P.filter(p => p.d.suggest).map(p => item(p, `<span class="chip">${esc(p.status || "blank")} \u2192 ${esc(p.d.suggest)}</span>`, "", "amb", null, btn("status", p.tab, p.d.suggest, "Apply"))), "Statuses are current")
     + gi("Complete, can leave Active Patients", P.filter(p => p.status === "Complete" && state.apNames.has(p.tab)).map(p => item(p, "", "", "", null, btn("rmAP", p.tab, "", "Remove from Active Patients"))), "None")
+    + gi("BIDF info needed today", A.filter(p => p.d.bidfToday).map(p => item(p, "", `Scheduled today. Enter ${p.d.bidf.join("; ")}`, "red", null, `<button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button>`)), "None")
     + gi("Auth flags", A.filter(p => p.d.authFlags.length).map(p => item(p, "", p.d.authFlags.join("; "), "red")), "No auth issues")
     + gi("Protocol", A.filter(p => p.d.protoFlags.length).map(p => item(p, "", p.d.protoFlags.join("; "), "amb")), "None due")
     + gi("Benefits and patient cost", A.filter(p => p.d.benFlags.length).map(p => item(p, "", p.d.benFlags.join("; "), "amb")), "Nothing to check")
     + gi("Booked while the patient is away", A.filter(p => p.d.awayConflicts.length).map(p => item(p, "", p.d.awayConflicts.map(c => `${fmtDate(c.r.date)}: ${c.why}`).join(" | "), "red", p.d.awayConflicts[0].r.row)), "None")
-    + gi("External patients: upload their patient-specific report", A.filter(p => p.external).map(p => {
-      const why = p.extAsOf == null ? "Never uploaded" : todaySerial() - p.extAsOf > state.cfg.extDays ? `Last uploaded ${fmtDate(p.extAsOf)}` : "";
-      return why ? item(p, "", `Home clinic: ${p.home}. ${why}.`, "amb") : "";
-    }).filter(Boolean), "External patients are up to date")
-    + gi("Schedule out: authorized visits not scheduled", A.filter(p => p.d.scheduleOut.length).map(p => item(p, "", p.d.scheduleOut.map(x => `${x.n} ${x.label} (${x.code})`).join(", ") + (p.authExp != null ? `. Auth expires ${fmtDate(p.authExp)}` : ""), "amb")), "Every authorized visit is scheduled")
     + gi("Booked on a clinic closure date", P.filter(p => p.d.closedConflicts.length).map(p => item(p, "", p.d.closedConflicts.map(c => `${fmtDate(c.r.date)} (${c.why})`).join(", "), "red", p.d.closedConflicts[0].r.row)), "None")
     + gi("Same-day appointments (not Kaiser)", A.filter(p => p.d.sameDay.length).map(p => item(p, "", `More than one appointment on ${p.d.sameDay.map(fmtDate).join(", ")}`, "red")), "None")
     + gi("Freebie decision needed", dec.filter(({ r }) => !exempt(r)).map(({ p, r }) => item(p, `<span class="chip amb">Missed</span> ${fmtDateY(r.date)}`, r.note.includes(UNCLASS_TAG) ? "No-show not classified in NextGen. Clean up there, then classify" : "Classify the freebie", "amb", r.row)), "Every missed visit is classified")
@@ -400,19 +418,15 @@ function viewAttention() { const html = attentionHtml(); return { html: html || 
 
 /* ---------- Today: one card per visit, colored by event type like the tab's row highlight ---------- */
 const cardCls = r => r.alt ? "c-alt" : r.type === "MT" ? "c-mt" : r.type === "MTR" ? "c-mtr" : r.type === "F/U" ? "c-fu" : "c-daily";
-function cbox(col, on, label, off, p, r) {
-  return `<label class="ck${off ? " off" : ""}"><input type="checkbox" data-flag="${col}" data-t="${esc(p.tab)}" data-row="${r.row}" ${on ? "checked" : ""} ${off ? "disabled" : ""}> ${esc(label)}</label>`;
-}
 function completeBlock(p, r) {
   const pul = ["L", "R", "O"].map((s, i) => r.pulses[i] != null ? `${s} ${r.pulses[i]}` : "").filter(Boolean).join(", ");
-  if (r.delivered) return `<div class="done"><span class="chip ok">Delivered</span> <span class="sub">${esc(pul)}${r.tech ? ` \u00B7 ${esc(r.tech)}` : ""}</span>${cbox("AI", r.reportDone, "Report complete", false, p, r)}</div>`;
+  if (r.delivered) return `<div class="done"><span class="chip ok">Delivered</span> <span class="sub">${esc(pul)}${r.tech ? ` \u00B7 ${esc(r.tech)}` : ""}</span></div>`;
   const key = `cmp|${p.tab}|${r.row}`, rows = p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)), want = { Left: 0, Right: 0, Other: 0 };
   rows.forEach(x => { want[SITES.includes(x.site) ? x.site : "Left"] += x.dur * x.trains; });
   return `<details class="nt" data-open="${esc(key)}"${state.open.has(key) ? " open" : ""}><summary>Complete treatment</summary>
     <div class="sub">${rows.length ? "Protocol calls for: " + rows.map(x => `${esc(x.site || "Protocol " + x.n)} ${x.dur * x.trains} (${x.trains} trains x ${x.dur})`).join("; ") : "No protocol in J2:M4 yet. Enter the pulses delivered."}</div>
     <div class="g3">${SITES.map((s, i) => `<label>${s}<input type="number" min="0" data-pul="${i}" value="${want[s] || ""}"></label>`).join("")}</div>
     <label>Treating technician<input data-tech value="${esc(r.tech || state.techName || "")}"></label>
-    <label class="ck" style="margin-top:8px"><input type="checkbox" data-rep${r.reportDone ? " checked" : ""}> Treatment report complete</label>
     ${bt("pulses", p.tab, r.row, "", "Save treatment", "pri")}</details>`;
 }
 function cardMenu(p, r) {
@@ -459,7 +473,7 @@ function noteForm(p, r) {
     <label>Technician comments</label><textarea data-dk="comments" rows="2">${esc(dr.comments)}</textarea>
     <label>Initials</label><input data-dk="initials" value="${esc(dr.initials)}" maxlength="4" style="width:80px">
     <label>Note${dr.edited ? " (edited by hand)" : ""}</label><textarea data-dk="text" rows="12" class="ntext">${esc(dr.edited ? dr.text : noteText(p, r, dr))}</textarea>
-    <div>${bt("copyNote", p.tab, r.row, "", "Copy note and mark report complete")}${dr.edited ? bt("resetNote", p.tab, r.row, "", "Rebuild from answers") : ""}</div></details>`;
+    <div>${bt("copyNote", p.tab, r.row, "", "Copy note")}${dr.edited ? bt("resetNote", p.tab, r.row, "", "Rebuild from answers") : ""}</div></details>`;
 }
 function visitCard(p, r) {
   const treat = r.type !== "F/U", pay = payOf(p, r), kind = OUTCOMES.find(k => r.note.includes(k)), [tm, ap] = (fmtTime(r.time) || "\u2013 ").split(" ");
@@ -467,7 +481,9 @@ function visitCard(p, r) {
     <div class="cmain"><div class="cname">${ptLink(p)} <span class="chip">${esc(apptTypeName(r))}</span>${r.alt ? ' <span class="chip amb">Other clinic</span>' : ""}</div><div class="sub">MRN ${esc(p.mrnRaw || "not entered")}</div></div>${cardMenu(p, r)}</div>`;
   if (r.miss) return h + `<div class="cbody"><div class="mline"><span class="chip amb">${esc(kind || "Missed")}</span> ${r.freebie ? `<span class="chip">${r.freebie === "Used" ? "Freebie used" : "Waived"}</span>` : bt("classify", p.tab, r.row, "", "Classify freebie", "pri")}</div></div></div>`;
   h += `<div class="cbody">`;
-  if (treat && !r.alt) h += `<div class="pay">${pay > 0 ? `<span>Payment ${money(pay)}</span>${cbox("AJ", r.copayDone, "Collected", false, p, r)}` : `<span class="sub">Payment N/A</span>`}</div>`;
+  if (p.d.bidfToday) h += `<div class="item red bidf"><b>BIDF info needed</b><div class="sub">Enter ${esc(p.d.bidf.join("; "))}</div><button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button></div>`;
+  const priced = (p.cost[billIdx(r)] || {}).after != null;
+  if (!r.alt) h += `<div class="pay">${!priced ? `<span class="sub">Payment not set</span>` : pay > 0 ? `<span>Payment ${money(pay)}</span>` : `<span class="sub">Payment $0.00</span>`}</div>`;
   if (treat && !r.alt) h += completeBlock(p, r);
   if (r.measX) h += measBlock(p, r);
   if (r.type === "MT") h += mtBlock(p, r);
@@ -571,6 +587,7 @@ function viewSched() {
   return html + `<div class="actions"><button data-act="schedSheet">Write this week to the Chair Schedule sheet</button></div>`;
 }
 async function mkSchedSheet() {
+  if (POPOUT) return callPane("mkSchedSheet", []);
   try {
     await Excel.run(async ctx => {
       let ws = ctx.workbook.worksheets.getItemOrNullObject("Clinic Schedule"); await ctx.sync();
@@ -598,9 +615,10 @@ async function mkSchedSheet() {
     toast("Clinic Schedule is ready. Enter hours and closure dates, then refresh."); await refresh();
   } catch (e) { fail(e); }
 }
-async function writeChairSheet() {
+async function writeChairSheet(offset = state.schedOffset) {
+  if (POPOUT) return callPane("writeChairSheet", [offset]);
   try {
-    const mon = weekStart(todaySerial() + state.schedOffset) + 1;
+    const mon = weekStart(todaySerial() + offset) + 1;
     const days = [0, 1, 2, 3, 4].map(i => mon + i), ents = days.map(dayEntries), sls = days.map((d, i) => slotsFor(d, ents[i]));
     const starts = sls.filter(Boolean).flatMap(s => [s.open, s.close]); if (!starts.length) return toast("Enter chair hours on the Clinic Schedule sheet first.", true);
     const step = state.clinic?.slot || 30, lo = Math.min(...starts), hi = Math.max(...starts), times = []; for (let s = lo; s < hi; s += step) times.push(s);
@@ -659,21 +677,27 @@ function viewPatient() {
   const up = d.sched.slice(0, 12), all = p.rows.filter(r => r.date != null).sort(cmp);
   const meas = p.rows.filter(r => r.measVal && r.date != null).sort(cmp);
   const av = state.avDraft && state.avDraft.tab === p.tab ? state.avDraft : (state.avDraft = { tab: p.tab, week: JSON.parse(JSON.stringify(p.week)), ranges: p.avail.map(w => ({ ...w })) });
-  const billRows = BILL.map((b, i) => `<tr><td>${b.code}</td><td>${esc(b.label)}</td><td class="num">${p.bill[i].auth ?? ""}</td><td class="num">${p.bill[i].used}</td><td class="num">${p.bill[i].left ?? ""}</td><td class="num">${money(p.bill[i].copay)}</td></tr>`).join("");
+  const dedOn = p.ben.dedRem > 0, mv = v => v == null ? "" : v;
+  const billRows = BILL.map((b, i) => `<tr><td>${b.code}</td><td>${esc(b.label)}</td><td class="num"><input type="number" min="0" step="0.01" data-cost="X${COST_FIRST + i}" value="${mv(p.cost[i].after)}" aria-label="${esc(b.label)} patient responsibility"></td><td class="num"><input type="number" min="0" step="0.01" data-cost="Y${COST_FIRST + i}" value="${mv(p.cost[i].before)}" aria-label="${esc(b.label)} before deductible"${dedOn ? "" : ` placeholder="n/a"`}></td></tr>`).join("");
+  const dedTxt = p.ben.dedNA ? "N/A" : p.ben.dedRem != null ? p.ben.dedRem : "", oopTxt = p.ben.oopNA ? "N/A" : p.ben.oopRem != null ? p.ben.oopRem : "";
   return `<div class="wk"><button data-act="ptBack">\u2039 Patients</button><span class="cact">${btn("print", p.tab, "", "Print or save schedule")}<button class="sm" data-tab="${esc(p.tab)}">Open tab</button></span></div>
     <h2 class="pth">${esc(p.tab)} <span class="sub">${esc(p.status)}</span></h2>
-    <div class="facts">${fact("MRN", p.mrnRaw)}${fact("Insurance", [p.insurance, p.ben.insType].filter(Boolean).join(", "))}${fact("MD on-site", d.mdOnSite ? "Required" : "No")}${fact("Provider", p.provider)}${fact("Care navigator (TAS)", p.tas)}
-      ${fact("Authorization", p.authStart || p.authExp ? `${fmtDate(p.authStart)} to ${fmtDate(p.authExp)}` : "")}${fact("Treatments", `${d.txDone} of ${d.total}`)}${fact("Graduation", fmtDateY(d.grad))}
-      ${fact("Next follow-up", d.fuNext ? `${fmtDateY(d.fuNext.date)} ${fmtTime(d.fuNext.time)}${d.fuNext.tele ? " tele" : ""}` : "Not scheduled")}${fact("Freebies left", d.left)}${fact("Home clinic", p.home)}${fact("Schedule last given", fmtDateY(p.ben.lastSched))}</div>
+    <div class="facts">${fact("MRN", p.mrnRaw)}${fact("Insurance", p.insurance)}${fact("MD on-site", d.mdOnSite ? "Required" : "No")}${fact("Provider", p.provider)}${fact("Care navigator (TAS)", p.tas)}
+      ${fact("Authorization", p.authStart || p.authExp ? `${fmtDate(p.authStart)} to ${fmtDate(p.authExp)}` : "")}${fact("Treatments", `${d.txDone} of ${d.total}${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}`)}${fact("Graduation", fmtDateY(d.grad))}
+      ${fact("Next follow-up", d.fuNext ? `${fmtDateY(d.fuNext.date)} ${fmtTime(d.fuNext.time)}${d.fuNext.tele ? " tele" : ""}` : "Not scheduled")}${fact("Freebies left", d.left)}${fact("Home clinic", p.home)}${fact("Schedule last given", fmtDateY(p.lastSched))}
+      ${fact("Auth assessment", p.authAssess)}${fact("Progress note sent", fmtDateY(p.progSent))}</div>
+    ${d.bidf.length ? `<div class="item ${d.bidfToday ? "red" : "amb"}"><b>BIDF info needed</b> ${esc(d.bidf.join("; "))}</div>` : ""}
     ${[...d.authFlags, ...d.protoFlags, ...d.benFlags].map(f => `<div class="item amb">${esc(f)}</div>`).join("")}
     <details class="group" data-open="pp|${esc(p.tab)}"${state.open.has("pp|" + p.tab) ? " open" : ""}><summary class="gs">Protocol <span class="sub">${esc(protoText(p))}</span></summary>${protoEditor(p, "pv")}</details>
-    <details class="group" data-open="pb|${esc(p.tab)}"${state.open.has("pb|" + p.tab) ? " open" : ""}><summary class="gs">Billing and benefits <span class="sub">balance ${money(d.balance) || "$0.00"}</span></summary>
-      <div class="facts">${fact("Plan", p.ben.plan)}${fact("BIDF estimate (course)", money(p.ben.bidf))}${fact("Patient cost so far", money(d.accrued))}${fact("Projected course cost", money(d.projected))}
-        ${fact("Out-of-pocket max remaining", p.ben.oopRem != null ? `${money(p.ben.oopRem)} (${Math.min(100, Math.round(100 * d.projected / Math.max(p.ben.oopRem, 0.01)))}% projected)` : "")}${fact("Deductible remaining", money(p.ben.dedRem))}</div>
-      <div class="bal"><b>Estimated balance ${money(d.balance) || "$0.00"}</b> <span class="sub">${d.owed.length} past visit${d.owed.length === 1 ? "" : "s"} not marked collected</span>
-        ${d.owed.length ? `<div class="g2"><input type="number" min="0" step="0.01" data-balpay placeholder="Amount collected"><span>${btn("balPay", p.tab, "", "Record payment")}${btn("balClear", p.tab, "", "Clear balance")}</span></div>` : ""}</div>
-      <table><thead><tr><th>Code</th><th>Visit</th><th class="num">Auth</th><th class="num">Used</th><th class="num">Left</th><th class="num">Pays</th></tr></thead><tbody>${billRows}</tbody></table>
-      <div class="g2" style="margin-top:6px"><label>Extension (90868 visits)<input type="number" min="1" data-extn value="15"></label><label>New auth expiry<input type="date" data-extd></label></div>${btn("extend", p.tab, "", "Add extension")}</details>
+    <details class="group ben" data-open="pb|${esc(p.tab)}"${state.open.has("pb|" + p.tab) ? " open" : ""}><summary class="gs">Benefits and cost <span class="sub">projected ${money(d.projected) || "$0.00"}</span></summary>
+      <div class="facts">${fact("Patient cost so far", money(d.accrued) || "$0.00")}${fact("Projected course cost", money(d.projected) || "$0.00")}
+        ${fact("Out-of-pocket max", p.ben.oopRem != null ? `${money(p.ben.oopRem)} remaining (${Math.min(100, Math.round(100 * d.projected / Math.max(p.ben.oopRem, 0.01)))}% projected)` : "")}</div>
+      <div class="g3"><label>Deductible remaining<input data-benf="W4" value="${esc(dedTxt)}" placeholder="$ or N/A"></label><label>Out-of-pocket max remaining<input data-benf="W5" value="${esc(oopTxt)}" placeholder="$ or N/A"></label><label>BIDF estimated course cost<input type="number" min="0" step="0.01" data-benf="W1" value="${mv(p.ben.bidf)}"></label></div>
+      <table class="cost"><thead><tr><th>Code</th><th>Visit</th><th class="num">PR</th><th class="num">Before ded.</th></tr></thead><tbody>${billRows}</tbody></table>
+      <div class="hint">PR is the patient's cost per visit (after the deductible). With a deductible remaining, enter the before-deductible cost too: column A charges that until the deductible is used up, then PR. Enter N/A when there is no deductible.</div>
+      ${btn("benSave", p.tab, "", "Save benefits")}
+      <div class="g2" style="margin-top:10px"><label>Extension (daily visits)<input type="number" min="1" data-extn value="15"></label><label>New auth expiry<input type="date" data-extd></label></div>
+      <div class="hint">Adds to # of TXs (D2, now ${d.total}) and Extensions added (W7).</div>${btn("extend", p.tab, "", "Add extension")}</details>
     <details class="group" data-open="pm|${esc(p.tab)}"${state.open.has("pm|" + p.tab) ? " open" : ""}><summary class="gs">Measures over time <span class="sub">${meas.length} recorded</span></summary>
       ${meas.length ? `<table><thead><tr><th>Date</th><th>Visit</th><th class="num">PHQ-9</th><th class="num">GAD-7</th></tr></thead><tbody>${meas.map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(r.type)}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td></tr>`).join("")}</tbody></table>` : '<div class="none">No scores yet</div>'}</details>
     <div class="group"><h2>Upcoming appointments<span class="n">${d.sched.length}</span></h2>${up.length ? up.map(r => item(p, `${DAYS[dow(r.date)]} ${fmtDate(r.date)} ${fmtTime(r.time)} <span class="chip ${cardCls(r)}">${esc(apptTypeName(r))}</span>`, "", "", r.row)).join("") : '<div class="none">Nothing booked</div>'}
@@ -682,9 +706,9 @@ function viewPatient() {
     <details class="group" data-open="pa|${esc(p.tab)}"${state.open.has("pa|" + p.tab) ? " open" : ""}><summary class="gs">Availability <span class="sub">${esc(availText(p) || "not entered")}</span></summary>${availEditor(av)}${btn("availSave", p.tab, "", "Save availability")}</details>`;
 }
 function availEditor(av, prefix = "pv") {
-  const wk = [1, 2, 3, 4, 5].map(d => { const w = av.week[d] || {}; return `<div class="g3w"><span>${DAYS[d]}</span><select data-avw="${d}" data-k="avail"><option value=""></option><option${w.avail === "Yes" ? " selected" : ""}>Yes</option><option${w.avail === "No" ? " selected" : ""}>No</option></select><input type="time" data-avw="${d}" data-k="from" value="${minToInput(w.from)}"><input type="time" data-avw="${d}" data-k="to" value="${minToInput(w.to)}"></div>`; }).join("");
+  const wk = [1, 2, 3, 4, 5].map(d => { const w = av.week[d] || {}; return `<div class="g3w"><span>${DAYS[d]}</span><input type="time" data-avw="${d}" data-k="from" value="${minToInput(w.from)}" aria-label="${DAYS[d]} earliest start"><input type="time" data-avw="${d}" data-k="to" value="${minToInput(w.to)}" aria-label="${DAYS[d]} latest start"></div>`; }).join("");
   const rg = av.ranges.map((w, i) => `<div class="g4r"><select data-avr="${i}" data-k="type">${AV_TYPE.map(x => `<option${x === w.type ? " selected" : ""}>${x}</option>`).join("")}</select><input type="date" data-avr="${i}" data-k="from" value="${w.from ? serialToInput(w.from) : ""}"><input type="date" data-avr="${i}" data-k="to" value="${w.to ? serialToInput(w.to) : ""}"><input data-avr="${i}" data-k="note" value="${esc(w.note)}" placeholder="Reason"><button class="sm" data-act="avDel" data-v="${i}" aria-label="Remove">\u00D7</button></div>`).join("");
-  return `<div class="sub">Weekly (start-time window)</div><div class="g3w hdr"><span></span><span>Available?</span><span>Earliest</span><span>Latest</span></div>${wk}
+  return `<div class="sub">Weekly (start-time window)</div><div class="g3w hdr"><span></span><span>Earliest start</span><span>Latest start</span></div>${wk}
     <div class="sub" style="margin-top:6px">Dates (vacation, work, other)</div>${rg || '<div class="none">None entered</div>'}<button class="sm" data-act="avAdd">Add another</button>`;
 }
 function hhmm(v) { if (typeof v !== "number") return ""; const h = Math.floor(v * 24 + 1e-6), m = Math.round((v * 24 - h) * 60); return `${h}:${String(m).padStart(2, "0")}`; }
@@ -696,14 +720,15 @@ function viewProtocols() {
     return `<tr><td>${esc(p.name)}</td><td class="num">${p.rep}</td><td class="num">${p.pulses}</td><td class="num">${p.trains}</td><td class="num">${p.iti}</td><td class="num">${p.inten ?? ""}</td><td class="num">${hhmm(p.typed)}</td><td class="num">${mm}</td></tr>`;
   }).join("");
   return `<table><thead><tr><th>Protocol</th><th class="num">Hz</th><th class="num">Pulses</th><th class="num">Trains</th><th class="num">ITI</th><th class="num">% MT</th><th class="num">Time</th><th class="num">Calc</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="hint">Time = Tx Time on the Protocols sheet as entered (min:sec). Calc = ((pulses / Hz) + ITI) x trains / 60, the same formula as each tab's N2. HF 10Hz is the standard name; X is the internal copy. On a patient tab, pick the protocol in Z7 and the rate, pulses, trains, ITI, time, and intensity fill in for reference.</div>
+    <div class="hint">Time = Tx Time on the Protocols sheet as entered (min:sec). Calc = ((pulses / Hz) + ITI) x trains / 60, the same formula as each tab's N2. HF 10Hz is the standard name; X is the internal copy.</div>
     <div class="actions"><button data-sheet="Protocols">Open Protocols sheet</button></div>`;
 }
 /* ---------- actions ---------- */
 async function setStatus(tab, val) {
-  try { await Excel.run(async ctx => { ctx.workbook.worksheets.getItem(tab).getRange("D7").values = [[val]]; await ctx.sync(); }); toast(`${tab}: ${val}`); await refresh(); } catch (e) { fail(e); }
+  try { await writeCells(tab, [["D7", val]]); toast(`${tab}: ${val}`); await refresh(); } catch (e) { fail(e); }
 }
 async function removeFromAP(tab) {
+  if (POPOUT) return callPane("removeFromAP", [tab]);
   try {
     await Excel.run(async ctx => {
       const ap = ctx.workbook.worksheets.getItem("Active Patients"), r = ap.getRange("B3:B39"); r.load("values"); await ctx.sync();
@@ -713,11 +738,12 @@ async function removeFromAP(tab) {
   } catch (e) { fail(e); }
 }
 const gridCode = r => r.miss ? "Missed" : r.alt ? "Different Clinic" : r.type === "MT" ? "MT" : r.type === "MTR" ? "MTR" : r.type === "F/U" ? "F/U" : "Daily Tx";
-async function fillGrid() {
+async function fillGrid(monday = $("gridMonday").checked) {
+  if (POPOUT) return callPane("fillGrid", [monday]);
   try {
     const n = await Excel.run(async ctx => {
       const ws = ctx.workbook.worksheets.getItem("Active Patients");
-      if ($("gridMonday").checked) { const t = todaySerial(); ws.getRange("N2").values = [[t - ((dow(t) + 6) % 7)]]; await ctx.sync(); }
+      if (monday) { const t = todaySerial(); ws.getRange("N2").values = [[t - ((dow(t) + 6) % 7)]]; await ctx.sync(); }
       const hdr = ws.getRange("N2:W2"), names = ws.getRange("B3:B39"), grid = ws.getRange("N3:W39");
       hdr.load("values"); names.load("values"); grid.load("formulas"); await ctx.sync();
       const dates = hdr.values[0], out = grid.formulas.map(r => r.slice()); let count = 0;
@@ -730,7 +756,12 @@ async function fillGrid() {
     toast(`Filled ${n} cells.`);
   } catch (e) { fail(e); }
 }
-async function writeCells(tab, pairs) { await Excel.run(async ctx => { const ws = ctx.workbook.worksheets.getItem(tab); pairs.forEach(([a, v]) => ws.getRange(a).values = [[v]]); await ctx.sync(); }); }
+/* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true } */
+async function applyOps(ops) {
+  if (POPOUT) return callPane("applyOps", [ops]);
+  await Excel.run(async ctx => { for (const o of ops) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; } await ctx.sync(); });
+}
+const writeCells = (tab, pairs) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })));
 function patchRow(tab, row, f) { const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return; Object.assign(r, f); p.d = derive(p); renderDash(); }
 const findPR = (tab, row) => { const p = state.patients.find(x => x.tab === tab); return [p, p && p.rows.find(x => x.row === row)]; };
 
@@ -747,18 +778,21 @@ function freebieModal(tab, row) {
   showModal(`<h3>${esc(kind)}: ${esc(p.tab)}, ${fmtDateY(r.date)}</h3><p class="sub">Classify this missed visit.</p>${warn ? `<div class="item amb">${esc(warn)}</div>` : ""}
     <div class="actions"><button class="pri" data-mf="Used" data-t="${esc(tab)}" data-row="${row}"${left <= 0 ? " disabled" : ""}>Use freebie</button><button data-mf="Waived" data-t="${esc(tab)}" data-row="${row}">Waived</button><button data-mclose>Decide later</button></div>`);
 }
+/* N7 holds the freebies left: using one takes one off, undoing it gives it back */
 async function setFreebie(tab, row, v) {
   const [p, r] = findPR(tab, row); if (!r) return;
+  const note = withFreebie(r.note, v), n7 = Math.max(0, p.d.left + (r.freebie === "Used" ? 1 : 0) - (v === "Used" ? 1 : 0));
   try {
-    await writeCells(tab, [[`T${row}`, v]]); closeModal(); patchRow(tab, row, { freebie: v });
+    await writeCells(tab, [[`S${row}`, note], ["N7", n7]]); closeModal(); p.freebiesLeft = n7; patchRow(tab, row, { freebie: v, note });
     const left = p.d.left;
     toast(v === "Used" && left <= 1 ? (left === 1 ? "This patient has 1 freebie remaining after marking today's visit." : "This patient has zero remaining freebies.") : v === "Used" ? "Freebie used." : "Marked waived.", v === "Used" && left === 0);
   } catch (e) { fail(e); }
 }
 async function undoMiss(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return;
-  const note = r.note.split("; ").filter(x => !/\(marked in add-in\)$/.test(x)).join("; ");
-  try { await writeCells(tab, [[`M${row}`, ""], [`T${row}`, ""], [`S${row}`, note]]); patchRow(tab, row, { miss: false, freebie: "", note }); toast("Undone."); } catch (e) { fail(e); }
+  const note = withFreebie(r.note.split("; ").filter(x => !/\(marked in add-in\)$/.test(x)).join("; "), "");
+  const pairs = [[`M${row}`, ""], [`S${row}`, note]]; if (r.freebie === "Used") pairs.push(["N7", p.d.left + 1]);
+  try { await writeCells(tab, pairs); if (r.freebie === "Used") p.freebiesLeft = p.d.left + 1; patchRow(tab, row, { miss: false, freebie: "", note }); toast("Undone."); } catch (e) { fail(e); }
 }
 /* pulses delivered = treatment complete (F, H, J). Treating technician goes in B. */
 async function markPulses(tab, row, el) {
@@ -768,8 +802,7 @@ async function markPulses(tab, row, el) {
   if (!tech) return toast("Enter the treating technician.", true);
   const pairs = [["F", vals[0]], ["H", vals[1]], ["J", vals[2]]].filter(([, v]) => v !== "" && v > 0).map(([c, v]) => [`${c}${row}`, v]);
   pairs.push([`B${row}`, tech]); state.techName = tech;
-  const rep = box.querySelector("input[data-rep]"), done = !!(rep && rep.checked); if (done) pairs.push([`AI${row}`, "x"]);
-  try { await writeCells(tab, pairs); patchRow(tab, row, { delivered: true, tech, reportDone: done || r.reportDone, pulses: [vals[0] || null, vals[1] || null, vals[2] || null] }); toast(done ? "Treatment saved and report marked complete." : "Treatment saved."); } catch (e) { fail(e); }
+  try { await writeCells(tab, pairs); patchRow(tab, row, { delivered: true, tech, pulses: [vals[0] || null, vals[1] || null, vals[2] || null] }); toast("Treatment saved."); } catch (e) { fail(e); }
 }
 async function saveMeasures(tab, row, el) {
   const [p, r] = findPR(tab, row); if (!r) return;
@@ -812,50 +845,37 @@ async function saveProtocol(tab, el) {
   }
   try { await writeCells(tab, pairs); toast("Protocol saved."); await refresh(); } catch (e) { fail(e); }
 }
-async function flagChange(el) {
-  const tab = el.dataset.t, row = +el.dataset.row, col = el.dataset.flag, on = el.checked;
-  try { await writeCells(tab, [[`${col}${row}`, on ? "x" : ""]]); patchRow(tab, row, col === "AI" ? { reportDone: on } : { copayDone: on }); }
-  catch (e) { el.checked = !on; fail(e); }
-}
-/* balance: clear marks every owed visit collected; a payment marks the oldest owed visits until the amount is used */
-async function balanceAction(tab, mode, el) {
-  const p = state.patients.find(x => x.tab === tab); if (!p) return;
-  let rows = p.d.owed.slice().sort(cmp);
-  if (mode === "pay") {
-    let amt = +el.closest(".bal").querySelector("input[data-balpay]").value; if (!(amt > 0)) return toast("Enter the amount collected.", true);
-    const picked = []; for (const r of rows) { const v = payOf(p, r); if (amt + 0.005 < v) break; amt -= v; picked.push(r); }
-    if (!picked.length) return toast("That amount does not cover the oldest visit's payment.", true);
-    rows = picked;
+/* benefits: W1 BIDF estimate, W4 deductible and W5 OOP max (an amount or N/A), cost by code in X (PR) and Y (before deductible) */
+const benVal = v => { const s = String(v ?? "").trim().replace(/[$,]/g, ""); return s === "" ? "" : isNA(s) ? "N/A" : isNaN(Number(s)) ? null : Number(s); };
+async function saveBenefits(tab, data) {
+  const pairs = [];
+  for (const [a, raw] of Object.entries(data)) {
+    const v = benVal(raw); if (v === null) return toast(`${a}: enter an amount${/^W[45]$/.test(a) ? " or N/A" : ""}.`, true);
+    if (v === "N/A" && !/^W[45]$/.test(a)) return toast(`${a}: enter an amount.`, true);
+    pairs.push([a, v]);
   }
-  try { await writeCells(tab, rows.map(r => [`AJ${r.row}`, "x"])); toast(`${rows.length} visit${rows.length > 1 ? "s" : ""} marked collected.`); await refresh(); } catch (e) { fail(e); }
+  try { await writeCells(tab, pairs); toast("Benefits saved."); await refresh(); } catch (e) { fail(e); }
 }
-async function addExtension(tab, el) {
+/* an extension adds daily visits: # of TXs (D2) and Extensions added (W7) go up; the auth expiry moves if given */
+async function addExtension(tab, { n, exp }) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
-  const box = el.closest("details"), n = +box.querySelector("input[data-extn]").value, exp = inputToSerial(box.querySelector("input[data-extd]").value);
   if (!(n > 0)) return toast("Enter the number of visits.", true);
-  const pairs = [[`AA${BILL_FIRST + 1}`, (p.bill[1].auth || 0) + n], ["D2", (p.txApproved || 36) + n], ["Z12", (p.ben.ext || 0) + n]];
+  const pairs = [["D2", (p.txApproved || 36) + n], ["W7", (p.ben.ext || 0) + n]];
   if (exp) pairs.push(["G4", exp]);
-  try { await writeCells(tab, pairs); toast(`Added ${n} daily visits${exp ? `, auth now expires ${fmtDate(exp)}` : ""}.`); await refresh(); } catch (e) { fail(e); }
+  try { await writeCells(tab, pairs); toast(`Added ${n} daily visits. # of TXs is now ${(p.txApproved || 36) + n}${exp ? `, auth expires ${fmtDate(exp)}` : ""}.`); await refresh(); } catch (e) { fail(e); }
 }
 function readAvailEditor(root, av) {
-  root.querySelectorAll("[data-avw]").forEach(i => { const d = +i.dataset.avw, k = i.dataset.k; av.week[d] = av.week[d] || {}; av.week[d][k] = k === "avail" ? i.value : (i.value ? (([h, m]) => +h * 60 + +m)(i.value.split(":")) : null); });
+  root.querySelectorAll("[data-avw]").forEach(i => { const d = +i.dataset.avw, k = i.dataset.k; av.week[d] = av.week[d] || {}; av.week[d][k] = i.value ? (([h, m]) => +h * 60 + +m)(i.value.split(":")) : null; });
   root.querySelectorAll("[data-avr]").forEach(i => { const w = av.ranges[+i.dataset.avr]; if (!w) return; const k = i.dataset.k; w[k] = k === "from" || k === "to" ? inputToSerial(i.value) : i.value; });
 }
-async function saveAvailability(tab) {
-  const av = state.avDraft; if (!av || av.tab !== tab) return; readAvailEditor($("ptsBody"), av);
-  const wk = [1, 2, 3, 4, 5].map(d => { const w = av.week[d] || {}; return [w.avail || "", w.from != null ? w.from / 1440 : "", w.to != null ? w.to / 1440 : ""]; });
+/* weekly start window in W20:X24 (Monday to Friday), dates in V29:Y48 */
+async function saveAvailability(tab, av) {
+  const wk = [1, 2, 3, 4, 5].map(d => { const w = av.week[d] || {}; return [w.from != null ? w.from / 1440 : "", w.to != null ? w.to / 1440 : ""]; });
   const rg = av.ranges.filter(w => w.from).map(w => [w.type || "Unavailable", w.from, w.to || w.from, w.note || ""]);
   if (rg.length > AV_LAST - AV_FIRST + 1) return toast("Too many date ranges for the tab.", true);
-  try {
-    await Excel.run(async ctx => {
-      const ws = ctx.workbook.worksheets.getItem(tab);
-      ws.getRange("AE27:AG31").values = wk;
-      ws.getRange(`Y${AV_FIRST}:AB${AV_LAST}`).clear("Contents");
-      if (rg.length) ws.getRange(`Y${AV_FIRST}:AB${AV_FIRST + rg.length - 1}`).values = rg;
-      await ctx.sync();
-    });
-    state.avDraft = null; toast("Availability saved."); await refresh();
-  } catch (e) { fail(e); }
+  const ops = [{ tab, a: `W${WK_FIRST}:X${WK_FIRST + 4}`, v: wk }, { tab, a: `V${AV_FIRST}:Y${AV_LAST}`, clear: true }];
+  if (rg.length) ops.push({ tab, a: `V${AV_FIRST}:Y${AV_FIRST + rg.length - 1}`, v: rg });
+  try { await applyOps(ops); state.avDraft = null; toast("Availability saved."); await refresh(); } catch (e) { fail(e); }
 }
 
 /* ---------- treatment note drafter (Daily treatments only) ---------- */
@@ -905,8 +925,7 @@ async function noteAction(a, tab, row, el) {
   const ok = await copyText(text, ta);
   if (!ok) return toast("Copy was blocked. The note is selected: press Ctrl+C, then tick Treatment report complete.", true);
   state.initials = dr.initials.trim();
-  try { await writeCells(tab, [[`AI${row}`, "x"]]); dr.open = false; patchRow(tab, row, { reportDone: true }); toast("Note copied. Treatment report marked complete."); }
-  catch (e) { fail(e); }
+  dr.open = false; renderDash(); toast("Note copied.");
 }
 function draftInput(el) {
   const det = el.closest("details[data-draft]"); if (!det) return false;
@@ -948,102 +967,79 @@ function planMeasures(p) {
 async function placeMeasures(patients) {
   const plans = patients.map(p => ({ tab: p.tab, ops: planMeasures(p) })).filter(x => x.ops.length);
   if (!plans.length) return 0;
-  await Excel.run(async ctx => { for (const x of plans) { const ws = ctx.workbook.worksheets.getItem(x.tab); x.ops.forEach(([a, v]) => ws.getRange(a).values = [[v]]); } await ctx.sync(); });
+  await applyOps(plans.flatMap(x => x.ops.map(([a, v]) => ({ tab: x.tab, a, v: [[v]] }))));
   return plans.reduce((n, x) => n + x.ops.filter(o => o[0][0] !== "O").length, 0);
 }
 async function placeMeasuresClick() {
   try { const n = await placeMeasures(state.patients.filter(p => p.d.active)); toast(n ? `Placed ${n} measure placeholder${n > 1 ? "s" : ""}.` : "Measure placeholders are already in place."); await refresh(); } catch (e) { fail(e); }
 }
-/* ---------- tracker columns (kept to the right of Notes, legend shifted one column for the protocol Site labels) ---------- */
-const prF = r => `=IF($L${r}="","",IF($L${r}="MT",$AE$18,IF(OR($L${r}="Daily",$L${r}="Taper"),$AE$19,IF($L${r}="MTR",$AE$20,IF($L${r}="F/U",IF(ISNUMBER(SEARCH("tele",$S${r})),$AE$22,$AE$21),"")))))`;
-function writeFreebieBlock(ws, allowed) {
-  ws.getRange("T1:U4").values = [["Freebies allowed", allowed], ["Used", ""], ["Waived", ""], ["Remaining", ""]];
-  ws.getRange("U2:U4").formulas = [[`=COUNTIF($T$${LOG_FIRST}:$T$${LOG_LAST},"Used")`], [`=COUNTIF($T$${LOG_FIRST}:$T$${LOG_LAST},"Waived")`], ["=MAX(0,U1-U2)"]];
-  ws.getRange("T1:T4").format.font.bold = true; ws.getRange("U1").format.fill.color = "#fff8dc"; ws.getRange("U1:U4").format.horizontalAlignment = "Left";
-}
-function ensureWeekly(ws) {
-  ws.getRange("AD25").values = [["WEEKLY AVAILABILITY"]]; ws.getRange("AD26:AG26").values = [["Day", "Available?", "Earliest start", "Latest start"]];
-  ws.getRange("AD27:AD31").values = [["Monday"], ["Tuesday"], ["Wednesday"], ["Thursday"], ["Friday"]];
-  ws.getRange("AE27:AE31").dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
-  ws.getRange("AF27:AG31").numberFormat = Array(5).fill(["h:mm AM/PM", "h:mm AM/PM"]);
-  ws.getRange("AD25").format.font.bold = true; ws.getRange("AD26:AG26").format.font.bold = true; ws.getRange("AD26:AG26").format.fill.color = "#e2f1f1";
-  ws.getRange("AE27:AG31").format.fill.color = "#fff8dc"; ws.getRange("Y25").values = [["UNAVAILABLE / AVAILABLE DATES"]]; ws.getRange("AB26").values = [["Reason"]];
-  ws.getRange("AD:AD").format.columnWidth = 95; ws.getRange("AE:AG").format.columnWidth = 95;
-}
-function ensureTodayCols(ws) {
-  ws.getRange("AI8:AJ8").values = [["Report done", "Payment collected"]];
-  ["AI", "AJ"].forEach(c => {
-    ws.getRange(`${c}8`).copyFrom("S8", Excel.RangeCopyType.formats); ws.getRange(`${c}${LOG_FIRST}:${c}${LOG_LAST}`).copyFrom(`R${LOG_FIRST}:R${LOG_LAST}`, Excel.RangeCopyType.formats);
-    ws.getRange(`${c}${LOG_FIRST}:${c}${LOG_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: "x" } };
-  });
-  ws.getRange("AM1").values = [["External report as of"]]; ws.getRange("AM1").format.font.bold = true; ws.getRange("AN1").numberFormat = [["m/d/yyyy"]];
-  ws.getRange("AI:AJ").format.columnWidth = 90; ws.getRange("AM:AM").format.columnWidth = 130; ws.getRange("AN:AN").format.columnWidth = 90;
-}
-async function shiftLegend(ctx, ws) {
-  const o1 = ws.getRange("O1"); o1.load("values"); await ctx.sync(); if (o1.values[0][0] === "Site") return;
-  ws.getRange("Q1:Q7").copyFrom("P1:P7", Excel.RangeCopyType.all);
-  ws.getRange("P1:P7").copyFrom("O1:O7", Excel.RangeCopyType.formats);
-  ws.getRange("P1:P7").clear("Contents");
-  for (let r = 1; r <= 7; r++) ws.getRange(`Q${r}:S${r}`).merge(false);
-  ws.getRange("O1:O7").clear();
-  ws.getRange("O1").values = [["Site"]]; ws.getRange("O1").format.font.bold = true; ws.getRange("O1").format.horizontalAlignment = "Center";
-  ws.getRange("O2:O4").dataValidation.rule = { list: { inCellDropDown: true, source: SITES.join(",") } }; ws.getRange("O2:O4").format.fill.color = "#fff8dc";
-}
-function writeBenefits(ws) {
-  ws.getRange("Y6:Y15").values = [["BENEFITS"], ["Plan type"], ["Insurance type"], ["Deductible remaining"], ["Out-of-pocket max remaining"], ["MTR approved"], ["Extensions added (90868)"], ["Last schedule provided"], [""], ["BIDF estimated course cost"]];
-  ws.getRange("Z7").dataValidation.rule = { list: { inCellDropDown: true, source: PLAN_TYPES.join(",") } };
-  ws.getRange("Z8").dataValidation.rule = { list: { inCellDropDown: true, source: INS_TYPES.join(",") } };
-  ws.getRange("Z11").dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
-  ["Z9", "Z10", "Z15"].forEach(a => ws.getRange(a).numberFormat = [["$#,##0.00"]]); ws.getRange("Z13").numberFormat = [["m/d/yyyy"]];
-  ["Y6", "Y15"].forEach(a => ws.getRange(a).format.font.bold = true);
-  ["Z7:Z12", "Z15"].forEach(a => ws.getRange(a).format.fill.color = "#fff8dc"); ws.getRange("Z6:Z15").format.horizontalAlignment = "Left";
-}
-function writeBilling(ws) {
-  ws.getRange("Y16").values = [["BILLING AND AUTH BY CODE"]];
-  ws.getRange("Y17:AE17").values = [["Code", "Visit", "Auth qty", "Used", "Left", "Charge", "Patient pays"]];
-  ws.getRange("Y18:Z22").values = BILL.map(b => [b.code, b.label]);
-  const del = `((($F$${LOG_FIRST}:$F$${LOG_LAST}<>"")+($H$${LOG_FIRST}:$H$${LOG_LAST}<>"")+($J$${LOG_FIRST}:$J$${LOG_LAST}<>""))>0)`, Lr = `$L$${LOG_FIRST}:$L$${LOG_LAST}`;
-  const fu = tele => `=SUMPRODUCT((${Lr}="F/U")*(ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${LOG_LAST}))=${tele})*($M$${LOG_FIRST}:$M$${LOG_LAST}<>"x")*($E$${LOG_FIRST}:$E$${LOG_LAST}<>"")*($E$${LOG_FIRST}:$E$${LOG_LAST}<TODAY()))`;   // a follow-up counts as used once its day has passed
-  ws.getRange("AB18:AB22").formulas = [[`=SUMPRODUCT((${Lr}="MT")*${del})`], [`=SUMPRODUCT(((${Lr}="Daily")+(${Lr}="Taper"))*${del})`], [`=SUMPRODUCT((${Lr}="MTR")*${del})`], [fu("FALSE")], [fu("TRUE")]];
-  ws.getRange("AC18:AC22").formulas = [18, 19, 20, 21, 22].map(r => [`=IF(AA${r}="","",AA${r}-AB${r})`]);
-  ws.getRange("AD18:AE22").numberFormat = Array(5).fill(["$#,##0.00", "$#,##0.00"]);
-  ["Y16", "Y17:AE17"].forEach(a => ws.getRange(a).format.font.bold = true); ws.getRange("Y17:AE17").format.fill.color = "#e2f1f1";
-  ["AA18:AA22", "AD18:AE22"].forEach(a => ws.getRange(a).format.fill.color = "#fff8dc");
-}
-async function ensureColumns(ctx, ws, f = { full: true }) {
-  const all = !!f.full;
-  if (f.legacy) ["V8:X49", "AK8:AK49"].forEach(a => ws.getRange(a).clear("Contents"));   // pilot columns no longer used: tele is a Notes tag, cost is column A
-  if (all) {
-    const aCells = ws.getRange(`A${LOG_FIRST}:A${LOG_LAST}`); aCells.load("formulas"); await ctx.sync();
-    ws.getRange("T8:U8").values = [["Freebie", "Time"]];
-    ["T", "U"].forEach(c => { ws.getRange(`${c}8`).copyFrom("S8", Excel.RangeCopyType.formats); ws.getRange(`${c}${LOG_FIRST}:${c}${LOG_LAST}`).copyFrom(`R${LOG_FIRST}:R${LOG_LAST}`, Excel.RangeCopyType.formats); });
-    ws.getRange(`U${LOG_FIRST}:U${LOG_LAST}`).numberFormat = [["h:mm AM/PM"]];
-    ws.getRange(`T${LOG_FIRST}:T${LOG_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: FREEBIE.join(",") } };
-    const cf = ws.getRange(`T${LOG_FIRST}:T${LOG_LAST}`).conditionalFormats.add(Excel.ConditionalFormatType.custom);
-    cf.custom.rule.formula = `=AND($M${LOG_FIRST}="x",$T${LOG_FIRST}="")`; cf.custom.format.fill.color = "#FDE9B8";
-    aCells.formulas = aCells.formulas.map((v, i) => [String(v[0]) !== "" ? v[0] : prF(LOG_FIRST + i)]);   // PR (patient responsibility): only blank cells get the formula
-    ws.getRange("D7").dataValidation.clear(); ws.getRange("D7").dataValidation.rule = { list: { inCellDropDown: true, source: STATUSES.join(",") } };
-    ws.getRange("D6").dataValidation.clear(); ws.getRange("D6").dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
-    writeBilling(ws);
-    ws.getRange("Y25").values = [["UNAVAILABLE / AVAILABLE DATES"]]; ws.getRange("Y26:AB26").values = [["Type", "From", "To", "Reason"]];
-    ws.getRange(`Y${AV_FIRST}:Y${AV_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: AV_TYPE.join(",") } };
-    ws.getRange(`Z${AV_FIRST}:AA${AV_LAST}`).numberFormat = [["m/d/yyyy"]];
-    ["Y25", "Y26:AB26"].forEach(a => ws.getRange(a).format.font.bold = true); ws.getRange("Y26:AB26").format.fill.color = "#e2f1f1";
-    ws.getRange("T:T").format.columnWidth = 110; ws.getRange("U:U").format.columnWidth = 70; ws.getRange("Y:Y").format.columnWidth = 190; ws.getRange("Z:AE").format.columnWidth = 95;
+/* ---------- Update tabs: the template owns the layout. The add-in only adds the before-deductible cost column (Y11:Y16)
+   and the PR formula in column A, and rebuilds tabs from an earlier layout as fresh copies of New Template. ---------- */
+/* PR (patient responsibility) per visit. With a deductible in W4, visits charge the before-deductible cost (Y) in date order
+   until W4 is used up; the visit that crosses it pays what is left plus PR on the rest; then PR (X). Missed visits are not charged. */
+const prF = r => `=IF(OR($L${r}="",$M${r}="x"),"",LET(L,$L$${LOG_FIRST}:$L$${LOG_LAST},M,$M$${LOG_FIRST}:$M$${LOG_LAST},E,$E$${LOG_FIRST}:$E$${LOG_LAST},tl,ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${LOG_LAST})),`
+  + `c,LAMBDA(col,(L="MT")*N(INDEX(col,1))+((L="Daily")+(L="Taper"))*N(INDEX(col,2))+(L="MTR")*N(INDEX(col,3))+(L="F/U")*NOT(tl)*N(INDEX(col,4))+(L="F/U")*tl*N(INDEX(col,5))),`
+  + `aft,c($X$${COST_FIRST}:$X$${COST_FIRST + 4}),bef,c($Y$${COST_FIRST}:$Y$${COST_FIRST + 4}),i,ROW()-${LOG_FIRST - 1},a,INDEX(aft,i),b,INDEX(bef,i),d,$W$4,`
+  + `IF(OR(NOT(ISNUMBER(d)),d<=0,b<=0),a,LET(key,IF(E="",1E6,E)*100+ROW(E),rem,MAX(0,d-SUMPRODUCT(bef*(M<>"x")*(key<INDEX(key,i)))),IF(rem<=0,a,IF(b<=rem,b,rem+a*(b-rem)/b))))))`;
+/* a PR cell is ours to replace when it is blank or still holds a cost-table lookup; a typed amount is left alone */
+const isPrFormula = f => f === "" || f == null || (typeof f === "string" && f.startsWith("=") && /\$X\$12|\$AE\$18|LET\(/.test(f));
+async function ensureCost(ctx, ws) {
+  const a = ws.getRange(`A${LOG_FIRST}:A${LOG_LAST}`), y = ws.getRange("Y11"); a.load("formulas"); y.load("values"); await ctx.sync();
+  if (String(y.values[0][0]).trim() !== BEFORE_HDR) {
+    ws.getRange(`Y11:Y${COST_FIRST + 4}`).copyFrom(`X11:X${COST_FIRST + 4}`, Excel.RangeCopyType.formats);
+    ws.getRange("Y11").values = [[BEFORE_HDR]];
   }
-  if (all || f.freebie) {
-    let allowed = 3; if (!all) { const z1 = ws.getRange("Z1"); z1.load("values"); await ctx.sync(); if (typeof z1.values[0][0] === "number") allowed = z1.values[0][0]; ws.getRange("Y1:Z4").clear(); }
-    writeFreebieBlock(ws, allowed);
+  ws.getRange("W4").dataValidation.clear();   // an amount or N/A
+  ws.getRange(`X${COST_FIRST}:Y${COST_FIRST + 4}`).numberFormat = Array(5).fill(["$#,##0.00", "$#,##0.00"]);
+  a.formulas = a.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i) : v[0]]);
+}
+/* copy an earlier-layout tab's entries into a fresh copy of New Template; the earlier tab is kept as "NAME (old)" */
+async function rebuildTab(ctx, name) {
+  const old = ctx.workbook.worksheets.getItem(name), tpl = ctx.workbook.worksheets.getItem("New Template");
+  const src = old.getRange("A1:AN49"); src.load("formulas"); old.load("position"); await ctx.sync();
+  const F = src.formulas, at = a => { const m = a.match(/^([A-Z]+)(\d+)$/), c = m[1].split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1; return F[+m[2] - 1][c]; };
+  const isK = v => !(typeof v === "string" && v.startsWith("="));   // a typed entry, not a formula
+  const txt = a => String(at(a) ?? "").trim();
+  const pos = old.position; old.name = `${name} (old)`.slice(0, 31);
+  const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
+  const put = (a, v) => { ws.getRange(a).values = [[v]]; };
+  ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
+  for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
+  const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N6", assess);
+  /* visit log: typed entries only, so the template's formulas (A, D, G, I, K) stay */
+  const pilot = txt("T8").toLowerCase() === "freebie", timeCol = pilot ? "U" : txt("T8").toLowerCase() === "time" ? "T" : null;
+  let used = 0;
+  for (let r = LOG_FIRST; r <= LOG_LAST; r++) {
+    ["B", "C", "E", "F", "H", "J", "L", "M", "N", "O", "P", "Q", "R"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); });
+    let note = isK(at("S" + r)) ? String(at("S" + r) ?? "") : "";
+    if (pilot && FREEBIE_TAG[txt("T" + r)]) { note = withFreebie(note, txt("T" + r)); if (txt("T" + r) === "Used") used++; }
+    if (note !== "") put("S" + r, note);   // a blank keeps the template's prompt (MT row, final Kaiser reminder)
+    if (timeCol) { const v = at(timeCol + r); if (isK(v)) put("T" + r, v); }
   }
-  if (all || f.site) await shiftLegend(ctx, ws);
-  if (all || f.benefits) { if (!all) ws.getRange("Y6:Z14").clear(); writeBenefits(ws); }
-  if (all || f.weekly) ensureWeekly(ws);
-  if (all || f.today) ensureTodayCols(ws);
+  /* benefits, costs and availability from the pilot add-in's columns, when present */
+  if (txt("Y7") === "Plan type") [["Z9", "W4"], ["Z10", "W5"], ["Z11", "W6"], ["Z12", "W7"], ["Z13", "W8"], ["Z15", "W1"]].forEach(([s, d]) => { const v = at(s); if (v !== "" && isK(v)) put(d, v); });
+  if (txt("Y16") === "BILLING AND AUTH BY CODE") for (let i = 0; i < 5; i++) { const v = at(`AE${18 + i}`); if (typeof v === "number") put(`X${COST_FIRST + i}`, v); }
+  if (txt("AD25") === "WEEKLY AVAILABILITY") for (let i = 0; i < 5; i++) ["AF", "AG"].forEach((c, j) => { const v = at(`${c}${27 + i}`); if (typeof v === "number") put(`${j ? "X" : "W"}${WK_FIRST + i}`, v); });
+  if (txt("Y26") === "Type") {
+    const rg = []; for (let r = 27; r <= 48; r++) if (AV_TYPE.includes(txt("Y" + r))) rg.push(["Y", "Z", "AA", "AB"].map(c => at(c + r)));
+    rg.slice(0, AV_LAST - AV_FIRST + 1).forEach((v, i) => ws.getRange(`V${AV_FIRST + i}:Y${AV_FIRST + i}`).values = [v]);
+  }
+  const fb = old.getRange("U4"); fb.load("values"); await ctx.sync();
+  put("N7", txt("T1") === "Freebies allowed" && typeof fb.values[0][0] === "number" ? fb.values[0][0] : Math.max(0, 3 - used));
+  await ctx.sync();
 }
 async function setupColumns() {
+  if (POPOUT) return callPane("setupColumns", []);
   try {
-    await Excel.run(async ctx => { for (const [n, f] of state.fix) await ensureColumns(ctx, ctx.workbook.worksheets.getItem(n), f); await ctx.sync(); });
-    toast("Tabs updated."); await refresh();
+    if (state.old.length && !state.templateOk) return toast("New Template must match the current layout before earlier tabs can be rebuilt.", true);
+    await Excel.run(async ctx => {
+      const ws = n => ctx.workbook.worksheets.getItem(n);
+      if (state.fix.has("New Template")) await ensureCost(ctx, ws("New Template"));
+      for (const n of state.old) await rebuildTab(ctx, n);
+      for (const n of state.fix.keys()) if (n !== "New Template") await ensureCost(ctx, ws(n));
+      await ctx.sync();
+    });
+    toast(state.old.length ? `Tabs updated. Check the rebuilt tabs, then delete the "(old)" copies.` : "Tabs updated."); await refresh();
   } catch (e) { fail(e); }
 }
 
@@ -1055,64 +1051,69 @@ function updateApTab() {
   const c = +$("apCourse").value || 1;
   $("apTab").textContent = code ? `Tab name: ${c > 1 ? `${code} ${c}` : code}${mx ? ` (existing courses: ${mx})` : ""}` : "";
 }
-function autoAuth() {
-  const txs = +$("apTxs").value || 36, mtr = $("apMtr").value === "Yes" ? 1 : 0;
-  const set = (i, v) => { const el = $("apQ" + i); if (el && !el.dataset.edited) el.value = v; };
-  set(0, 1); set(2, mtr); set(1, Math.max(0, txs - 1 - mtr));
-  const flat = $("apPlan").value === "Flat copay" ? $("apFlat").value : "";
-  $("apFlatBox").hidden = $("apPlan").value !== "Flat copay";
-  if (flat !== "") [0, 1, 2].forEach(i => { const el = $("apP" + i); if (el && !el.dataset.edited) el.value = flat; });
-}
 function renderApRanges() {
-  $("apRanges").innerHTML = state.apRanges.map((w, i) => `<div class="g4r"><input type="date" data-apr="${i}" data-k="from" value="${w.from || ""}"><input type="date" data-apr="${i}" data-k="to" value="${w.to || ""}"><input data-apr="${i}" data-k="note" value="${esc(w.note || "")}" placeholder="Reason"><button class="sm" data-apact="del" data-v="${i}" aria-label="Remove">\u00D7</button></div>`).join("") || '<div class="none">None</div>';
+  $("apRanges").innerHTML = state.apRanges.map((w, i) => `<div class="g4r"><input type="date" data-apr="${i}" data-k="from" value="${w.from || ""}" aria-label="Away from"><input type="date" data-apr="${i}" data-k="to" value="${w.to || ""}" aria-label="Away to"><input data-apr="${i}" data-k="note" value="${esc(w.note || "")}" placeholder="Reason"><button class="sm" data-apact="del" data-v="${i}" aria-label="Remove">×</button></div>`).join("") || '<div class="none">None</div>';
 }
 function fillAddPatientForm() {
   if (!$("apBill").children.length) {
-    $("apBill").innerHTML = BILL.map((b, i) => `<div class="row3"><span>${b.code}<br>${esc(b.label)}</span><input id="apQ${i}" type="number" min="0"><input id="apP${i}" type="number" min="0" step="0.01"></div>`).join("");
-    $("apWeek").innerHTML = [1, 2, 3, 4, 5].map(d => `<div class="row3 w4"><span>${DAYS[d]}</span><select id="apW${d}"><option value=""></option><option>Yes</option><option>No</option></select><input id="apWf${d}" type="time"><input id="apWt${d}" type="time"></div>`).join("");
-    BILL.forEach((b, i) => ["apQ", "apP"].forEach(k => $(k + i).addEventListener("input", e => e.target.dataset.edited = "1")));
-    state.apRanges = state.apRanges || [{}]; renderApRanges(); autoAuth();
+    $("apBill").innerHTML = BILL.map((b, i) => `<div class="row3"><span>${b.code}<br>${esc(b.label)}</span><input id="apX${i}" type="number" min="0" step="0.01" aria-label="${esc(b.label)} PR"><input id="apY${i}" type="number" min="0" step="0.01" aria-label="${esc(b.label)} before deductible"></div>`).join("");
+    $("apWeek").innerHTML = [1, 2, 3, 4, 5].map(d => `<div class="row3"><span>${DAYS[d]}</span><input id="apWf${d}" type="time" aria-label="${DAYS[d]} earliest start"><input id="apWt${d}" type="time" aria-label="${DAYS[d]} latest start"></div>`).join("");
+    state.apRanges = state.apRanges || [{}]; renderApRanges();
   }
 }
-async function addPatient() {
-  const code = apCode(), course = +$("apCourse").value || 1, name = course > 1 ? `${code} ${course}` : code, v = id => $(id).value.trim();
+const AP_FIELDS = ["apLast", "apFirst", "apCode", "apCourse", "apMrn", "apDob", "apHome", "apMd", "apIns", "apAuthStart", "apAuthExp", "apAssess", "apTxs", "apRedos", "apMtr", "apDed", "apOop", "apBidf"];
+function collectAddPatient() {
+  document.querySelectorAll("[data-apr]").forEach(i => { state.apRanges[+i.dataset.apr][i.dataset.k] = i.value; });
+  const d = Object.fromEntries(AP_FIELDS.map(id => [id, $(id).value.trim()]));
+  d.code = apCode(); d.cost = BILL.map((b, i) => [$("apX" + i).value, $("apY" + i).value]);
+  d.week = [1, 2, 3, 4, 5].map(k => [$("apWf" + k).value, $("apWt" + k).value]); d.ranges = state.apRanges.filter(w => w.from).map(w => ({ ...w }));
+  return d;
+}
+function resetAddPatient() {
+  AP_FIELDS.forEach(i => $(i).value = ""); BILL.forEach((b, i) => { $("apX" + i).value = ""; $("apY" + i).value = ""; });
+  [1, 2, 3, 4, 5].forEach(k => { $("apWf" + k).value = ""; $("apWt" + k).value = ""; });
+  $("apHome").value = "SRL"; $("apTxs").value = 36; $("apRedos").value = 0; $("apCourse").value = 1; $("apNote").textContent = ""; state.apRanges = [{}]; renderApRanges();
+  state.codeEdited = state.courseEdited = false; updateApTab();
+}
+/* copies New Template and fills the header, benefits, cost by code and availability in the template's own cells */
+async function addPatient(d) {
+  if (POPOUT) { const ok = await callPane("addPatient", [d]); if (ok) { resetAddPatient(); if (state.file) { show("imp"); await buildPlan(); } } return ok; }
+  const code = d.code, course = +d.apCourse || 1, name = course > 1 ? `${code} ${course}` : code;
   if (!code) return toast("Enter a name or a LASFIR code.", true);
   if (!state.templateOk) return toast("New Template does not match the current layout, so a new tab cannot be created from it.", true);
-  const mrnTyped = normMrn(v("apMrn")); document.querySelectorAll("[data-apr]").forEach(i => { state.apRanges[+i.dataset.apr][i.dataset.k] = i.value; });
+  const ded = benVal(d.apDed), oop = benVal(d.apOop), bidf = benVal(d.apBidf);
+  if (ded === null || oop === null) return toast("Deductible and out-of-pocket max: enter an amount or N/A.", true);
+  if (bidf === null || bidf === "N/A") return toast("BIDF estimate: enter an amount.", true);
+  const tf = s => { const m = String(s || "").match(/^(\d{2}):(\d{2})$/); return m ? (+m[1] * 60 + +m[2]) / 1440 : ""; };
   try {
     await Excel.run(async ctx => {
       const wsAll = ctx.workbook.worksheets;
       const ex = wsAll.getItemOrNullObject(name), tpl = wsAll.getItemOrNullObject("New Template"), ap = wsAll.getItemOrNullObject("Active Patients"); await ctx.sync();
       if (!ex.isNullObject) throw new Error(`A tab named ${name} already exists.`);
       if (tpl.isNullObject) throw new Error("There is no New Template tab to copy.");
-      if (state.fix.has("New Template")) { await ensureColumns(ctx, tpl, state.fix.get("New Template")); state.fix.delete("New Template"); }
+      if (state.fix.has("New Template")) { await ensureCost(ctx, tpl); state.fix.delete("New Template"); }
       const names = ap.isNullObject ? null : ap.getRange("B3:B39"); if (names) names.load("values"); await ctx.sync();
       const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name;
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
-      set("A2", code); set("A4", v("apMrn")); set("D2", +v("apTxs") || 36); set("D6", v("apMd")); set("E6", v("apIns")); set("M7", v("apAssess"));
-      const dob = inputToSerial(v("apDob")); if (dob) { ws.getRange("A6").values = [[dob]]; ws.getRange("A6").numberFormat = [["m/d/yyyy"]]; }
-      set("F4", inputToSerial(v("apAuthStart"))); set("G4", inputToSerial(v("apAuthExp")));
+      set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N6", d.apAssess);
+      set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
       ws.getRange("D7").values = [["Pending Start"]];
-      if (v("apHome")) ws.getRange("S9").values = [[`Home Clinic: ${v("apHome")}`]];
-      set("Z7", v("apPlan")); set("Z8", v("apInsType")); set("Z9", v("apDed") === "" ? "" : +v("apDed")); set("Z10", v("apOop") === "" ? "" : +v("apOop"));
-      set("Z11", v("apMtr")); ws.getRange("Z12").values = [[0]]; set("Z15", v("apBidf") === "" ? "" : +v("apBidf"));
-      BILL.forEach((b, i) => { const q = v("apQ" + i), pp = v("apP" + i), r = BILL_FIRST + i; if (q !== "") ws.getRange(`AA${r}`).values = [[+q]]; if (pp !== "") ws.getRange(`AE${r}`).values = [[+pp]]; });
-      const tf = id => { const m = v(id).match(/^(\d{2}):(\d{2})$/); return m ? (+m[1] * 60 + +m[2]) / 1440 : ""; };
-      [1, 2, 3, 4, 5].forEach(d => { const a = v("apW" + d), f = tf("apWf" + d), t = tf("apWt" + d); if (a || f !== "" || t !== "") ws.getRange(`AE${26 + d}:AG${26 + d}`).values = [[a, f, t]]; });
-      const rg = state.apRanges.filter(w => w.from).map(w => ["Unavailable", inputToSerial(w.from), inputToSerial(w.to) || inputToSerial(w.from), w.note || ""]);
-      if (rg.length) ws.getRange(`Y${AV_FIRST}:AB${AV_FIRST + rg.length - 1}`).values = rg;
+      if (d.apHome) ws.getRange("S9").values = [[`Home Clinic: ${d.apHome}`]];
+      set("W1", bidf); set("W4", ded); set("W5", oop); set("W6", d.apMtr); set("W7", 0);
+      d.cost.forEach(([x, y], i) => { set(`X${COST_FIRST + i}`, x === "" ? "" : +x); set(`Y${COST_FIRST + i}`, y === "" ? "" : +y); });
+      d.week.forEach(([f, t], i) => { if (f || t) ws.getRange(`W${WK_FIRST + i}:X${WK_FIRST + i}`).values = [[tf(f), tf(t)]]; });
+      const rg = d.ranges.map(w => ["Unavailable", inputToSerial(w.from), inputToSerial(w.to) || inputToSerial(w.from), w.note || ""]).slice(0, AV_LAST - AV_FIRST + 1);
+      if (rg.length) ws.getRange(`V${AV_FIRST}:Y${AV_FIRST + rg.length - 1}`).values = rg;
       if (names) { const i = names.values.findIndex(r => String(r[0]).trim() === ""); if (i >= 0) ap.getRange(`B${3 + i}`).values = [[name]]; else toast("Tab created, but Active Patients has no empty row.", true); }
       ws.activate(); await ctx.sync();
     });
-    ["apLast", "apFirst", "apCode", "apMrn", "apDob", "apIns", "apAuthStart", "apAuthExp", "apAssess", "apBidf", "apDed", "apOop", "apFlat"].forEach(i => $(i).value = "");
-    BILL.forEach((b, i) => ["apQ", "apP"].forEach(k => { $(k + i).value = ""; delete $(k + i).dataset.edited; }));
-    [1, 2, 3, 4, 5].forEach(d => ["apW", "apWf", "apWt"].forEach(k => $(k + d).value = ""));
-    $("apHome").value = "SRL"; $("apTxs").value = 36; $("apNote").textContent = ""; state.apRanges = [{}]; renderApRanges(); autoAuth();
-    state.codeEdited = state.courseEdited = false; state.pendingNew = state.pendingNew.filter(x => x.mrn !== mrnTyped);
+    state.pendingNew = state.pendingNew.filter(x => x.mrn !== normMrn(d.apMrn));
+    if (!POPOUT) resetAddPatient();
     await refresh();
     const np = state.patients.find(x => x.tab === name); if (np) await placeMeasures([np]);
     toast(`Created ${name}.`); await refresh();
     if (state.file) { show("imp"); await buildPlan(); toast(`Created ${name}. The preview now includes its dates.`); }
+    return true;
   } catch (e) { fail(e); }
 }
 function startTracker(mrn) {
@@ -1186,17 +1187,18 @@ function planTab(p, appts, from, to, o) {
     }
     win.forEach(r => { r.date = null; r.time = null; r.miss = false; r.freebie = ""; untag(r, TELE_TAG); if (o.ps) r.alt = false; st.cleared++; });
   }
-  const ops = [];
+  const ops = []; let fbDelta = 0;
   R.forEach((r, i) => {
     const b = orig[i];
+    if (r.freebie !== b.freebie) { r.note = withFreebie(r.note, r.freebie); fbDelta += (r.freebie === "Used" ? 1 : 0) - (b.freebie === "Used" ? 1 : 0); }
     if (r.date !== b.date) ops.push([`E${r.row}`, r.date ?? ""]);
-    if (r.time !== b.time) ops.push([`U${r.row}`, r.time == null ? "" : r.time / 1440]);
+    if (r.time !== b.time) ops.push([`T${r.row}`, r.time == null ? "" : r.time / 1440]);
     if (r.type !== b.type) ops.push([`L${r.row}`, r.type]);
     if (r.alt !== b.alt) ops.push([`R${r.row}`, r.alt ? "x" : ""]);
     if (r.miss !== b.miss) ops.push([`M${r.row}`, r.miss ? "x" : ""]);
     if (r.note !== b.note) ops.push([`S${r.row}`, r.note]);
-    if (r.freebie !== b.freebie) ops.push([`T${r.row}`, r.freebie]);
   });
+  if (fbDelta) ops.push(["N7", Math.max(0, p.d.left - fbDelta)]);   // NextGen "Waived" = a freebie used
   // significant disruptions re-flow the measures: an MTR or F/U moved, or 2+ missed visits within a week
   const moved = R.some((r, i) => (r.type === "MTR" || r.type === "F/U") && orig[i].date != null && orig[i].date !== r.date) || R.some((r, i) => r.type === "MTR" && orig[i].type !== "MTR");
   const missDates = R.filter(r => r.miss && r.date != null).map(r => r.date).sort((a, b) => a - b), newMiss = new Set(R.filter((r, i) => r.miss && !orig[i].miss).map(r => r.date));
@@ -1247,7 +1249,8 @@ async function buildPlan() {
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
     if (!p) continue;
     const pl = planTab(p, appts, from, maxDate, o);
-    const c = clin.get(mrn); if (!p.provider && c) pl.e2 = Object.entries(c).sort((a, b) => b[1] - a[1])[0][0];
+    // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
+    const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
     plans.push(pl);
   }
@@ -1261,6 +1264,8 @@ function renderPlan() {
   let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
   h += ch.length ? `<table><thead><tr><th>Tab</th><th class="num">Dates</th><th class="num">Types</th><th class="num">Cleared</th><th class="num">Missed</th></tr></thead><tbody>${ch.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.set}</td><td class="num">${p.types}</td><td class="num">${p.cleared}</td><td class="num">${p.miss}</td></tr>`).join("")}
     <tr><th>Total</th><th class="num">${tot("set")}</th><th class="num">${tot("types")}</th><th class="num">${tot("cleared")}</th><th class="num">${tot("miss")}</th></tr></tbody></table>` : `<div class="none">The tracker already matches this report.</div>`;
+  const pv = ch.filter(p => p.e2).length;
+  if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
   if (state.pendingNew.length) h += `<div class="sub" style="margin-top:6px">${state.pendingNew.length} patient${state.pendingNew.length > 1 ? "s" : ""} in the report ${state.pendingNew.length > 1 ? "have" : "has"} no tracker yet. See the top of the dashboard.</div>`;
   h += `<div class="actions"><button class="pri" data-act="apply">Apply</button></div>`;
   $("planBody").innerHTML = h; $("planBox").hidden = false;
@@ -1268,31 +1273,22 @@ function renderPlan() {
 async function applyPlan() {
   const plan = state.plan, ch = plan.plans.filter(p => p.changed), reflow = new Set(plan.plans.filter(p => p.reflow).map(p => p.name));
   try {
-    await Excel.run(async ctx => { for (const p of ch) { const ws = ctx.workbook.worksheets.getItem(p.name); p.ops.forEach(([a, v]) => ws.getRange(a).values = [[v]]); if (p.e2) ws.getRange("E2").values = [[p.e2]]; } await ctx.sync(); });
-    const f = state.file, settings = Office.context.document.settings;
-    if (plan.ps) await Excel.run(async ctx => { plan.plans.forEach(x => { const ws = ctx.workbook.worksheets.getItem(x.name); ws.getRange("AM1:AN1").values = [["External report as of", f.asOf ?? todaySerial()]]; ws.getRange("AN1").numberFormat = [["m/d/yyyy"]]; }); await ctx.sync(); });
-    else { settings.set("tms_report", { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }); settings.saveAsync(); }
+    await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
+    const f = state.file;
+    if (!plan.ps) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); }
     state.plan = null; $("planBox").hidden = true; $("file").value = ""; state.file = null;
     await refresh();
     const sug = state.patients.filter(p => p.d.suggest);
-    if (sug.length) await Excel.run(async ctx => { sug.forEach(p => ctx.workbook.worksheets.getItem(p.tab).getRange("D7").values = [[p.d.suggest]]); await ctx.sync(); });
+    if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })));
     const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab))) : 0;
     toast(`Updated ${ch.length} tab${ch.length === 1 ? "" : "s"}${sug.length ? `, ${sug.length} status${sug.length > 1 ? "es" : ""}` : ""}${nx ? `, measures re-planned for ${reflow.size}` : ""}.`);
     await refresh(); show("sch");
   } catch (e) { fail(e); }
 }
 
-/* ---------- patient schedule: printout in the clinic template, and an optional saved copy ---------- */
-const PRINT_SHEET = "Patient Schedule", PRINT_COLS = [24.3, 11.1, 17.7, 22.7, 23.6, 26.3, 16.1];
-const charPt = w => (w * 7 + 5) * 0.75;
+/* ---------- patient schedule: opens in a dialog window (schedule.html) to print or save as PDF ---------- */
 const pad2 = n => String(n).padStart(2, "0");
 const apptTypeName = r => r.type === "MT" ? (device() === "Brainsway" ? "MT BW" : "MT MagV") : r.type === "MTR" ? "MT Redo" : r.type === "F/U" ? (r.tele ? "Telepsych TMS F/U" : "TMS Follow Up") : "TMS Treatment";
-async function logoBase64() {
-  try {
-    const b = await (await fetch("assets/logo.png")).blob();
-    return await new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(String(f.result).split(",")[1]); f.onerror = rej; f.readAsDataURL(b); });
-  } catch { return null; }
-}
 function scheduleRows(p, from, to) {
   const t = todaySerial(), loc = state.cfg.location, lo = Math.max(from ?? t, t), hi = to ?? Infinity;
   return p.rows.filter(r => r.date != null && r.date >= lo && r.date <= hi && !r.delivered && !r.miss).sort(cmp)
@@ -1306,60 +1302,52 @@ function printModal(tab) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const t = todaySerial(), lastVisit = Math.max(t, ...p.rows.filter(r => r.date != null && !r.delivered && !r.miss).map(r => r.date));
   const quick = [["14", "Next 14 days", t + 14], ["30", "Next 30 days", t + 30], ["all", "Rest of course", lastVisit]];
-  showModal(`<h3>Schedule for ${esc(p.tab)}</h3><p class="sub">Choose the visits to include. Long schedules print on more than one page.</p>
+  showModal(`<h3>Schedule for ${esc(p.tab)}</h3><p class="sub">Choose the visits to include. The schedule opens in a window where you can print it or save it as a PDF.</p>
     <div class="fchips" style="margin:8px 0">${quick.map(([k, l, to], i) => `<button class="sm${i === 0 ? " on" : ""}" data-prq="${to}">${l}</button>`).join("")}</div>
     <div class="row2"><label>From<input type="date" id="prFrom" value="${serialToInput(t)}"></label><label>To<input type="date" id="prTo" value="${serialToInput(t + 14)}"></label></div>
     <div class="sub" id="prCount"></div>
-    <div class="actions"><button class="pri" data-act="doPrint" data-t="${esc(tab)}">Print</button><button data-act="doSave" data-t="${esc(tab)}">Save a copy</button><button data-mclose>Cancel</button></div>`);
+    <div class="actions"><button class="pri" data-act="doPrint" data-t="${esc(tab)}">Open schedule</button><button data-mclose>Cancel</button></div>`);
   prCount(tab);
 }
 function prRange() { return [inputToSerial($("prFrom").value), inputToSerial($("prTo").value)]; }
 function prCount(tab) { const p = state.patients.find(x => x.tab === tab), [f, to] = prRange(), n = p && f && to ? scheduleRows(p, f, to).length : 0; $("prCount").textContent = `${n} visit${n === 1 ? "" : "s"} in this range.`; }
 async function logSchedule(p) {
   const t = todaySerial(), r = p.rows.find(x => x.date === t) || p.d.sched[0], tagText = `Schedule provided ${fmtDate(t)}`;
-  const pairs = [["Z13", t]];
+  const pairs = [["W8", t]];
   if (r) pairs.push([`S${r.row}`, [...r.note.split("; ").filter(x => x && !/^Schedule provided /.test(x)), tagText].join("; ")]);
   await writeCells(p.tab, pairs);
 }
-async function makePrintout(tab, from, to) {
+function openSchedule(tab, from, to) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const body = scheduleRows(p, from, to); if (!body.length) return toast("No scheduled visits in that date range.", true);
-  const logo = await logoBase64(), last = 10 + body.length;
-  try {
-    await Excel.run(async ctx => {
-      const old = ctx.workbook.worksheets.getItemOrNullObject(PRINT_SHEET); await ctx.sync(); if (!old.isNullObject) old.delete();
-      const ws = ctx.workbook.worksheets.add(PRINT_SHEET); ws.showGridlines = false;
-      const all = ws.getRange(`A1:G${Math.max(last, 12)}`); all.format.font.name = "Aptos Narrow"; all.format.font.size = 11; all.format.horizontalAlignment = "Center"; all.format.verticalAlignment = "Center"; all.format.fill.color = "#FFFFFF";
-      PRINT_COLS.forEach((w, i) => { ws.getRangeByIndexes(0, i, 1, 1).getEntireColumn().format.columnWidth = charPt(w); });
-      const hdr = a => { const r = ws.getRange(a); r.format.fill.color = "#156082"; r.format.font.color = "#FFFFFF"; r.format.font.bold = true; };
-      ws.getRange("A7").values = [[`As of: ${asOfText()}`]]; hdr("A7");
-      ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight"].forEach(e => { const b = ws.getRange("A7").format.borders.getItem(e); b.style = "Continuous"; b.weight = "Thin"; });
-      ws.getRange("A10:G10").values = [["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"]]; hdr("A10:G10");
-      ws.getRange(`A11:G${last}`).values = body;
-      ws.getRange(`C11:C${last}`).numberFormat = [["m/d/yyyy"]]; ws.getRange(`D11:D${last}`).numberFormat = [["h:mm AM/PM"]];
-      body.forEach((r, i) => { if (i % 2 === 0) ws.getRange(`A${11 + i}:G${11 + i}`).format.fill.color = "#D9D9D9"; });
-      const pl = ws.pageLayout; pl.orientation = Excel.PageOrientation.landscape; pl.paperSize = Excel.PaperType.letter; pl.centerHorizontally = true;
-      pl.zoom = { scale: 93 }; pl.leftMargin = 28.8; pl.rightMargin = 28.8; pl.topMargin = 36; pl.bottomMargin = 36;
-      pl.setPrintArea(`A1:G${last}`); pl.setPrintTitleRows("$10:$10");   // fixed scale: long schedules run onto more pages instead of shrinking
-      if (logo) { const sh = ws.shapes.addImage(logo); sh.left = PRINT_COLS.slice(0, 3).reduce((a, w) => a + charPt(w), 0) + 14.25; sh.top = 13.5; sh.width = 210.75; sh.height = 87; sh.name = "Logo"; }
-      ws.activate(); await ctx.sync();
+  const d = serialToDate(todaySerial());
+  const obj = { fname: `${p.code} schedule ${d.getUTCMonth() + 1}.${d.getUTCDate()}.pdf`, asOf: `As of: ${asOfText()}`,
+    rows: body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]]) }, data = JSON.stringify(obj);
+  /* only one add-in window can be open: inside the pop-out (or while it is open) the schedule shows over the page instead */
+  if (POPOUT || pop.dlg || !Office.context.requirements.isSetSupported("DialogApi", "1.2")) return openSchedOverlay(p, obj);
+  Office.context.ui.displayDialogAsync(new URL("schedule.html", location.href).href, { height: 80, width: 70 }, res => {
+    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "A schedule window is already open." : "The schedule window was blocked. Allow pop-ups for Excel and try again.", true);
+    const dlg = res.value; let logged = false;
+    dlg.addEventHandler(Office.EventType.DialogMessageReceived, async m => {
+      if (m.message === "ready") dlg.messageChild(data);
+      else if (m.message === "close") dlg.close();
+      else if ((m.message === "printed" || m.message === "saved") && !logged) { logged = true; try { await logSchedule(p); await refresh(); } catch (e) { fail(e); } }
     });
-    await logSchedule(p);
-    toast(`Printout for ${p.tab} is ready on the Patient Schedule sheet. Press Ctrl+P.${logo ? "" : " The logo could not be loaded."}`);
-    await refresh();
-  } catch (e) { fail(e); }
+  });
 }
-async function saveCopy(tab, from, to) {
-  const p = state.patients.find(x => x.tab === tab); if (!p) return;
-  const body = scheduleRows(p, from, to); if (!body.length) return toast("No scheduled visits in that date range.", true);
-  const d = serialToDate(todaySerial()), fname = `${p.code} schedule ${d.getUTCMonth() + 1}.${d.getUTCDate()}.xlsx`;
-  try {
-    const aoa = [["Mindful Health Solutions"], ["Appointment schedule"], [`As of: ${asOfText()}`], [], ["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"],
-      ...body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]])];
-    const sh = XLSX.utils.aoa_to_sheet(aoa); sh["!cols"] = PRINT_COLS.map(w => ({ wch: w }));
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sh, "Schedule"); XLSX.writeFile(wb, fname);
-    await logSchedule(p); toast(`Saved ${fname}. Keep it only where PHI is allowed.`); await refresh();
-  } catch (e) { toast(`Download was blocked. Use Print schedule, then Print to PDF and name it "${fname.replace(".xlsx", "")}".`, true); }
+
+let schedFor = null;
+function openSchedOverlay(p, obj) {
+  schedFor = { p, logged: false };
+  const f = $("schedFrame"), go = () => { try { f.contentWindow.render(obj); } catch (e) { fail(e); } };
+  $("schedOverlay").hidden = false;
+  if (f.dataset.ready) go(); else f.onload = () => { f.dataset.ready = "1"; go(); };
+  if (!f.getAttribute("src")) f.src = "schedule.html?embed=1";
+}
+function closeSchedOverlay() { $("schedOverlay").hidden = true; schedFor = null; }
+async function onSchedMessage(m) {
+  if (m === "close") return closeSchedOverlay();
+  if ((m === "printed" || m === "saved") && schedFor && !schedFor.logged) { schedFor.logged = true; try { await logSchedule(schedFor.p); await refresh(); } catch (e) { fail(e); } }
 }
 
 /* ---------- wiring ---------- */
@@ -1370,29 +1358,111 @@ function show(view) {
   $("btnSettings").classList.toggle("on", view === "settings");
   if (["sch", "pts", "clinic"].includes(view)) renderDash(); else document.querySelectorAll("#mainTabs button").forEach(b => b.classList.toggle("on", view === "add" && b.dataset.view === "pts"));
 }
-async function openTab(el) {
+/* ---------- pop-out window: full screen or a separate window, driven by the task pane ---------- */
+const CHUNK = 20000;
+function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
+function sendSnap() {
+  const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old,
+    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, apNames: [...state.apNames], closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report });
+  const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
+  for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
+}
+function applySnap(o) {
+  Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, skipped: o.skipped, templateOk: o.templateOk,
+    pendingNew: o.pendingNew, apNames: new Set(o.apNames), closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report });
+  state.patients.forEach(p => p.d = derive(p));
+  syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
+  rpc.snapWait.splice(0).forEach(f => f());
+}
+function callPane(fn, args) {
+  return new Promise((res, rej) => {
+    const id = ++rpc.id; rpc.wait.set(id, { res, rej });
+    try { Office.context.ui.messageParent(JSON.stringify({ k: "call", id, fn, args })); } catch (e) { rpc.wait.delete(id); rej(e); }
+  });
+}
+/* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
+const PANE_FNS = {
+  refresh: () => refresh(), applyOps: ops => applyOps(ops), removeFromAP: t => removeFromAP(t), fillGrid: m => fillGrid(m), mkSchedSheet: () => mkSchedSheet(),
+  writeChairSheet: o => writeChairSheet(o), setupColumns: () => setupColumns(), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
+  saveSetting: (k, v) => saveSetting(k, v)
+};
+async function onPopMessage(arg) {
+  let m; try { m = JSON.parse(arg.message); } catch { return; }
+  if (m.k === "ready") return sendSnap();
+  if (m.k === "close") { closePopout(); return; }
+  if (m.k !== "call" || !PANE_FNS[m.fn]) return;
+  pop.calls++; let ok = true, err = "", result = null;
+  try { result = await PANE_FNS[m.fn](...(m.args || [])); } catch (e) { ok = false; err = e.message || String(e); }
+  pop.calls--;
+  toChild({ k: "ack", id: m.id, ok, err, result: result === undefined ? null : result });
+}
+function openPopout(full) {
+  if (pop.dlg) return toast("The tracker is already open in another window.");
+  if (!Office.context.requirements.isSetSupported("DialogApi", "1.2")) return toast("This version of Excel can't open the tracker in a window.", true);
+  const url = new URL(location.href); url.search = "?popout=1"; url.hash = "";
+  Office.context.ui.displayDialogAsync(url.href, full ? { height: 100, width: 100 } : { height: 85, width: 75 }, res => {
+    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "Close the other add-in window first." : "The window was blocked. Allow pop-ups for Excel and try again.", true);
+    pop.dlg = res.value; $("popNote").hidden = false;
+    pop.dlg.addEventHandler(Office.EventType.DialogMessageReceived, onPopMessage);
+    pop.dlg.addEventHandler(Office.EventType.DialogEventReceived, () => { pop.dlg = null; $("popNote").hidden = true; });
+  });
+}
+function closePopout() { if (pop.dlg) { try { pop.dlg.close(); } catch { /* already closed */ } pop.dlg = null; } $("popNote").hidden = true; }
+function initPopout() {
+  document.body.classList.add("popout");
+  Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, a => {
+    let m; try { m = JSON.parse(a.message); } catch { return; }
+    if (m.k === "snap") {
+      if (!rpc.parts.length || rpc.parts.seq !== m.seq) { rpc.parts = Array(m.n); rpc.parts.seq = m.seq; }
+      rpc.parts[m.i] = m.part;
+      if (rpc.parts.filter(x => x != null).length === m.n) { const s = rpc.parts.join(""); rpc.parts = []; applySnap(JSON.parse(s)); }
+    } else if (m.k === "ack") {
+      const w = rpc.wait.get(m.id); if (!w) return; rpc.wait.delete(m.id);
+      if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
+    } else if (m.k === "toast") toast(m.msg, m.err);
+  }, () => Office.context.ui.messageParent(JSON.stringify({ k: "ready" })));
+}
+function toggleFullscreen() {
+  if (document.fullscreenElement) return document.exitFullscreen();
+  const el = document.documentElement; if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available here. Maximize the window instead.", true));
+}
+/* settings live in the document, which only the task pane can save */
+function saveSetting(k, v) {
+  if (POPOUT) return callPane("saveSetting", [k, v]);
+  const s = Office.context.document.settings; s.set(k, v); s.saveAsync();
+  if (k === "tms_cfg") { state.cfg = v; state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); syncCfgInputs(); }
+  if (k === "tms_report") state.report = v;
+}
+async function openTabName(tab, row) {
+  if (POPOUT) return callPane("openTabName", [tab, row]);
   try {
     await Excel.run(async ctx => {
-      const ws = ctx.workbook.worksheets.getItem(el.dataset.tab || el.dataset.sheet); ws.activate();
-      if (el.dataset.row) ws.getRange(`A${el.dataset.row}:W${el.dataset.row}`).select();
+      const ws = ctx.workbook.worksheets.getItem(tab); ws.activate();
+      if (row) ws.getRange(`A${row}:T${row}`).select();
       await ctx.sync();
     });
   } catch (e) { fail(e); }
 }
-function openPatient(tab) { state.ptTab = tab; state.ptMode = "pt"; state.avDraft = null; show("pts"); window.scrollTo(0, 0); }
+function openPatient(tab, sec) { state.ptTab = tab; state.ptMode = "pt"; state.avDraft = null; if (sec) state.open.add(`${sec}|${tab}`); show("pts"); window.scrollTo(0, 0); }
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays" };
+function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
+const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 Office.onReady(info => {
-  if (info.host !== Office.HostType.Excel) return;
-  const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved);
-  const cfgIds = { cfgLoc: "location", cfgExt: "extDays", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays" };
-  Object.entries(cfgIds).forEach(([id, k]) => { $(id).value = state.cfg[k]; $(id).onchange = () => {
-    const v = $(id).value; state.cfg[k] = ["location", "device"].includes(k) ? (v.trim() || (k === "location" ? "San Rafael" : "auto")) : (+v || { extDays: 7, authDays: 14, protoDays: 2, recentDays: 10 }[k]);
-    Office.context.document.settings.set("tms_cfg", state.cfg); Office.context.document.settings.saveAsync(); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); }; });
+  if (!POPOUT && info.host !== Office.HostType.Excel) return;
+  if (!POPOUT) { const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved); }
+  syncCfgInputs();
+  Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
+    const v = $(id).value; state.cfg[k] = ["location", "device"].includes(k) ? (v.trim() || (k === "location" ? "San Rafael" : "auto")) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); }; });
   $("mainTabs").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return; if (b.dataset.view === "pts") state.ptMode = "list"; show(b.dataset.view); };
   $("schToggle").onclick = e => { const b = e.target.closest("[data-sv]"); if (b) { state.dash = b.dataset.sv; renderDash(); } };
   $("clinicTabs").onclick = e => { const b = e.target.closest("[data-cv]"); if (b) { state.clinicTab = b.dataset.cv; renderDash(); } };
   $("btnImport").onclick = () => show("imp"); $("apBack").onclick = () => show("pts");
   $("btnSettings").onclick = () => show("settings"); $("setBack").onclick = () => show(state.lastView || "sch");
+  $("btnPop").onclick = () => openPopout(false); $("btnFull").onclick = () => POPOUT ? toggleFullscreen() : openPopout(true);
+  $("popClose").onclick = closePopout;
   window.addEventListener("resize", syncAtt); syncAtt();
+  window.addEventListener("message", e => { if (e.origin === location.origin && e.data && e.data.sched) onSchedMessage(e.data.sched); });
   document.addEventListener("click", e => {
     const el = e.target;
     document.querySelectorAll("details.kebab[open]").forEach(k => { if (!k.contains(el)) k.open = false; });
@@ -1412,12 +1482,13 @@ Office.onReady(info => {
         apply: () => applyPlan(), newTracker: () => startTracker(v), status: () => setStatus(t, v), rmAP: () => removeFromAP(t), mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(),
         classify: () => freebieModal(t, row), missKind: () => markMiss(t, row, v), undoMiss: () => undoMiss(t, row), pulses: () => markPulses(t, row, el), saveMeas: () => saveMeasures(t, row, el), moveMeas: () => moveMeasures(t, row, el),
         measToggle: () => { const k = `meas|${t}|${row}`; if (state.open.has(k)) state.open.delete(k); else state.open.add(k); renderDash(); },
-        mtSave: () => saveMT(t, row, el), protoSave: () => saveProtocol(t, el), print: () => printModal(t), saveCopy: () => printModal(t),
-        doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); makePrintout(t, f, to); },
-        doSave: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); saveCopy(t, f, to); },
+        mtSave: () => saveMT(t, row, el), protoSave: () => saveProtocol(t, el), print: () => printModal(t),
+        doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return toast("Pick a valid date range.", true); closeModal(); openSchedule(t, f, to); },
         copyNote: () => noteAction("copyNote", t, row, el), resetNote: () => noteAction("resetNote", t, row, el),
         ptBack: () => { state.ptMode = "list"; renderDash(); }, addPt: () => show("add"), ptFilter: () => { state.ptFilter = v; renderDash(); }, ptAll: () => { state.ptAll = !state.ptAll; renderDash(); },
-        balPay: () => balanceAction(t, "pay", el), balClear: () => balanceAction(t, "clear", el), extend: () => addExtension(t, el), availSave: () => saveAvailability(t),
+        benSave: () => saveBenefits(t, benData(el)),
+        extend: () => { const box = el.closest("details"); addExtension(t, { n: +box.querySelector("input[data-extn]").value, exp: inputToSerial(box.querySelector("input[data-extd]").value) }); },
+        availSave: () => { const av = state.avDraft; if (!av || av.tab !== t) return; readAvailEditor($("ptsBody"), av); saveAvailability(t, av); },
         avAdd: () => { readAvailEditor($("ptsBody"), state.avDraft); state.avDraft.ranges.push({ type: "Unavailable", from: null, to: null, note: "" }); renderDash(); },
         avDel: () => { readAvailEditor($("ptsBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); renderDash(); },
         prev: () => { state.weekOffset--; renderDash(); }, next: () => { state.weekOffset++; renderDash(); }, this: () => { state.weekOffset = 0; renderDash(); },
@@ -1428,28 +1499,27 @@ Office.onReady(info => {
       if (acts[a]) { e.preventDefault(); acts[a](); }
       return;
     }
-    const pt = el.closest("[data-pt]"); if (pt) return openPatient(pt.dataset.pt);
-    const tb = el.closest("[data-tab],[data-sheet]"); if (tb && tb.closest("section")) openTab(tb);
+    const pt = el.closest("[data-pt]"); if (pt) return openPatient(pt.dataset.pt, pt.dataset.sec);
+    const tb = el.closest("[data-tab],[data-sheet]"); if (tb && tb.closest("section")) openTabName(tb.dataset.tab || tb.dataset.sheet, tb.dataset.row ? +tb.dataset.row : null);
   });
   document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !$("schedOverlay").hidden) return closeSchedOverlay();
     if (e.key === "Escape" && !$("modal").hidden) return closeModal();
-    if (e.key === "Enter") { const pt = e.target.closest && e.target.closest("[data-pt]"); if (pt && e.target === pt) return openPatient(pt.dataset.pt); const el = e.target.closest && e.target.closest("[data-tab]"); if (el && e.target === el) openTab(el); }
+    if (e.key === "Enter") { const pt = e.target.closest && e.target.closest("[data-pt]"); if (pt && e.target === pt) return openPatient(pt.dataset.pt, pt.dataset.sec); const el = e.target.closest && e.target.closest("[data-tab]"); if (el && e.target === el) openTabName(el.dataset.tab, el.dataset.row ? +el.dataset.row : null); }
   });
   document.addEventListener("change", e => {
     const el = e.target;
     if (!el.closest("section") || el.closest("#v-add") || el.closest("#v-imp") || el.closest("#v-settings")) return;
-    if (el.dataset.flag) return flagChange(el);
     if (el.dataset.miss && el.value) return markMiss(el.dataset.t, +el.dataset.miss, el.value);
     if (el.dataset.dk && el.tagName === "SELECT" && draftInput(el)) renderDash();
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
-  $("refresh").onclick = refresh; $("btnGrid").onclick = fillGrid; $("btnSetup").onclick = setupColumns; $("btnMeas").onclick = placeMeasuresClick;
-  $("file").onchange = onFile; document.querySelectorAll('input[name=rtype]').forEach(r => r.onchange = () => state.file && buildPlan());
+  $("refresh").onclick = () => refresh(); $("btnGrid").onclick = () => fillGrid($("gridMonday").checked); $("btnSetup").onclick = setupColumns; $("btnMeas").onclick = placeMeasuresClick;
+  $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
-  ["apTxs", "apMtr", "apPlan", "apFlat"].forEach(i => $(i).addEventListener("input", autoAuth));
-  ["apMtr", "apPlan"].forEach(i => $(i).addEventListener("change", autoAuth));
-  $("btnAdd").onclick = addPatient;
-  fillAddPatientForm(); show("sch"); refresh();
+  $("btnAdd").onclick = () => addPatient(collectAddPatient());
+  fillAddPatientForm(); show("sch");
+  if (POPOUT) initPopout(); else refresh();
 });

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patient schedule</title>
+<!-- Opened by the task pane with Office.context.ui.displayDialogAsync. The schedule arrives by messageChild; nothing is stored. -->
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+@page{size:letter landscape;margin:0.5in 0.4in}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.4 "Aptos Narrow","Segoe UI",system-ui,sans-serif;color:#1c2a33;background:#f3f6f8}
+.bar{position:sticky;top:0;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:10px 16px;background:#fff;border-bottom:1px solid #dde3e8}
+.bar .msg{margin-right:auto;color:#62727d}
+button{font:inherit;cursor:pointer;border:1px solid #dde3e8;background:#fff;color:#1c2a33;padding:6px 14px;border-radius:4px}
+button.pri{background:#156082;border-color:#156082;color:#fff}
+button:focus-visible{outline:2px solid #156082;outline-offset:1px}
+.page{max-width:10in;margin:16px auto;padding:24px 28px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.logo{display:block;margin:0 auto 14px;width:281px;height:auto}
+.asof{display:table;margin:0 auto 14px;padding:3px 10px;background:#156082;color:#fff;font-weight:700}
+table{width:100%;border-collapse:collapse;text-align:center}
+th{background:#156082;color:#fff;font-weight:700;padding:5px 6px}
+td{padding:4px 6px}
+tbody tr:nth-child(odd){background:#D9D9D9}
+thead{display:table-header-group}
+tr{break-inside:avoid}
+@media print{.bar{display:none}body{background:#fff}.page{margin:0;max-width:none;padding:0;box-shadow:none}th,tbody tr:nth-child(odd),.asof{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="msg" id="msg">Loading the schedule…</span>
+  <button class="pri" id="print" disabled>Print</button>
+  <button id="pdf" disabled>Save as PDF</button>
+  <button id="full" hidden>Full screen</button>
+  <button id="close">Close</button>
+</div>
+<main class="page">
+  <img class="logo" id="logo" src="assets/logo.png" alt="Mindful Health Solutions">
+  <div class="asof" id="asof"></div>
+  <table><thead><tr><th scope="col">MRN</th><th scope="col">Location</th><th scope="col">Appointment Date</th><th scope="col">Time</th><th scope="col">Provider</th><th scope="col">Appointment Type</th><th scope="col">Status</th></tr></thead><tbody id="rows"></tbody></table>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const HEAD = ["MRN", "Location", "Appointment Date", "Time", "Provider", "Appointment Type", "Status"];
+let data = null;
+/* embed=1: shown over the add-in page in an iframe (when another add-in window is already open); otherwise an Office dialog window */
+const EMBED = /[?&]embed=1\b/.test(location.search);
+const tell = m => { try { if (EMBED) parent.postMessage({ sched: m }, location.origin); else Office.context.ui.messageParent(m); } catch { /* opened outside Excel */ } };
+
+function render(d) {
+  data = d;
+  $("asof").textContent = d.asOf;
+  $("rows").innerHTML = d.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+  $("msg").textContent = `${d.rows.length} visit${d.rows.length === 1 ? "" : "s"}. This contains the MRN, so keep it only where PHI is allowed.`;
+  $("print").disabled = $("pdf").disabled = false; $("print").focus();
+}
+function logoData() {
+  const img = $("logo"); if (!img.complete || !img.naturalWidth) return null;
+  const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext("2d").drawImage(img, 0, 0);
+  return { url: c.toDataURL("image/png"), ratio: img.naturalHeight / img.naturalWidth };
+}
+function savePdf() {
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" }), W = doc.internal.pageSize.getWidth();
+  let y = 30; const lg = logoData();
+  if (lg) { const w = 210.75, h = w * lg.ratio; doc.addImage(lg.url, "PNG", (W - w) / 2, y, w, h); y += h + 14; }   // centered with the table
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  const tw = doc.getTextWidth(data.asOf) + 16; doc.setFillColor(21, 96, 130); doc.rect((W - tw) / 2, y, tw, 16, "F");
+  doc.setTextColor(255, 255, 255); doc.text(data.asOf, W / 2, y + 11.5, { align: "center" }); y += 28;
+  doc.autoTable({ head: [HEAD], body: data.rows, startY: y, margin: { left: 28.8, right: 28.8, top: 36, bottom: 36 }, theme: "plain",
+    styles: { font: "helvetica", fontSize: 10, halign: "center", valign: "middle", textColor: [28, 42, 51], cellPadding: 4 },
+    headStyles: { fillColor: [21, 96, 130], textColor: [255, 255, 255], fontStyle: "bold" },
+    didParseCell: c => { if (c.section === "body" && c.row.index % 2 === 0) c.cell.styles.fillColor = [217, 217, 217]; } });
+  doc.save(data.fname);
+  tell("saved");
+}
+
+$("print").onclick = () => { window.print(); tell("printed"); };
+$("pdf").onclick = () => { try { savePdf(); } catch (e) { $("msg").textContent = `Could not build the PDF (${e.message}). Use Print and choose Save as PDF instead.`; } };
+$("close").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); tell("close"); };
+if (document.fullscreenEnabled) { $("full").hidden = false; $("full").onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { $("full").hidden = true; }); }
+document.addEventListener("fullscreenchange", () => { $("full").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen"; });
+
+if (!EMBED) Office.onReady(() => {
+  Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, a => { try { render(JSON.parse(a.message)); } catch { $("msg").textContent = "The schedule could not be read. Close this window and try again."; } },
+    () => tell("ready"));
+});
+</script>
+</body>
+</html>
