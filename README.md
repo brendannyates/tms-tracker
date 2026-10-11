@@ -65,7 +65,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 | V11:Y16 | Cost by code: 90867 MT, 90868 Daily, 90869 MT redo, 99214 F/U in-office and telehealth. X is PR, Y is the cost before the deductible (only when one applies). |
 | W20:X24, V29:Y48 | Weekly availability (earliest and latest start, Monday to Friday) and dates (Unavailable / Available, from, to, reason). |
 
-**Update tabs** (the banner) adds the Before ded. column and the PR formula to New Template and every tab. A PR cell is only replaced when it is blank or still holds a cost-table lookup; a typed amount stays. Tabs in an earlier layout (for example the pilot's Freebie and Time columns in T and U) are rebuilt: a fresh copy of New Template gets their entries, benefits, costs and availability, and the earlier tab is kept as "NAME (old)" so you can check it and delete it.
+**Update tabs** (the banner) adds the Before ded. column and the PR formula to New Template and every tab. A PR cell is only replaced when it is blank or still holds a cost-table lookup; a typed amount stays. Tabs in an earlier layout (for example the pilot's Freebie and Time columns in T and U) are rebuilt: a fresh copy of New Template gets their entries, benefits, costs and availability, and every copied entry is read back from the new tab. When they all match, the earlier tab is deleted; if anything does not, it stays as "NAME (old)" and the add-in names the cells to check. Update tabs asks before rebuilding. A deleted tab can be recovered from the workbook's version history.
 
 ## Layout
 
@@ -75,7 +75,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 
 | Menu | What it holds |
 |---|---|
-| Schedule | A Today / Week toggle. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
+| Schedule | A Day / Week toggle. Day opens on today; Prev and Next step through weekdays, and Back to today returns. Each day shows that weekday's hours from the Clinic Schedule tab, or "Clinic closed" with the reason when the date is listed in column G. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
 | Patients | The roster with filters: All, Active, Follow-up not scheduled, No upcoming visit. **Add patient** is here. Selecting a patient opens the patient view. |
 | Clinic | Chair and Protocols. |
 
