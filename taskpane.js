@@ -43,7 +43,7 @@ function device() {
 const chairName = () => DEVICES[device()].chair;
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", cutoff: CUTOFF_DEFAULT },
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", openTab: "on", cutoff: CUTOFF_DEFAULT },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dayOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
@@ -385,7 +385,7 @@ const group = (title, items, empty) =>
   `<div class="group"><h2>${esc(title)}<span class="n">${items.length}</span></h2>${items.length ? items.join("") : `<div class="none">${esc(empty)}</div>`}</div>`;
 const btn = (act, tab, val, label) => `<button class="sm" data-act="${act}" data-t="${esc(tab)}"${val ? ` data-v="${esc(val)}"` : ""}>${esc(label)}</button>`;
 const bt = (act, tab, row, val, label, cls) => `<button class="sm${cls ? " " + cls : ""}" data-act="${act}" data-t="${esc(tab)}" data-row="${row}"${val != null && val !== "" ? ` data-v="${esc(val)}"` : ""}>${esc(label)}</button>`;
-const ptLink = p => `<b class="lnk" data-pt="${esc(p.tab)}" tabindex="0">${esc(p.tab)}</b>`;
+const ptLink = (p, row) => `<b class="lnk" data-pt="${esc(p.tab)}"${row ? ` data-sched="${row}"` : ""} tabindex="0">${esc(p.tab)}</b>`;
 
 const NO_TABS = `<div class="none">No patient tabs found. A patient tab has "PATIENT:" in A1 and a LASFIR name such as SMIJAN or SMIJAN 2.</div>`;
 function renderDash() {
@@ -489,7 +489,7 @@ function noteForm(p, r) {
 function visitCard(p, r) {
   const treat = r.type !== "F/U", pay = payOf(p, r), kind = OUTCOMES.find(k => r.note.includes(k)), [tm, ap] = (fmtTime(r.time) || "\u2013 ").split(" ");
   let h = `<div class="card ${cardCls(r)}"><div class="chead"><div class="ctime">${tm}<span>${ap || ""}</span></div>
-    <div class="cmain"><div class="cname">${ptLink(p)} <span class="chip">${esc(apptTypeName(r))}</span>${r.alt ? ' <span class="chip amb">Other clinic</span>' : ""}</div><div class="sub">MRN ${esc(p.mrnRaw || "not entered")}</div></div>${cardMenu(p, r)}</div>`;
+    <div class="cmain"><div class="cname">${ptLink(p, r.row)} <span class="chip">${esc(apptTypeName(r))}</span>${r.alt ? ' <span class="chip amb">Other clinic</span>' : ""}</div><div class="sub">MRN ${esc(p.mrnRaw || "not entered")}</div></div>${cardMenu(p, r)}</div>`;
   if (r.miss) return h + `<div class="cbody"><div class="mline"><span class="chip amb">${esc(kind || "Missed")}</span> ${r.freebie ? `<span class="chip">${r.freebie === "Used" ? "Freebie used" : "Waived"}</span>` : bt("classify", p.tab, r.row, "", "Classify freebie", "pri")}</div></div></div>`;
   h += `<div class="cbody">`;
   if (p.d.bidfToday) h += `<div class="item red bidf"><b>BIDF info needed</b><div class="sub">Enter ${esc(p.d.bidf.join("; "))}</div><button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button></div>`;
@@ -1293,7 +1293,11 @@ function planTab(p, appts, from, to, o) {
     const kind = kindOf(a);
     if (a.status === "Cancelled" && !kind) {
       st.early++; if (o.lastAsOf != null && a.mod != null && a.mod >= o.lastAsOf) st.earlyNew++; if (a.mod == null) st.noMod++;
-      const r0 = R.find(x => x.date === a.date && !x.delivered && !x.alt && !x.miss); if (r0 && a.date >= o.today) tag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`);
+      // cancelled ahead of time: clear the date (any date) unless the patient is still booked or seen that day; the row is free for another visit
+      const r0 = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt) && !x.miss);
+      if (r0 && !o.keptPast.has(`${o.mrn}|${a.date}`) && !appts.some(b => b.date === a.date && (b.status === "Scheduled" || b.status === "Kept"))) {
+        r0.date = null; r0.time = null; r0.freebie = ""; untag(r0, TELE_TAG); untag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`); if (o.ps) r0.alt = false; st.cleared++;
+      }
       continue;
     }
     let r = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
@@ -1358,14 +1362,15 @@ async function buildPlan(quiet) {
     if (dev.other.test(ev)) t.evOther = true; tally.set(mrn, t);
   }
   const isOther = mrn => { const t = tally.get(mrn); if (!t) return false; if (t.o || t.u) return t.o > t.u; return t.evOther && !state.patients.some(p => p.mrn === mrn); };
-  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(); let maxDate = from, ignored = 0;
+  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
   for (const r of state.file.rows) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
     if (!mrn) continue;
     if (isOther(mrn) || dev.other.test(pv)) { ignored++; continue; }
     const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
     if (date == null || sts === "Skip" || !ev) continue;
-    if (sts !== "No-show" && sts !== "Cancelled" && date < from) continue;   // past visits never update, except no-shows and same-day cancels
+    if (sts === "Kept" && date < from) { keptPast.add(`${mrn}|${date}`); continue; }   // only guards a cancel on the same day
+    if (sts !== "No-show" && sts !== "Cancelled" && date < from) continue;   // past visits never update, except no-shows and cancels
     let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
     if (sts === "Scheduled" || sts === "Kept") maxDate = Math.max(maxDate, date);
     const chg = String(cell(r, "mChg") ?? "").trim(), charged = /waive/i.test(chg) ? "Waived" : /exempt/i.test(chg) ? "Exempt" : "";
@@ -1380,13 +1385,13 @@ async function buildPlan(quiet) {
     if (p.mrn) { const c = latest.get(p.mrn); if (!c || p.course > c.course) latest.set(p.mrn, p); }
     const cc = latestCode.get(p.code); if (!cc || p.course > cc.course) latestCode.set(p.code, p);
   }
-  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, ours: loc => !loc || loc.toLowerCase().includes(state.cfg.location.toLowerCase()) };
+  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, keptPast, ours: loc => !loc || loc.toLowerCase().includes(state.cfg.location.toLowerCase()) };
   const plans = [];
   for (const [mrn, appts] of by) {
     let p = latest.get(mrn); const code = codes.get(mrn);
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
     if (!p) continue;
-    const pl = planTab(p, appts, from, maxDate, o);
+    const pl = planTab(p, appts, from, maxDate, { ...o, mrn });
     // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
     const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
@@ -1587,7 +1592,9 @@ async function openTabName(tab, row) {
   } catch (e) { fail(e); }
 }
 function openPatient(tab, sec) { state.ptTab = tab; state.ptMode = "pt"; state.avDraft = null; if (sec) state.open.add(`${sec}|${tab}`); show("pts"); window.scrollTo(0, 0); }
-const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgCutoff: "cutoff" };
+/* a patient name on today's schedule also opens their Excel tab at that visit, unless turned off in Settings */
+function openPtLink(el) { if (el.dataset.sched && state.cfg.openTab !== "off") openTabName(el.dataset.pt, +el.dataset.sched); openPatient(el.dataset.pt, el.dataset.sec); }
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
 const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 Office.onReady(info => {
@@ -1595,7 +1602,7 @@ Office.onReady(info => {
   if (!POPOUT) { const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved); }
   syncCfgInputs();
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
-    const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device"].includes(k) ? (v.trim() || (k === "location" ? "San Rafael" : "auto")) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "San Rafael", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
   $("mainTabs").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return; if (b.dataset.view === "pts") state.ptMode = "list"; show(b.dataset.view); };
   $("schToggle").onclick = e => { const b = e.target.closest("[data-sv]"); if (b) { state.dash = b.dataset.sv; renderDash(); } };
@@ -1645,13 +1652,13 @@ Office.onReady(info => {
       if (acts[a]) { e.preventDefault(); acts[a](); }
       return;
     }
-    const pt = el.closest("[data-pt]"); if (pt) return openPatient(pt.dataset.pt, pt.dataset.sec);
+    const pt = el.closest("[data-pt]"); if (pt) return openPtLink(pt);
     const tb = el.closest("[data-tab],[data-sheet]"); if (tb && tb.closest("section")) openTabName(tb.dataset.tab || tb.dataset.sheet, tb.dataset.row ? +tb.dataset.row : null);
   });
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !$("schedOverlay").hidden) return closeSchedOverlay();
     if (e.key === "Escape" && !$("modal").hidden) return closeModal();
-    if (e.key === "Enter") { const pt = e.target.closest && e.target.closest("[data-pt]"); if (pt && e.target === pt) return openPatient(pt.dataset.pt, pt.dataset.sec); const el = e.target.closest && e.target.closest("[data-tab]"); if (el && e.target === el) openTabName(el.dataset.tab, el.dataset.row ? +el.dataset.row : null); }
+    if (e.key === "Enter") { const pt = e.target.closest && e.target.closest("[data-pt]"); if (pt && e.target === pt) return openPtLink(pt); const el = e.target.closest && e.target.closest("[data-tab]"); if (el && e.target === el) openTabName(el.dataset.tab, el.dataset.row ? +el.dataset.row : null); }
   });
   document.addEventListener("change", e => {
     const el = e.target;
