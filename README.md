@@ -2,6 +2,8 @@
 
 A light augmentation over the organization's TMS patient tracker template. Information stays where the template already keeps it, and the add-in adds a small, recognizable layer. It runs in **Excel on the web**; desktop add-ins are not available at the organization.
 
+Staff install and day-to-day use: see [GUIDE.md](GUIDE.md).
+
 ## Status
 
 Version 1.2 follows the reformatted MagV template (the "MagV Template" workbook): the add-in writes only into the template's own cells.
@@ -132,6 +134,7 @@ The add-in rebuilds this sheet in the Patients roster layout for the current wee
 - **Columns:** patient (links to the tab), MRN, status, Monday to Friday codes colored like the add-in (MT, MTR, F/U, Alt, X, · for a daily treatment, or the action), next F/U, graduation, auth expiry (red past, amber within the warning days), tx left, MD on-site, schedule given.
 - **Above the grid:** "X of Y treated" and the variances for each day, as in the Week view. Today's column is outlined.
 - **View only:** the sheet is protected without a password. Change things on the patient tabs or in the add-in. Typing on the sheet would be overwritten anyway.
+
 ## Import
 
 - **No setup needed:** the report's columns are detected automatically. There is no mapping and no ignore pattern to manage.
