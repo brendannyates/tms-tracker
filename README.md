@@ -79,7 +79,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 | Patients | The roster with filters: All, Active, Follow-up not scheduled, No upcoming visit. **Add patient** is here. Selecting a patient opens the patient view. |
 | Clinic | Chair and Protocols. |
 
-**Settings** is its own screen (gear, top right): clinic location, device, warning days, recent-visit window, the Update Active Patients sheet button and Place measure placeholders.
+**Settings** is its own screen (gear, top right): clinic location, device, warning days, recent-visit window, **Rebuild Active Patients sheet** (it rebuilds on its own; this forces it) and Place measure placeholders.
 
 ### New window and full screen
 
@@ -124,6 +124,14 @@ Monday to Friday visits with a one-line variance summary per day.
 
 Chair (hours and holiday closures come from the Clinic Schedule sheet) and Protocols.
 
+## Active Patients sheet
+
+The add-in rebuilds this sheet in the Patients roster layout for the current week (Sunday to Saturday, showing Monday to Friday). It runs on open and after any change, and skips the rewrite when nothing changed.
+
+- **Who is listed:** every tab whose D7 status is Pending Start, In Progress, Tapering, Paused or blank. Nobody keeps a list; Complete and Discontinued drop off.
+- **Columns:** patient (links to the tab), MRN, status, Monday to Friday codes colored like the add-in (MT, MTR, F/U, Alt, X, · for a daily treatment, or the action), next F/U, graduation, auth expiry (red past, amber within the warning days), tx left, MD on-site, schedule given.
+- **Above the grid:** "X of Y treated" and the variances for each day, as in the Week view. Today's column is outlined.
+- **View only:** the sheet is protected without a password. Change things on the patient tabs or in the add-in. Typing on the sheet would be overwritten anyway.
 ## Import
 
 - **No setup needed:** the report's columns are detected automatically. There is no mapping and no ignore pattern to manage.
@@ -131,6 +139,7 @@ Chair (hours and holiday closures come from the Clinic Schedule sheet) and Proto
 - **Device:** each patient's device is decided by where their daily treatments are booked. A Brainsway patient's MT on a provider schedule is ignored on a MagV tracker.
 - **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule uses E2.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations are noted and their date cleared.
+- **Saved list:** applying an ALL TMS list copies it to the **Appt List** tab (replaced each time). The add-in reads it back on open, so the new-patient banner and a new tab's dates still work without uploading again, and **Preview again** in Import list reruns it. Patient-specific reports are not saved there.
 - **Measures:** they are re-planned only after a significant disruption: an MTR or F/U moved, or 2 or more missed visits within a week.
 
 ## Measures placeholders

@@ -29,7 +29,7 @@ const TELE_TAG = "Tele";
 const SNOOZE_MS = 3 * 3600e3;
 /* A tab is only read or written if it matches the current template: PATIENT: in A1, MRN: in A3, and these headers in row 8. */
 const SIG = [[0, "tx #"], [2, "date"], [9, "type"], [10, "miss"], [12, "action"], [16, "notes:"]];   // offsets within C8:S8
-const KNOWN_SHEETS = ["Active Patients", "Protocols", "New Template", "Clinic Schedule", "Chair Schedule", "Patient Schedule", "Standard + Specialty Tx", "Config"];
+const KNOWN_SHEETS = ["Appt List", "Active Patients", "Protocols", "New Template", "Clinic Schedule", "Chair Schedule", "Patient Schedule", "Standard + Specialty Tx", "Config"];
 const EXEMPT_TAG = "NextGen: Exempt, confirm", UNCLASS_TAG = "NextGen: no-show not classified";
 /* One add-in, one workbook per device. The device comes from the workbook name unless the setting overrides it. */
 const DEVICES = { MagV: { chair: "MagV1", other: /brainsway|\bBW\b/i, ours: /magv|mag\s?venture/i }, Brainsway: { chair: "Brainsway", other: /magv|mag\s?venture/i, ours: /brainsway|\bBW\b/i } };
@@ -43,7 +43,7 @@ const chairName = () => DEVICES[device()].chair;
 const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael" },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], templateOk: true, pendingNew: [],
-  drafts: {}, initials: "", techName: "", apNames: new Set(), closures: new Map(), wbName: "", clinic: null, report: null,
+  drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dayOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
   open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null
 };
@@ -72,7 +72,7 @@ const isNum = v => typeof v === "number" && v > 0;
 const money = v => typeof v === "number" ? `$${v.toFixed(2)}` : "";
 const bizDaysUntil = (from, to) => { if (to < from) return -1; let n = 0; for (let d = from + 1; d <= to; d++) { const w = dow(d); if (w > 0 && w < 6) n++; } return n; };
 function toSerial(v) {
-  if (v instanceof Date) { const d = new Date(v.getTime() + 432e5); return utcSerial(d.getFullYear(), d.getMonth() + 1, d.getDate()); }
+  if (v instanceof Date) { const d = new Date(v.getTime() + 3e4); return utcSerial(d.getFullYear(), d.getMonth() + 1, d.getDate()); }
   if (typeof v === "number") return v > 20000 ? Math.floor(v) : null;
   const s = String(v ?? "").trim(); let m;
   if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/))) { let y = +m[3]; if (y < 100) y += 2000; return utcSerial(y, +m[1], +m[2]); }
@@ -164,10 +164,10 @@ async function refresh() {
         return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_LAST}`), s9: g("S9") };
       });
-      const prW = ctx.workbook.worksheets.getItemOrNullObject("Protocols"), csW = ctx.workbook.worksheets.getItemOrNullObject("Clinic Schedule"), apW = ctx.workbook.worksheets.getItemOrNullObject("Active Patients");
+      const prW = ctx.workbook.worksheets.getItemOrNullObject("Protocols"), csW = ctx.workbook.worksheets.getItemOrNullObject("Clinic Schedule");
       await ctx.sync();
-      const prv = prW.isNullObject ? null : prW.getRange("A2:I40"), cs = csW.isNullObject ? null : csW.getRange("A3:H40"), ap = apW.isNullObject ? null : apW.getRange("B3:B39");
-      [prv, cs, ap].forEach(r => r && r.load("values")); await ctx.sync();
+      const prv = prW.isNullObject ? null : prW.getRange("A2:I40"), cs = csW.isNullObject ? null : csW.getRange("A3:H40");
+      [prv, cs].forEach(r => r && r.load("values")); await ctx.sync();
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -206,7 +206,7 @@ async function refresh() {
       state.patients.sort((a, b) => a.code.localeCompare(b.code) || a.course - b.course);
       state.patients.forEach(p => p.d = derive(p));
       state.protocols = prv ? prv.values.filter(r => r[1] !== "").map(r => ({ type: r[0], name: String(r[1]), rep: r[2], pulses: r[3], trains: r[4], iti: r[5], typed: r[7], inten: r[8] })) : [];
-      state.apNames = new Set(ap ? ap.values.map(r => String(r[0]).trim()).filter(Boolean) : []);
+      state.hasAP = sheets.items.some(s => s.name === AP_SHEET);
       state.clinic = null;
       if (cs) {
         const days = {}; for (let i = 0; i < 5; i++) { const v = cs.values[i + 1], t = x => typeof x === "number" && x > 0 ? Math.round(x * 1440) : null; days[i + 1] = { open: t(v[1]), close: t(v[2]), bs: t(v[3]), be: t(v[4]) }; }
@@ -214,9 +214,14 @@ async function refresh() {
       }
     });
     state.report = Office.context.document.settings.get("tms_report") || null;
+    if (!state.file && !state.listLoaded) {
+      state.listLoaded = true;
+      try { state.file = await loadList(); if (state.file) await buildPlan(true); } catch (e) { console.error(e); toast(`The ${LIST_SHEET} tab could not be read. Import the list again.`, true); }
+    }
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
+    syncActiveSheet();
   } catch (e) { fail(e); }
 }
 const num = (v, d) => (v === "" || v == null || isNaN(Number(v))) ? d : Number(v);
@@ -399,7 +404,6 @@ function attentionHtml() {
   const dec = P.flatMap(p => p.d.decisions.map(r => ({ p, r })));
   return gi(`No appointment in ${state.cfg.recentDays}+ days: pause or discontinue?`, P.filter(p => p.d.stale).map(p => item(p, "", `${p.d.txDone}/${p.d.total} treatments, last ${p.d.lastTx ? fmtDate(p.d.lastTx) : "none"}`, "red", null, btn("status", p.tab, "Paused", "Paused") + btn("status", p.tab, "Discontinued", "Discontinued"))), "Nobody is stale")
     + gi("Status update suggested", P.filter(p => p.d.suggest).map(p => item(p, `<span class="chip">${esc(p.status || "blank")} \u2192 ${esc(p.d.suggest)}</span>`, "", "amb", null, btn("status", p.tab, p.d.suggest, "Apply"))), "Statuses are current")
-    + gi("Complete, can leave Active Patients", P.filter(p => p.status === "Complete" && state.apNames.has(p.tab)).map(p => item(p, "", "", "", null, btn("rmAP", p.tab, "", "Remove from Active Patients"))), "None")
     + gi("BIDF info needed today", A.filter(p => p.d.bidfToday).map(p => item(p, "", `Scheduled today. Enter ${p.d.bidf.join("; ")}`, "red", null, `<button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button>`)), "None")
     + gi("Auth flags", A.filter(p => p.d.authFlags.length).map(p => item(p, "", p.d.authFlags.join("; "), "red")), "No auth issues")
     + gi("Protocol", A.filter(p => p.d.protoFlags.length).map(p => item(p, "", p.d.protoFlags.join("; "), "amb")), "None due")
@@ -736,35 +740,87 @@ function viewProtocols() {
 async function setStatus(tab, val) {
   try { await writeCells(tab, [["D7", val]]); toast(`${tab}: ${val}`); await refresh(); } catch (e) { fail(e); }
 }
-async function removeFromAP(tab) {
-  if (POPOUT) return callPane("removeFromAP", [tab]);
+/* ---------- Active Patients sheet: a view-only copy of the Patients roster for this week, rebuilt whenever the data changes ---------- */
+const AP_SHEET = "Active Patients", AP_SHOW = [...ACTIVE, "Paused"], AP_HEAD = 4, AP_FIRST = 7;
+const AP_FILL = { MT: "#dcffff", MTR: "#e6f3d6", "F/U": "#ffe6f1", Alt: "#ffeccc" };
+function activeSheetModel() {
+  const t = todaySerial(), ws = weekStart(t), days = [1, 2, 3, 4, 5].map(i => ws + i);
+  const P = state.patients.filter(p => p.status === "" || AP_SHOW.includes(p.status)), blank = Array(6).fill("");
+  const head = ["Patient", "MRN", "Status", ...days.map(d => `${DAYS[dow(d)]} ${fmtDate(d)}${d === t ? " (today)" : ""}`), "Next F/U", "Graduation", "Auth exp", "Tx left", "MD on-site", "Schedule given"];
+  const vs = days.map(variances);
+  const treated = ["Treated", "", "", ...vs.map(v => v.expected ? `${v.actual} of ${v.expected}` : ""), ...blank];
+  const notes = ["Variances", "", "", ...vs.map((v, i) => [state.closures.has(days[i]) ? `Closed: ${state.closures.get(days[i])}` : "", ...Object.entries(v.groups).filter(([, a]) => a.length).map(([k, a]) => `${a.length} ${k.toLowerCase()}`)].filter(Boolean).join(", ")), ...blank];
+  const rows = P.map(p => [p.tab, p.mrnRaw, p.status || "(blank)", ...days.map(d => dayCode(p, d)), p.d.fuNext ? p.d.fuNext.date : "", p.d.grad ?? "", p.authExp ?? "",
+    p.txRem ?? Math.max(0, p.d.total - p.d.txDone), p.d.mdOnSite ? "Yes" : "", p.ben.lastSched ?? ""]);
+  return { t, days, P, head, sum: [treated, notes], rows, sig: JSON.stringify([t, head, treated, notes, rows]) };
+}
+async function syncActiveSheet(force) {
+  if (state.apBusy) { state.apAgain = true; return; }
+  const m = activeSheetModel(), settings = Office.context.document.settings;
+  if (!force && state.hasAP && (state.apSig ?? settings.get("tms_ap_sig")) === m.sig) { state.apSig = m.sig; return; }
+  state.apBusy = true;
   try {
+    const n = m.rows.length, last = AP_FIRST + n - 1, end = Math.max(last, AP_FIRST), legend = end + 2, col = i => String.fromCharCode(65 + i);
     await Excel.run(async ctx => {
-      const ap = ctx.workbook.worksheets.getItem("Active Patients"), r = ap.getRange("B3:B39"); r.load("values"); await ctx.sync();
-      const i = r.values.findIndex(v => String(v[0]).trim() === tab); if (i >= 0) ap.getRange(`B${3 + i}`).clear("Contents"); await ctx.sync();
+      let ws = ctx.workbook.worksheets.getItemOrNullObject(AP_SHEET); await ctx.sync();
+      if (ws.isNullObject) ws = ctx.workbook.worksheets.add(AP_SHEET);
+      ws.protection.load("protected"); await ctx.sync();
+      if (ws.protection.protected) ws.protection.unprotect();
+      try { ws.autoFilter.remove(); await ctx.sync(); } catch { /* no filter */ }
+      const all = ws.getRange(); all.clear(Excel.ClearApplyTo.hyperlinks); all.clear(); all.unmerge(); all.conditionalFormats.clearAll(); all.dataValidation.clear(); ws.freezePanes.unfreeze();
+      all.format.rowHeight = 15; all.format.columnWidth = 60;
+      all.format.font.name = "Calibri"; all.format.font.size = 10; all.format.font.color = "#1c2a33"; ws.showGridlines = false;
+      const stamp = `${fmtDateY(m.t)} ${fmtTime(new Date().getHours() * 60 + new Date().getMinutes())}`;
+      ws.getRange("A1").values = [[AP_SHEET]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
+      ws.getRange("A2").values = [[`Week of ${fmtDateY(m.days[0])}. Rebuilt by the TMS Tracker add-in ${stamp}. View only: change things on the patient tabs or in the add-in.`]];
+      ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
+      const hd = ws.getRange(`A${AP_HEAD}:N${AP_HEAD}`); hd.values = [m.head];
+      hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true; hd.format.wrapText = true; hd.format.verticalAlignment = "Center"; hd.format.rowHeight = 30;
+      const sm = ws.getRange(`A${AP_HEAD + 1}:N${AP_HEAD + 2}`); sm.values = m.sum; sm.format.fill.color = "#f3f6f8"; sm.format.verticalAlignment = "Top";
+      ws.getRange(`A${AP_HEAD + 1}:A${AP_HEAD + 2}`).format.font.bold = true;
+      ws.getRange(`D${AP_HEAD + 1}:H${AP_HEAD + 1}`).format.font.bold = true;
+      const vr = ws.getRange(`D${AP_HEAD + 2}:H${AP_HEAD + 2}`); vr.format.wrapText = true; vr.format.font.size = 9; vr.format.font.color = "#5b6b75";
+      ws.getRange(`D${AP_HEAD}:H${end}`).format.horizontalAlignment = "Center";
+      if (n) {
+        const body = ws.getRange(`A${AP_FIRST}:N${last}`); body.values = m.rows;
+        ["I", "J", "K", "N"].forEach(c => ws.getRange(`${c}${AP_FIRST}:${c}${last}`).numberFormat = m.rows.map(() => ["m/d/yyyy"]));
+        const b = body.format.borders.getItem("InsideHorizontal"); b.style = "Continuous"; b.color = "#dde3e8";
+        const bb = body.format.borders.getItem("EdgeBottom"); bb.style = "Continuous"; bb.color = "#dde3e8";
+        ws.getRange(`D${AP_FIRST}:H${last}`).format.font.bold = true;
+        m.rows.forEach((r, i) => {
+          const row = AP_FIRST + i, p = m.P[i];
+          ws.getRange(`A${row}`).hyperlink = { documentReference: `'${p.tab.replace(/'/g, "''")}'!A1`, textToDisplay: p.tab, screenTip: `Open ${p.tab}` };
+          r.slice(3, 8).forEach((c, j) => {
+            const cell = ws.getRange(`${col(3 + j)}${row}`);
+            if (AP_FILL[c]) cell.format.fill.color = AP_FILL[c]; else if (c === "X") { cell.format.fill.color = "#fbe9e7"; cell.format.font.color = "#b3261e"; }
+          });
+          if (p.status === "Paused") { const c = ws.getRange(`C${row}`); c.format.fill.color = "#fdf1d8"; c.format.font.color = "#8a5a00"; }
+          if (p.status === "Pending Start" || !p.status) ws.getRange(`C${row}`).format.font.italic = true;
+          if (p.authExp != null) {
+            const c = ws.getRange(`K${row}`), left = p.authExp - m.t;
+            if (left < 0) { c.format.fill.color = "#fbe9e7"; c.format.font.color = "#b3261e"; } else if (left <= state.cfg.authDays) { c.format.fill.color = "#fdf1d8"; c.format.font.color = "#8a5a00"; }
+          }
+        });
+      } else ws.getRange(`A${AP_FIRST}`).values = [["No patients are Pending Start, In Progress, Tapering or Paused."]];
+      const ti = m.days.indexOf(m.t);
+      if (ti >= 0) ["EdgeLeft", "EdgeRight"].forEach(e => { const x = ws.getRange(`${col(3 + ti)}${AP_HEAD}:${col(3 + ti)}${end}`).format.borders.getItem(e); x.style = "Continuous"; x.weight = "Medium"; x.color = "#1c2a33"; });
+      ws.getRange(`A${legend}:G${legend}`).values = [["Key", "MT", "MTR", "F/U", "Alt = other clinic", "X = missed", "\u00B7 = daily treatment. Other text is the action on that visit."]];
+      ws.getRange(`A${legend}`).format.font.bold = true;
+      [["B", AP_FILL.MT], ["C", AP_FILL.MTR], ["D", AP_FILL["F/U"]], ["E", AP_FILL.Alt], ["F", "#fbe9e7"]].forEach(([c, f]) => { const x = ws.getRange(`${c}${legend}`); x.format.fill.color = f; x.format.horizontalAlignment = "Center"; });
+      ws.getRange(`F${legend}`).format.font.color = "#b3261e";
+      [72, 62, 82, 64, 64, 64, 64, 64, 66, 66, 66, 48, 58, 70].forEach((w, i) => ws.getRange(`${col(i)}:${col(i)}`).format.columnWidth = w);
+      ws.getRange(`A${AP_HEAD + 2}:N${AP_HEAD + 2}`).format.autofitRows();
+      ws.freezePanes.freezeAt(ws.getRange(`A1:A${AP_HEAD + 2}`));
+      ws.protection.protect({ allowFormatColumns: true, allowFormatRows: true });
+      await ctx.sync();
     });
-    toast(`${tab} removed from Active Patients.`); await refresh();
-  } catch (e) { fail(e); }
+    state.apSig = m.sig; state.hasAP = true; settings.set("tms_ap_sig", m.sig); settings.saveAsync(); return true;
+  } catch (e) { console.error(e); if (!state.apWarned) { state.apWarned = true; toast(`The ${AP_SHEET} sheet could not be rebuilt: ${e.message || e}`, true); } return false; }
+  finally { state.apBusy = false; if (state.apAgain) { state.apAgain = false; syncActiveSheet(); } }
 }
-const gridCode = r => r.miss ? "Missed" : r.alt ? "Different Clinic" : r.type === "MT" ? "MT" : r.type === "MTR" ? "MTR" : r.type === "F/U" ? "F/U" : "Daily Tx";
-async function fillGrid(monday = $("gridMonday").checked) {
-  if (POPOUT) return callPane("fillGrid", [monday]);
-  try {
-    const n = await Excel.run(async ctx => {
-      const ws = ctx.workbook.worksheets.getItem("Active Patients");
-      if (monday) { const t = todaySerial(); ws.getRange("N2").values = [[t - ((dow(t) + 6) % 7)]]; await ctx.sync(); }
-      const hdr = ws.getRange("N2:W2"), names = ws.getRange("B3:B39"), grid = ws.getRange("N3:W39");
-      hdr.load("values"); names.load("values"); grid.load("formulas"); await ctx.sync();
-      const dates = hdr.values[0], out = grid.formulas.map(r => r.slice()); let count = 0;
-      names.values.forEach((nm, i) => {
-        const p = state.patients.find(x => x.tab === String(nm[0]).trim()); if (!p) return;
-        dates.forEach((d, j) => { if (out[i][j] !== "" || !isNum(d)) return; const r = p.rows.find(x => x.date === Math.floor(d)); if (r) { out[i][j] = gridCode(r); count++; } });
-      });
-      grid.formulas = out; await ctx.sync(); return count;
-    });
-    toast(`Filled ${n} cells.`);
-  } catch (e) { fail(e); }
-}
+async function rebuildActiveClick() {
+  if (POPOUT) return callPane("rebuildActive", []);
+  state.apWarned = false; if (await syncActiveSheet(true)) toast(`${AP_SHEET} sheet rebuilt.`); }
 /* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true } */
 async function applyOps(ops) {
   if (POPOUT) return callPane("applyOps", [ops]);
@@ -1118,11 +1174,10 @@ async function addPatient(d) {
   try {
     await Excel.run(async ctx => {
       const wsAll = ctx.workbook.worksheets;
-      const ex = wsAll.getItemOrNullObject(name), tpl = wsAll.getItemOrNullObject("New Template"), ap = wsAll.getItemOrNullObject("Active Patients"); await ctx.sync();
+      const ex = wsAll.getItemOrNullObject(name), tpl = wsAll.getItemOrNullObject("New Template"); await ctx.sync();
       if (!ex.isNullObject) throw new Error(`A tab named ${name} already exists.`);
       if (tpl.isNullObject) throw new Error("There is no New Template tab to copy.");
       if (state.fix.has("New Template")) { await ensureCost(ctx, tpl); state.fix.delete("New Template"); }
-      const names = ap.isNullObject ? null : ap.getRange("B3:B39"); if (names) names.load("values"); await ctx.sync();
       const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name;
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
       set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N6", d.apAssess);
@@ -1134,7 +1189,6 @@ async function addPatient(d) {
       d.week.forEach(([f, t], i) => { if (f || t) ws.getRange(`W${WK_FIRST + i}:X${WK_FIRST + i}`).values = [[tf(f), tf(t)]]; });
       const rg = d.ranges.map(w => ["Unavailable", inputToSerial(w.from), inputToSerial(w.to) || inputToSerial(w.from), w.note || ""]).slice(0, AV_LAST - AV_FIRST + 1);
       if (rg.length) ws.getRange(`V${AV_FIRST}:Y${AV_FIRST + rg.length - 1}`).values = rg;
-      if (names) { const i = names.values.findIndex(r => String(r[0]).trim() === ""); if (i >= 0) ap.getRange(`B${3 + i}`).values = [[name]]; else toast("Tab created, but Active Patients has no empty row.", true); }
       ws.activate(); await ctx.sync();
     });
     state.pendingNew = state.pendingNew.filter(x => x.mrn !== normMrn(d.apMrn));
@@ -1142,7 +1196,7 @@ async function addPatient(d) {
     await refresh();
     const np = state.patients.find(x => x.tab === name); if (np) await placeMeasures([np]);
     toast(`Created ${name}.`); await refresh();
-    if (state.file) { show("imp"); await buildPlan(); toast(`Created ${name}. The preview now includes its dates.`); }
+    if (state.file && state.file.rows.some(r => normMrn(r[state.file.map.mMrn]) === normMrn(d.apMrn))) { show("imp"); await buildPlan(); toast(`Created ${name}. The preview now includes its dates.`); }
     return true;
   } catch (e) { fail(e); }
 }
@@ -1160,19 +1214,66 @@ async function onFile(e) {
   const f = e.target.files[0]; if (!f) return;
   try {
     const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
-    const all = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
-    const hi = all.findIndex(r => r.filter(c => String(c).trim() !== "").length >= 5);
-    if (hi < 0) throw new Error("Could not find the report's header row.");
-    let asOf = null, asOfMin = null;
-    for (const r of all.slice(0, hi)) for (const c of r) { const m = String(c).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AaPp][Mm])/); if (m) { asOf = toSerial(m[1]); asOfMin = toMinutes(m[2]); } }
-    const headers = all[hi].map(h => String(h).trim());
-    const map = Object.fromEntries(Object.entries(MAP_RE).map(([k, re]) => [k, headers.findIndex(h => re.test(h))]));
-    map.mPat = headers.findIndex(h => /other id/i.test(h)); if (map.mPat < 0) map.mPat = headers.findIndex(h => /pat\s*name|^patient$/i.test(h));
-    const missing = [["mMrn", "MRN"], ["mDate", "Appt Date"], ["mSts", "Sts"], ["mEvent", "Event"]].filter(([k]) => map[k] < 0).map(([, n]) => n);
-    if (missing.length) throw new Error(`This doesn't look like the 1 Appt List - ALL TMS report. Missing: ${missing.join(", ")}.`);
-    state.file = { headers, rows: all.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== "")), asOf, asOfMin, map, name: f.name };
+    state.file = parseReport(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }), f.name);
     await buildPlan();
   } catch (err) { fail(err); }
+}
+function parseReport(all, name, saved) {
+  const hi = all.findIndex(r => r.filter(c => String(c).trim() !== "").length >= 5);
+  if (hi < 0) throw new Error("Could not find the report's header row.");
+  let asOf = null, asOfMin = null;
+  for (const r of all.slice(0, hi)) for (const c of r) { const m = String(c).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AaPp][Mm])/); if (m) { asOf = toSerial(m[1]); asOfMin = toMinutes(m[2]); } }
+  const headers = all[hi].map(h => String(h).trim());
+  const map = Object.fromEntries(Object.entries(MAP_RE).map(([k, re]) => [k, headers.findIndex(h => re.test(h))]));
+  map.mPat = headers.findIndex(h => /other id/i.test(h)); if (map.mPat < 0) map.mPat = headers.findIndex(h => /pat\s*name|^patient$/i.test(h));
+  const missing = [["mMrn", "MRN"], ["mDate", "Appt Date"], ["mSts", "Sts"], ["mEvent", "Event"]].filter(([k]) => map[k] < 0).map(([, n]) => n);
+  if (missing.length) throw new Error(`This doesn't look like the 1 Appt List - ALL TMS report. Missing: ${missing.join(", ")}.`);
+  return { headers, rows: all.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== "")), asOf, asOfMin, map, name, saved: !!saved };
+}
+
+/* The last applied ALL TMS list lives on the Appt List tab, so it survives closing the pane: new-patient banners and
+   new tabs keep their dates without uploading it again. The run date is stored as text so parseReport reads it back. */
+const LIST_SHEET = "Appt List", LIST_HEAD = 6;
+const toCell = v => {
+  if (!(v instanceof Date)) return v;
+  const s = (v.getFullYear() < 1900 ? 0 : utcSerial(v.getFullYear(), v.getMonth() + 1, v.getDate())) + Math.round((v.getHours() * 3600 + v.getMinutes() * 60 + v.getSeconds()) / 60) / 1440;
+  return s < 0 ? 0 : s;
+};
+function saveList(f) {
+  const cols = f.headers.length, rows = f.rows.map(r => Array.from({ length: cols }, (_, i) => toCell(r[i] ?? "")));
+  const dateCol = f.headers.map((_, i) => f.rows.some(r => r[i] instanceof Date));
+  const meta = [["Run", f.asOf == null ? "unknown" : `${fmtDateY(f.asOf)} ${f.asOfMin != null ? fmtTime(f.asOfMin) : ""}`.trim()], ["File", f.name || ""], ["Imported", fmtDateY(todaySerial())],
+    ["Replaced each time an ALL TMS list is applied. The add-in reads it back, so leave it as is.", ""]];
+  const x = { headers: f.headers, rows, dateCol, meta };   // dates are serials by now, so this survives the trip from a pop-out
+  return POPOUT ? callPane("writeList", [x]) : writeList(x);
+}
+async function writeList({ headers, rows, dateCol, meta }) {
+  const cols = headers.length;
+  const colL = n => { let s = ""; for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; }, last = colL(cols - 1);
+  await Excel.run(async ctx => {
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync();
+    if (ws.isNullObject) ws = ctx.workbook.worksheets.add(LIST_SHEET); else ws.getRange().clear();
+    ws.getRange("A1:B4").numberFormat = meta.map(() => ["@", "@"]); ws.getRange("A1:B4").values = meta; ws.getRange("A1:A3").format.font.bold = true;
+    const hd = ws.getRange(`A${LIST_HEAD}:${last}${LIST_HEAD}`); hd.values = [headers]; hd.format.font.bold = true;
+    if (rows.length) {
+      const body = ws.getRange(`A${LIST_HEAD + 1}:${last}${LIST_HEAD + rows.length}`);
+      body.numberFormat = rows.map(r => r.map((v, i) => !dateCol[i] ? "@" : v < 1 ? "h:mm AM/PM" : v % 1 ? "m/d/yyyy h:mm AM/PM" : "m/d/yyyy"));
+      body.values = rows;
+    }
+    ws.getRange(`A${LIST_HEAD}:${last}${LIST_HEAD + rows.length}`).format.autofitColumns();
+    await ctx.sync();
+  });
+  if (!POPOUT && (!state.file || state.file.saved)) { state.file = null; state.listLoaded = false; }   // a pop-out applied it: the pane reads it back on its next refresh
+}
+async function loadList() {
+  let vals = null;
+  await Excel.run(async ctx => {
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync(); if (ws.isNullObject) return;
+    const u = ws.getUsedRange(true); u.load("values"); await ctx.sync(); vals = u.values;
+  });
+  if (!vals || vals.length <= LIST_HEAD) return null;
+  const name = String((vals.find(r => String(r[0]).trim() === "File") || [])[1] || LIST_SHEET);
+  return parseReport(vals, name, true);
 }
 function planTab(p, appts, from, to, o) {
   const R = p.rows.map(r => ({ ...r })), orig = p.rows;
@@ -1236,10 +1337,10 @@ function planTab(p, appts, from, to, o) {
   const dates = R.filter((r, i) => r.date !== orig[i].date && r.date != null).map(r => r.date);
   return { name: p.tab, ops, set: dates.length, ...st, changed: ops.length > 0, reflow: moved || multi };
 }
-async function buildPlan() {
+async function buildPlan(quiet) {
   if (!state.file) return;
-  const ps = document.querySelector('input[name=rtype]:checked').value === "ps", from = todaySerial(), m = state.file.map, dev = DEVICES[device()];
-  await refresh();
+  const ps = !state.file.saved && document.querySelector('input[name=rtype]:checked').value === "ps", from = todaySerial(), m = state.file.map, dev = DEVICES[device()];
+  if (!quiet) await refresh();
   const cell = (r, k) => m[k] >= 0 ? r[m[k]] : "";
   // device is decided per patient from where their daily treatments are booked, so an MT on a provider schedule follows its patient
   const tally = new Map();
@@ -1287,11 +1388,16 @@ async function buildPlan() {
   const noTab = [...by.entries()].filter(([k]) => !latest.has(k) && !(codes.get(k) && latestCode.has(codes.get(k)) && !latestCode.get(codes.get(k)).mrn));
   state.pendingNew = noTab.map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from).sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
   state.plan = { ps, plans, from, to: maxDate, ignored };
-  renderPlan(); renderBanners();
+  if (!quiet) renderPlan(); renderBanners(); renderSavedList();
+}
+const listRun = f => f.asOf == null ? "no run date" : `run ${fmtDateY(f.asOf)}${f.asOfMin != null ? " " + fmtTime(f.asOfMin) : ""}`;
+function renderSavedList() {
+  const f = state.file && state.file.saved ? state.file : null; $("savedList").hidden = !f;
+  if (f) $("savedListMsg").textContent = `The ${LIST_SHEET} tab holds the last applied list, ${listRun(f)}, ${f.rows.length} rows.`;
 }
 function renderPlan() {
   const { ps, plans, from, to } = state.plan, ch = plans.filter(p => p.changed), tot = k => ch.reduce((n, p) => n + (p[k] || 0), 0);
-  let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
+  let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${state.file.saved ? `Saved list (${esc(listRun(state.file))})` : esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
   h += ch.length ? `<table><thead><tr><th>Tab</th><th class="num">Dates</th><th class="num">Types</th><th class="num">Cleared</th><th class="num">Missed</th></tr></thead><tbody>${ch.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.set}</td><td class="num">${p.types}</td><td class="num">${p.cleared}</td><td class="num">${p.miss}</td></tr>`).join("")}
     <tr><th>Total</th><th class="num">${tot("set")}</th><th class="num">${tot("types")}</th><th class="num">${tot("cleared")}</th><th class="num">${tot("miss")}</th></tr></tbody></table>` : `<div class="none">The tracker already matches this report.</div>`;
   const pv = ch.filter(p => p.e2).length;
@@ -1305,8 +1411,8 @@ async function applyPlan() {
   try {
     await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
     const f = state.file;
-    if (!plan.ps) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); }
-    state.plan = null; $("planBox").hidden = true; $("file").value = ""; state.file = null;
+    if (!plan.ps && !f.saved) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); await saveList(f); }
+    state.plan = null; $("planBox").hidden = true; $("file").value = ""; state.file = plan.ps ? null : { ...f, saved: true };
     await refresh();
     const sug = state.patients.filter(p => p.d.suggest);
     if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })));
@@ -1393,13 +1499,13 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old,
-    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, apNames: [...state.apNames], closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report });
+    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report });
   const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
   for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
 }
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, skipped: o.skipped, templateOk: o.templateOk,
-    pendingNew: o.pendingNew, apNames: new Set(o.apNames), closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report });
+    pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report });
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -1412,7 +1518,7 @@ function callPane(fn, args) {
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
-  refresh: () => refresh(), applyOps: ops => applyOps(ops), removeFromAP: t => removeFromAP(t), fillGrid: m => fillGrid(m), mkSchedSheet: () => mkSchedSheet(),
+  refresh: () => refresh(), applyOps: ops => applyOps(ops), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: () => setupColumns(), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
   saveSetting: (k, v) => saveSetting(k, v)
 };
@@ -1509,7 +1615,7 @@ Office.onReady(info => {
     if (a) {
       const t = el.dataset.t, v = el.dataset.v, row = +el.dataset.row;
       const acts = {
-        apply: () => applyPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v), status: () => setStatus(t, v), rmAP: () => removeFromAP(t), mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(),
+        apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v), status: () => setStatus(t, v), mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(),
         classify: () => freebieModal(t, row), missKind: () => markMiss(t, row, v), undoMiss: () => undoMiss(t, row), pulses: () => markPulses(t, row, el), saveMeas: () => saveMeasures(t, row, el), moveMeas: () => moveMeasures(t, row, el),
         measToggle: () => { const k = `meas|${t}|${row}`; if (state.open.has(k)) state.open.delete(k); else state.open.add(k); renderDash(); },
         mtSave: () => saveMT(t, row, el), protoSave: () => saveProtocol(t, el), print: () => printModal(t),
@@ -1547,8 +1653,8 @@ Office.onReady(info => {
     if (el.dataset.dk && el.tagName === "SELECT" && draftInput(el)) renderDash();
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
-  $("refresh").onclick = () => refresh(); $("btnGrid").onclick = () => fillGrid($("gridMonday").checked); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
-  $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && buildPlan());
+  $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
+  $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
