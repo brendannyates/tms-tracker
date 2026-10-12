@@ -29,6 +29,8 @@ const TELE_TAG = "Tele";
 const SNOOZE_MS = 3 * 3600e3;
 /* A tab is only read or written if it matches the current template: PATIENT: in A1, MRN: in A3, and these headers in row 8. */
 const SIG = [[0, "tx #"], [2, "date"], [9, "type"], [10, "miss"], [12, "action"], [16, "notes:"]];   // offsets within C8:S8
+/* Update tabs only touches trackers with a visit (column E) on or after the cutoff whose status (D7) isn't Discontinued or Complete */
+const CUTOFF_DEFAULT = "2026-10-12";
 const KNOWN_SHEETS = ["Appt List", "Active Patients", "Protocols", "New Template", "Clinic Schedule", "Chair Schedule", "Patient Schedule", "Standard + Specialty Tx", "Config"];
 const EXEMPT_TAG = "NextGen: Exempt, confirm", UNCLASS_TAG = "NextGen: no-show not classified";
 /* One add-in, one workbook per device. The device comes from the workbook name unless the setting overrides it. */
@@ -41,8 +43,8 @@ function device() {
 const chairName = () => DEVICES[device()].chair;
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael" },
-  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], templateOk: true, pendingNew: [],
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", cutoff: CUTOFF_DEFAULT },
+  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dayOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
   open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null
@@ -151,14 +153,17 @@ async function refresh() {
     await Excel.run(async ctx => {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
-      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11") }));
-      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); }); await ctx.sync();
+      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
+      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.d7.load("values"); x.e.load("values"); }); await ctx.sync();
+      const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
+      const live = x => x.name === "New Template" || (!/^(discontinued|complete)/i.test(String(x.d7.values[0][0]).trim()) && x.e.values.some(([v]) => (eDate(v) ?? 0) >= cut));
+      state.stale = sg.filter(x => !live(x)).map(x => x.name); const stale = new Set(state.stale);
       const ok = x => String(x.a1.values[0][0]).trim().toUpperCase() === "PATIENT:" && String(x.a3.values[0][0]).trim().toUpperCase() === "MRN:" && SIG.every(([i, w]) => String(x.h.values[0][i]).trim().toLowerCase() === w);
       const cur = x => ok(x) && isCurrent(x.h.values[0][17], x.v11.values[0][0]);
       const okNames = new Set(sg.filter(cur).map(x => x.name));
       state.templateOk = okNames.has("New Template");
-      state.old = sg.filter(x => x.name !== "New Template" && ok(x) && !cur(x)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
-      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && !ok(x)).map(x => x.name), other: sheets.items.filter(s => !TAB_RE.test(s.name) && !KNOWN_SHEETS.includes(s.name) && !/ \(old\)$/.test(s.name)).length };
+      state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !cur(x)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
+      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: sheets.items.filter(s => !TAB_RE.test(s.name) && !KNOWN_SHEETS.includes(s.name) && !/ \(old\)$/.test(s.name)).length };
       const L = sheets.items.filter(s => okNames.has(s.name)).map(s => {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
         return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
@@ -173,7 +178,7 @@ async function refresh() {
       state.patients = []; state.tabs = []; state.fix = new Map();
       for (const l of L) {
         const cv = l.cost.values, f = { cost: String(cv[0][3]).trim() !== BEFORE_HDR || !/LET\(/.test(String(l.a10.formulas[0][0])) };
-        if (Object.values(f).some(Boolean)) state.fix.set(l.name, f);
+        if (Object.values(f).some(Boolean) && !stale.has(l.name)) state.fix.set(l.name, f);
         if (l.name === "New Template") continue;
         const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, w = l.w18.values.map(r => r[0]), H = (a, c) => h[a - 2][c];
         const mins = [0, 1, 2].map(i => pv[i][4]).filter(x => typeof x === "number");
@@ -357,6 +362,8 @@ function renderBanners() {
   if (sk.layout.length) parts.push(`${sk.layout.length} tab${sk.layout.length > 1 ? "s" : ""} in an older layout (${sk.layout.map(esc).join(", ")})`);
   if (sk.other) parts.push(`${sk.other} tab${sk.other > 1 ? "s" : ""} not named by LASFIR`);
   if (!state.templateOk) parts.push("the New Template tab does not match the current layout (Time in T8, Code in V11)");
+  const ns = state.stale.length;
+  $("cutoffNote").textContent = ns ? `${ns} tab${ns === 1 ? " is" : "s are"} left out of Update tabs: no visit on or after this date, or Discontinued/Complete.` : "";
   $("skipText").innerHTML = parts.length ? `Left untouched: ${parts.join("; ")}. The add-in only reads and writes tabs that match the current template.` : "";
   show("skipNote", parts.length > 0);
   const n = state.fix.size, o = state.old.length, msg = [];
@@ -1498,13 +1505,13 @@ function show(view) {
 const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
-  const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old,
+  const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report });
   const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
   for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
 }
 function applySnap(o) {
-  Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, skipped: o.skipped, templateOk: o.templateOk,
+  Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk,
     pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report });
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -1580,7 +1587,7 @@ async function openTabName(tab, row) {
   } catch (e) { fail(e); }
 }
 function openPatient(tab, sec) { state.ptTab = tab; state.ptMode = "pt"; state.avDraft = null; if (sec) state.open.add(`${sec}|${tab}`); show("pts"); window.scrollTo(0, 0); }
-const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays" };
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgCutoff: "cutoff" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
 const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 Office.onReady(info => {
@@ -1588,8 +1595,8 @@ Office.onReady(info => {
   if (!POPOUT) { const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved); }
   syncCfgInputs();
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
-    const v = $(id).value; state.cfg[k] = ["location", "device"].includes(k) ? (v.trim() || (k === "location" ? "San Rafael" : "auto")) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
-    saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); }; });
+    const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device"].includes(k) ? (v.trim() || (k === "location" ? "San Rafael" : "auto")) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
   $("mainTabs").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return; if (b.dataset.view === "pts") state.ptMode = "list"; show(b.dataset.view); };
   $("schToggle").onclick = e => { const b = e.target.closest("[data-sv]"); if (b) { state.dash = b.dataset.sv; renderDash(); } };
   $("clinicTabs").onclick = e => { const b = e.target.closest("[data-cv]"); if (b) { state.clinicTab = b.dataset.cv; renderDash(); } };
