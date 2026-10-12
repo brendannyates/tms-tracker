@@ -272,8 +272,7 @@ body.wide.attc .attTog::before{content:"\203A"}
       <div><label for="cfgProto">Protocol warning (business days)</label><input id="cfgProto" type="number" min="1"></div>
       <div><label for="cfgRecent">Recent visit window (days)</label><input id="cfgRecent" type="number" min="1"></div>
     </div>
-    <label class="chk"><input type="checkbox" id="gridMonday" checked> Start the Active Patients week grid this Monday</label>
-    <div class="actions"><button id="btnGrid">Update Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button></div>
+    <div class="actions"><button id="btnApRebuild">Rebuild Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button></div>
   </div>
 </section>
 
@@ -285,6 +284,7 @@ body.wide.attc .attTog::before{content:"\203A"}
   <label class="chk"><input type="radio" name="rtype" value="ps"> Patient-specific (one external patient, all locations)</label>
   <label for="file">Appointment list</label>
   <input type="file" id="file" accept=".csv,.xlsx,.xls">
+  <div id="savedList" class="hint" style="margin-top:8px" hidden><span id="savedListMsg"></span> <button data-act="previewSaved">Preview again</button></div>
   <div id="planBox" hidden><div id="planBody" style="margin-top:12px"></div></div>
 </section>
 
