@@ -1286,7 +1286,11 @@ function planTab(p, appts, from, to, o) {
     const kind = kindOf(a);
     if (a.status === "Cancelled" && !kind) {
       st.early++; if (o.lastAsOf != null && a.mod != null && a.mod >= o.lastAsOf) st.earlyNew++; if (a.mod == null) st.noMod++;
-      const r0 = R.find(x => x.date === a.date && !x.delivered && !x.alt && !x.miss); if (r0 && a.date >= o.today) tag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`);
+      // cancelled ahead of time: clear the date (any date) unless the patient is still booked or seen that day; the row is free for another visit
+      const r0 = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt) && !x.miss);
+      if (r0 && !o.keptPast.has(`${o.mrn}|${a.date}`) && !appts.some(b => b.date === a.date && (b.status === "Scheduled" || b.status === "Kept"))) {
+        r0.date = null; r0.time = null; r0.freebie = ""; untag(r0, TELE_TAG); untag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`); if (o.ps) r0.alt = false; st.cleared++;
+      }
       continue;
     }
     let r = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
@@ -1351,14 +1355,15 @@ async function buildPlan(quiet) {
     if (dev.other.test(ev)) t.evOther = true; tally.set(mrn, t);
   }
   const isOther = mrn => { const t = tally.get(mrn); if (!t) return false; if (t.o || t.u) return t.o > t.u; return t.evOther && !state.patients.some(p => p.mrn === mrn); };
-  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(); let maxDate = from, ignored = 0;
+  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
   for (const r of state.file.rows) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
     if (!mrn) continue;
     if (isOther(mrn) || dev.other.test(pv)) { ignored++; continue; }
     const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
     if (date == null || sts === "Skip" || !ev) continue;
-    if (sts !== "No-show" && sts !== "Cancelled" && date < from) continue;   // past visits never update, except no-shows and same-day cancels
+    if (sts === "Kept" && date < from) { keptPast.add(`${mrn}|${date}`); continue; }   // only guards a cancel on the same day
+    if (sts !== "No-show" && sts !== "Cancelled" && date < from) continue;   // past visits never update, except no-shows and cancels
     let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
     if (sts === "Scheduled" || sts === "Kept") maxDate = Math.max(maxDate, date);
     const chg = String(cell(r, "mChg") ?? "").trim(), charged = /waive/i.test(chg) ? "Waived" : /exempt/i.test(chg) ? "Exempt" : "";
@@ -1373,13 +1378,13 @@ async function buildPlan(quiet) {
     if (p.mrn) { const c = latest.get(p.mrn); if (!c || p.course > c.course) latest.set(p.mrn, p); }
     const cc = latestCode.get(p.code); if (!cc || p.course > cc.course) latestCode.set(p.code, p);
   }
-  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, ours: loc => !loc || loc.toLowerCase().includes(state.cfg.location.toLowerCase()) };
+  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, keptPast, ours: loc => !loc || loc.toLowerCase().includes(state.cfg.location.toLowerCase()) };
   const plans = [];
   for (const [mrn, appts] of by) {
     let p = latest.get(mrn); const code = codes.get(mrn);
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
     if (!p) continue;
-    const pl = planTab(p, appts, from, maxDate, o);
+    const pl = planTab(p, appts, from, maxDate, { ...o, mrn });
     // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
     const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
