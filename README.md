@@ -23,7 +23,6 @@ Tested with fictional patients:
 | `taskpane.html`, `taskpane.js` | The add-in. A single static page with no build step. |
 | `schedule.html` | The patient schedule window: print, save as PDF, or full screen. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
-| `demo/tms-tracker-demo.html` | A self-contained demo with fictional patients, built for version 1.1 (the earlier layout). Not yet updated for 1.2. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
 | `package.json` | Helper scripts: `certs`, `start`, `validate`, `check`, `set-host`. |
 
@@ -170,4 +169,3 @@ Either one writes "Schedule provided m/d" to Notes and the date to W8. **Full sc
 
 - Holiday calendar: Brendan to provide it to pre-fill the Clinic Schedule closures.
 - Schedule planner (finding 60-minute chair slots for an MT or MTR against provider and patient availability) comes later.
-- The UI map (`tms-tracker-ui-map.html`) and the demo reflect the earlier design and need regenerating for this version.
