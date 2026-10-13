@@ -1353,7 +1353,9 @@ function planTab(p, appts, from, to, o) {
   const over = r => !r._p && !r.delivered && (o.ps || !r.alt) && !r.miss && (r.date == null || r.date > to);
   for (const pool of strict ? ["Daily", "MT", "MTR", "F/U"] : ["fu", "tx"]) {
     const win = R.filter(r => poolOf(r) === pool && inWin(r)), ov = R.filter(r => poolOf(r) === pool && over(r));
+    const done = R.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
     for (const e of events.filter(e => evPool(e) === pool).sort(cmp)) {
+      const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
       const r = win.shift() || ov.shift(); if (!r) { st.none++; continue; }
       r.date = e.date; r.time = e.time; r.miss = false; r.freebie = "";
       if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; st.types++; }
