@@ -83,7 +83,9 @@ Run this whenever the schedule changes, at least daily. The banner tells you whe
 What the import does:
 
 - Today and later: dates, times and visit types follow NextGen. Telehealth follow-ups get "Tele" in Notes. The provider on the tab follows the report.
-- Past visits never change, except no-shows and same-day cancels, which are always recorded so the freebie decision isn't missed.
+- Every Expected visit gets a row. When the visit log runs out (each no-show or MT redo uses a row), rows are added inside the log with the same formatting as rows of that visit type, so the last treatments and the final follow-up still show. The preview lists the tabs that grew.
+- Past visits never change, except no-shows and same-day cancels, which are always recorded so the freebie decision isn't missed. A kept visit with no row on the tab gets one with its date; enter the pulses.
+- The visit log is put in date order, top to bottom, and Tx # (C) is renumbered: MT, Daily and MTR rows count, follow-ups and missed visits don't. Tx Remaining (D) follows.
 - Patients booked on the other device are left out (a Brainsway patient doesn't appear on a MagV tracker).
 - Measures are re-planned only after a real disruption: an MTR or F/U moved, or 2 or more misses in a week.
 - The list is kept on the **Appt List** tab, replaced each time you apply. Closing the panel no longer loses it: the new-patient banner and a new tab's dates keep working, and **Preview again** reruns it.
