@@ -27,6 +27,7 @@ const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
+const isTxRow = r => !r.miss && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // a numbered row in C (Tx #)
 const TELE_TAG = "Tele";
 const SNOOZE_MS = 3 * 3600e3;
 /* A tab is only read or written if it matches the current template: PATIENT: in A1, MRN: in A3, and these headers in row 8. */
@@ -884,6 +885,25 @@ async function growLogs(list) {
     }
   });
 }
+/* after the import's writes: puts each log row's typed cells (B:T) on the row order planTab chose, so E runs in date order,
+   and writes the Tx # in C. The template's formulas (D, G, I, K) stay on their own rows, so D recalculates from the new C. */
+const LOG_FORMULA_COLS = new Set([3, 6, 8, 10]);   // D, G, I, K, 0-based in A:T
+async function arrangeLogs(list) {
+  if (!list.length) return;
+  if (POPOUT) return callPane("arrangeLogs", [list]);
+  await Excel.run(async ctx => {
+    const got = list.map(({ tab, order }) => { const r = ctx.workbook.worksheets.getItem(tab).getRange(`B${LOG_FIRST}:T${LOG_FIRST + order.length - 1}`); r.load("formulas"); return r; });
+    await ctx.sync();
+    list.forEach(({ tab, order, tx }, n) => {
+      const F = got[n].formulas, ws = ctx.workbook.worksheets.getItem(tab);
+      order.forEach((s, i) => {
+        const out = F[i].map((v, j) => LOG_FORMULA_COLS.has(j + 1) ? v : j + 1 === C.tx ? tx[i] : F[s][j]);
+        if (out.some((v, j) => v !== F[i][j])) ws.getRange(`B${LOG_FIRST + i}:T${LOG_FIRST + i}`).formulas = [out];
+      });
+    });
+    await ctx.sync();
+  });
+}
 const writeCells = (tab, pairs) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })));
 function patchRow(tab, row, f) { const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return; Object.assign(r, f); p.d = derive(p); renderDash(); }
 const findPR = (tab, row) => { const p = state.patients.find(x => x.tab === tab); return [p, p && p.rows.find(x => x.row === row)]; };
@@ -1368,21 +1388,25 @@ function planTab(p, appts, from, to, o) {
       else { tag(r, UNCLASS_TAG); st.unclass++; }
     }
   }
-  // 2. today and later: Expected (and today's Kept) fill undelivered rows in row order, by exact type for external patients
-  const events = appts.filter(a => (a.status === "Scheduled" || a.status === "Kept") && a.date >= from).sort(cmp);
+  // 2. today and later: Expected (and today's Kept) fill undelivered rows in row order, by exact type for external patients.
+  //    A past Kept visit since the course's first dated row gets a row too when the tab has none that day.
+  const start = Math.min(...p.rows.filter(r => r.date != null).map(r => r.date));
+  const events = appts.filter(a => a.status === "Scheduled" && a.date >= from || a.status === "Kept" && a.date >= Math.min(from, start)).sort(cmp);
   const strict = !!p.external || !!o.ps, norm = t => (t === "" || t === "Taper") ? "Daily" : t;
   const poolOf = r => strict ? norm(r.type) : (r.type === "F/U" ? "fu" : "tx"), evPool = e => strict ? e.type : (e.type === "F/U" ? "fu" : "tx");
   const eligible = r => !r._p && !r.delivered && (o.ps || !r.alt) && !r.miss;
   const inWin = r => eligible(r) && r.date != null && r.date >= from && r.date <= to;
   const over = r => eligible(r) && (r.date == null || r.date > to);
   const fill = rows => {
-    const f = { cleared: 0, types: 0, elsewhere: 0 }, left = [];
+    const f = { cleared: 0, types: 0, elsewhere: 0, past: 0 }, left = [];
     for (const pool of strict ? ["Daily", "MT", "MTR", "F/U"] : ["fu", "tx"]) {
       const free = rows.filter(r => poolOf(r) === pool && (inWin(r) || over(r)));
       const done = rows.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
       for (const e of events.filter(e => evPool(e) === pool)) {
         const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
+        if (e.date < from && rows.some(r => poolOf(r) === pool && r.date === e.date)) continue;
         const r = free.shift(); if (!r) { left.push(e); continue; }
+        if (e.date < from) f.past++;
         r.date = e.date; r.time = e.time; r.miss = false; r.freebie = "";
         if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; f.types++; }
         if (e.type === "F/U") { if (e.tele) tag(r, TELE_TAG); else untag(r, TELE_TAG); }
@@ -1425,13 +1449,22 @@ function planTab(p, appts, from, to, o) {
     if (r.note !== b.note) ops.push([`S${r.row}`, r.note]);
   });
   if (fbDelta) ops.push(["N7", Math.max(0, p.d.left - fbDelta)]);   // NextGen "Waived" = a freebie used
+  // the log reads top to bottom by date (undated open rows last; an undated treated or missed row stays after the visit above it),
+  // and C numbers the treatments (MT, Daily, Taper, MTR) that weren't missed, so D (= D2 - C) is what's left
+  let lk = -Infinity, lt = 0;
+  const order = rows.map((r, i) => { if (r.date != null) { lk = r.date; lt = r.time ?? 0; } return r.date != null || r.delivered || r.miss ? { i, k: lk, t: lt } : { i, k: Infinity, t: 0 }; })
+    .sort((a, b) => a.k - b.k || a.t - b.t || a.i - b.i).map(x => x.i);
+  let n = 0; const txNo = order.map(i => isTxRow(rows[i]) ? ++n : "");
+  const txWas = r => r._o && isNum(r._o.tx) ? r._o.tx : r._o && String(r._o.tx ?? "").trim() !== "" ? String(r._o.tx) : "";
+  const resorted = order.some((s, i) => s !== i), renum = rows.filter((r, i) => txWas(r) !== txNo[i]).length;
+  const arrange = resorted || renum ? { order, tx: txNo } : null;
   // significant disruptions re-flow the measures: an MTR or F/U moved, or 2+ missed visits within a week
   const was = r => r._o || BLANK_ROW;
   const moved = rows.some(r => (r.type === "MTR" || r.type === "F/U") && was(r).date != null && was(r).date !== r.date) || rows.some(r => r.type === "MTR" && was(r).type !== "MTR");
   const missDates = rows.filter(r => r.miss && r.date != null).map(r => r.date).sort((a, b) => a - b), newMiss = new Set(rows.filter(r => r.miss && !was(r).miss).map(r => r.date));
   let multi = false; for (let i = 1; i < missDates.length; i++) if (missDates[i] - missDates[i - 1] <= 6 && (newMiss.has(missDates[i]) || newMiss.has(missDates[i - 1]))) multi = true;
   const dates = rows.filter(r => r.date !== was(r).date && r.date != null).map(r => r.date);
-  return { name: p.tab, ops, ins, added: ins.length, set: dates.length, ...st, changed: ops.length > 0 || ins.length > 0, reflow: moved || multi || ins.length > 0 };
+  return { name: p.tab, ops, ins, arrange, resorted, renum, added: ins.length, set: dates.length, ...st, changed: ops.length > 0 || ins.length > 0 || !!arrange, reflow: moved || multi || ins.length > 0 || resorted };
 }
 async function buildPlan(quiet) {
   if (!state.file) return;
@@ -1476,15 +1509,16 @@ async function buildPlan(quiet) {
     if (isOther(mrn) || dev.other.test(pv)) { ignored++; continue; }
     const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
     if (date == null || sts === "Skip" || !ev) continue;
-    if (sts === "Kept" && date < from) { keptPast.add(`${mrn}|${date}`); continue; }   // only guards a cancel on the same day
-    if (sts !== "No-show" && sts !== "Cancelled" && date < from) continue;   // past visits never update, except no-shows and cancels
+    const past = date < from;
+    if (sts === "Kept" && past) keptPast.add(`${mrn}|${date}`);   // guards a cancel on the same day, and gets a row if the tab has none that day
+    else if (sts !== "No-show" && sts !== "Cancelled" && past) continue;   // past visits never update, except no-shows, cancels and kept visits with no row
     let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
     if (sts === "Scheduled" || sts === "Kept") maxDate = Math.max(maxDate, date);
     const chg = String(cell(r, "mChg") ?? "").trim(), charged = /waive/i.test(chg) ? "Waived" : /exempt/i.test(chg) ? "Exempt" : "";
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim() });
-    if (pv && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}; c[pv] = (c[pv] || 0) + 1; clin.set(mrn, c); }
+    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}; c[pv] = (c[pv] || 0) + 1; clin.set(mrn, c); }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   const latest = new Map(), latestCode = new Map();
@@ -1516,11 +1550,15 @@ function renderSavedList() {
 }
 function renderPlan() {
   const { ps, plans, from, to } = state.plan, ch = plans.filter(p => p.changed), tot = k => ch.reduce((n, p) => n + (p[k] || 0), 0);
-  let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${state.file.saved ? `Saved list (${esc(listRun(state.file))})` : esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
+  let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${state.file.saved ? `Saved list (${esc(listRun(state.file))})` : esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows, same-day cancels and kept visits with no row.</div>`;
   h += ch.length ? `<table><thead><tr><th>Tab</th><th class="num">Dates</th><th class="num">Types</th><th class="num">Cleared</th><th class="num">Missed</th></tr></thead><tbody>${ch.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.set}</td><td class="num">${p.types}</td><td class="num">${p.cleared}</td><td class="num">${p.miss}</td></tr>`).join("")}
     <tr><th>Total</th><th class="num">${tot("set")}</th><th class="num">${tot("types")}</th><th class="num">${tot("cleared")}</th><th class="num">${tot("miss")}</th></tr></tbody></table>` : `<div class="none">The tracker already matches this report.</div>`;
   const grown = ch.filter(p => p.added), full = plans.filter(p => p.none);
   if (grown.length) h += `<div class="sub" style="margin-top:6px">Rows added to the visit log: ${grown.map(p => `${esc(p.name)} ${p.added}`).join(", ")}. They take the formatting of a row of the same visit type.</div>`;
+  const past = ch.filter(p => p.past), sorted = ch.filter(p => p.resorted), renum = ch.filter(p => p.renum && !p.resorted);
+  if (past.length) h += `<div class="sub" style="margin-top:6px">Past kept visits with no row on the tab, added with their date (enter the pulses): ${past.map(p => `${esc(p.name)} ${p.past}`).join(", ")}.</div>`;
+  if (sorted.length) h += `<div class="sub" style="margin-top:6px">Visit log re-sorted by date, with Tx # renumbered: ${sorted.map(p => esc(p.name)).join(", ")}.</div>`;
+  if (renum.length) h += `<div class="sub" style="margin-top:6px">Tx # renumbered: ${renum.map(p => esc(p.name)).join(", ")}.</div>`;
   const nf = full.reduce((n, p) => n + p.none, 0);
   if (nf) h += `<div class="item red" style="margin-top:6px">No row for ${nf} booked visit${nf === 1 ? "" : "s"} on ${full.map(p => esc(p.name)).join(", ")}: the PR formula in A10 is missing. Run Update tabs on the banner, then import again.</div>`;
   const pv = ch.filter(p => p.e2).length;
@@ -1534,6 +1572,7 @@ async function applyPlan() {
   try {
     await growLogs(ch.filter(p => p.ins.length).map(p => ({ tab: p.name, ins: p.ins })));   // rows first: the ops address the grown log
     await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
+    await arrangeLogs(ch.filter(p => p.arrange).map(p => ({ tab: p.name, ...p.arrange })));   // last: it moves the rows the ops just wrote
     const f = state.file;
     if (!plan.ps && !f.saved) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); await saveList(f); }
     state.plan = null; $("planBox").hidden = true; $("file").value = ""; state.file = plan.ps ? null : { ...f, saved: true };
@@ -1643,7 +1682,7 @@ function callPane(fn, args) {
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
-  refresh: () => refresh(), applyOps: ops => applyOps(ops), growLogs: x => growLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
+  refresh: () => refresh(), applyOps: ops => applyOps(ops), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x),writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: () => setupColumns(), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
   saveSetting: (k, v) => saveSetting(k, v)
 };
