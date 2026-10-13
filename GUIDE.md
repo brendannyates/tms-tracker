@@ -46,7 +46,7 @@ Across the top: **Import list**, **Open in a new window** (⧉), **Full screen**
 
 | Menu | Use it for |
 |---|---|
-| Schedule | **Day** shows one weekday's visits; **Prev** and **Next** move between weekdays, **Back to today** returns. **Week** shows Monday to Friday with "X of Y treated" and the reasons for each day. |
+| Schedule | **Day** shows one weekday's visits; **Prev** and **Next** move between weekdays, **Back to today** returns. **Week** shows Monday to Friday with "X of Y treated" and the reasons for each day. Discontinued patients are left off both. When the appointment list has more than one chair (for example Castro MagV1 and Castro MagV2), buttons above the schedule show one chair or both; your pick is remembered on your computer. |
 | Patients | The roster for the week, with filters (All, Active, Follow-up not scheduled, No upcoming visit) and **Add patient**. Select a patient for their full view. |
 | Clinic | The chair schedule and the protocol list. |
 
@@ -63,7 +63,9 @@ Each visit card is colored like the tab's row highlight: MT light blue, MTR gree
 - **Complete treatment** opens with the pulses the protocol calls for already filled in. Adjust them if needed, check the treating technician, and select **Save treatment**. Pulses entered means the treatment happened; the card then shows **Delivered**.
 - **Missed visits:** open the card's ⋯ menu and choose **Record no-show** or **Record same-day cancel**. A pop-up asks whether to **Use freebie** or mark it **Waived** (or **Decide later**), and warns when the patient is down to 1 or 0 freebies. Remaining freebies count down on the tab. If you decide later, the card shows **Classify freebie**. **Undo missed visit** is in the same ⋯ menu.
 - **Measures needed** opens PHQ-9 and GAD-7 entry; select **Save measures**. If they weren't collected, **Move measures** shifts them to an upcoming visit (it suggests an MT, MTR or F/U within 7 days) and notes the move on the original row.
-- **Draft treatment note** (daily treatments) builds the note from mood on arrival, observations and technician comments; **Copy note** puts it on the clipboard for the chart.
+- **Draft treatment note** (daily treatments) builds the note from mood on arrival, observations and technician comments. The yes/no observation answers become sentences in the note; the questions are not copied into it. **Copy note** puts it on the clipboard for the chart.
+- **Cancelled in NextGen: update status?** (Attention) lists patients whose cancelled appointments are still on the tracker, or who have nothing left booked, with Paused, Discontinued and Complete buttons. When every appointment is cancelled and the last visit was more than 10 days ago (the recent-visit window in Settings), Discontinued is suggested and applied with the next import.
+- A number in **# of MT redos** (D4) sets **MTR approved** (W6) to Yes on its own.
 - **MT** cards also take the MT details (hotspot, MT %, amps, baseline sleep and caffeine); select **Save MT details**.
 - The ⋯ menu also has **Print schedule** and **Open patient**.
 

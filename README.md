@@ -63,7 +63,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 | S (Notes) | "Tele" marks a telehealth follow-up. A missed visit's freebie decision is "Freebie used" or "Freebie waived". The MT row also holds the MT details. "Schedule provided m/d" is written when a schedule is given. |
 | S9 | Home Clinic. Anything other than SRL makes the patient external. |
 | W1 / W4 / W5 | BIDF estimated course cost; deductible remaining and out-of-pocket max remaining, each an amount or **N/A**. |
-| W6 / W7 / W8 | MTR approved (with D4, decides whether 90869 is authorized); extensions added; last schedule provided. |
+| W6 / W7 / W8 | MTR approved (with D4, decides whether 90869 is authorized; set to Yes on refresh when D4 is 1 or more); extensions added; last schedule provided. |
 | V11:Y16 | Cost by code: 90867 MT, 90868 Daily, 90869 MT redo, 99214 F/U in-office and telehealth. X is PR, Y is the cost before the deductible (only when one applies). |
 | W20:X24, V29:Y48 | Weekly availability (earliest and latest start, Monday to Friday) and dates (Unavailable / Available, from, to, reason). |
 
@@ -77,7 +77,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 
 | Menu | What it holds |
 |---|---|
-| Schedule | A Day / Week toggle. Day opens on today; Prev and Next step through weekdays, and Back to today returns. Each day shows that weekday's hours from the Clinic Schedule tab, or "Clinic closed" with the reason when the date is listed in column G. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
+| Schedule | A Day / Week toggle. Discontinued patients are left off. With more than one chair resource on the saved appointment list (for example Castro MagV1 and MagV2), a chair picker shows one chair or all; it applies to Day, Week and Clinic > Chair, is saved per computer, and chair conflicts are counted per chair. A visit's chair is the resource booked that day, else the chair the patient's daily treatments are usually on. Day opens on today; Prev and Next step through weekdays, and Back to today returns. Each day shows that weekday's hours from the Clinic Schedule tab, or "Clinic closed" with the reason when the date is listed in column G. **Attention** is a section on the left when the pane is wide enough (about 640 px); on a narrow pane it collapses to the top with a count. Only groups with something in them show. |
 | Patients | The roster with filters: All, Active, Follow-up not scheduled, No upcoming visit. **Add patient** is here. Selecting a patient opens the patient view. |
 | Clinic | Chair and Protocols. |
 
@@ -93,7 +93,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 - **Visit cards** are colored like the tab's row highlight: MT light blue, MTR green, F/U pink, other clinic orange. Each shows **Payment $X** (from column A), or **Payment not set** when the cost for that visit type is missing. A patient missing BIDF info shows **BIDF info needed** on the card.
 - **Record missed** (No-show or Same-day cancel) opens a pop-up with **Use freebie** or **Waived**. It warns when the patient will have 1 or 0 freebies left. The decision goes in Notes and Remaining Freebies (N7) counts down. The card shows the result with Undo.
 - **Mark pulses delivered** shows what the protocol calls for and writes F, H, J and the technician.
-- **Draft treatment note** builds the daily note; **Copy note** puts it on the clipboard.
+- **Draft treatment note** builds the daily note. The yes/no observations are turned into sentences (ear plugs, muscle movements, pain, and any reported changes) and the questions are not copied in; **Copy note** puts it on the clipboard.
 - **Measures needed** opens PHQ-9 and GAD-7 entry. **Move measures** sends them to a chosen upcoming visit and notes it on the original row, suggesting an MT, MTR or F/U within 7 days.
 - **MT** cards add MT details and the protocol picker. Daily cards add the note drafter, with the MT baseline sleep and caffeine as a quiet reference.
 
@@ -104,7 +104,8 @@ Monday to Friday visits with a one-line variance summary per day.
 ### Attention
 
 - **BIDF info needed today:** a patient scheduled today without cost by code, a deductible (or N/A), the before-deductible costs when a deductible applies, or the out-of-pocket max (or N/A). **Enter benefits** opens their Benefits and cost section.
-- Status prompts and auth flags: auth start after the first TMS visit, expiry within 14 calendar days, treatments past expiry, more treatments booked than D2 allows, an MT redo booked without authorization.
+- Status prompts: from the saved appointment list, cancelled dates still on the tracker or nothing left booked (Paused / Discontinued / Complete buttons; skipped once the status is one of those). Every appointment cancelled and last seen more than the recent-visit window (10 days) ago suggests Discontinued, which the next import applies like other status suggestions.
+- Auth flags: auth start after the first TMS visit, expiry within 14 calendar days, treatments past expiry, more treatments booked than D2 allows, an MT redo booked without authorization.
 - Protocol renewal: G2 or an Action = Protocol within 2 business days.
 - Benefits: projected cost above the BIDF estimate, likely to meet the out-of-pocket max.
 - Booked while the patient is away (date ranges only), closures, same-day appointments (not Kaiser).

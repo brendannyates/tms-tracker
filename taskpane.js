@@ -47,8 +47,24 @@ const state = {
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "sch", clinicTab: "chair", ptMode: "list", ptFilter: "all", wideAtt: null, weekOffset: 0, schedOffset: 0, dayOffset: 0, dash: "today", ptTab: null, ptAll: false, file: null, plan: null, codeEdited: false, courseEdited: false,
-  open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null
+  open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all"
 };
+try { state.chair = localStorage.getItem("tms_chair") || "all"; } catch { /* storage unavailable */ }
+/* Discontinued patients are left off the Day, Week and chair schedules */
+const onSched = p => !/^discontinued/i.test(String(p.status).trim());
+/* chairs: from the saved appointment list's resource names (for example Castro MagV1 and Castro MagV2). A visit's chair is the
+   resource booked that day, else the chair the patient's daily treatments are usually on. Each person picks a chair on their own device. */
+const chairs = () => state.lx ? state.lx.chairs : [];
+const chairOf = (p, r) => { const lx = state.lx; if (!lx || !p.mrn) return ""; return (r && lx.v[`${p.mrn}|${r.date}`]) || lx.pt[p.mrn] || ""; };
+const chairPick = () => chairs().length > 1 && chairs().includes(state.chair) ? state.chair : "all";
+const inChair = (p, r) => { const c = chairPick(); if (c === "all") return true; const x = chairOf(p, r); return !x || x === c; };
+function chairBar() {
+  const cs = chairs(); if (cs.length < 2) return "";
+  const cur = chairPick(), opts = [["all", cs.length === 2 ? "Both" : "All chairs"], ...cs.map(c => [c, c])];
+  return `<div class="fchips" role="group" aria-label="Chair" style="margin-bottom:8px">${opts.map(([k, l]) => `<button class="sm${k === cur ? " on" : ""}" data-act="chair" data-v="${esc(k)}" aria-pressed="${k === cur}">${esc(l)}</button>`).join("")}</div>`;
+}
+/* more than one patient in the same chair at once; with no chair info everyone counts as one chair, as before */
+const chairClash = occ => { const m = new Map(); occ.forEach(e => { const k = chairOf(e.p, e.r); if (!m.has(k)) m.set(k, new Set()); m.get(k).add(e.p.tab); }); return [...m.values()].some(s => s.size > 1); };
 /* Pop-out: the same page opened in an Office dialog window (?popout=1). A dialog cannot reach the workbook, so it asks the
    task pane (which stays open) to do every read and write, and the pane sends back a snapshot of what it read. */
 const POPOUT = /[?&]popout=1\b/.test(location.search);
@@ -224,6 +240,9 @@ async function refresh() {
       try { state.file = await loadList(); if (state.file) await buildPlan(true); } catch (e) { console.error(e); toast(`The ${LIST_SHEET} tab could not be read. Import the list again.`, true); }
     }
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
+    /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
+    const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
+    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]] }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
     syncActiveSheet();
@@ -270,12 +289,23 @@ function derive(p) {
   const futureMT = rows.some(r => r.type === "MT" && r.date != null && r.date >= today && !r.delivered && !r.miss);
   const hasRecent = rows.some(r => r.date != null && r.date >= today - rec);
   const stale = (status === "In Progress" || status === "Tapering") && txDone < total && !hasRecent;
+  /* cancellations on the saved appointment list (latest course only): dates still on the tracker, or nothing left booked */
+  const lx = state.lx && p.mrn && !state.patients.some(q => q.mrn === p.mrn && q.course > p.course) ? state.lx.c[p.mrn] : null;
+  const seen = rows.filter(r => r.date != null && r.date <= today && (r.delivered || (r.type === "F/U" && !r.miss && !r.alt))).map(r => r.date);
+  const lastSeen = Math.max(lx && lx.lastKept != null ? lx.lastKept : -1, ...seen, -1), seenAt = lastSeen >= 0 ? lastSeen : null;
+  const cxRows = lx ? rows.filter(r => r.date != null && !r.delivered && !r.miss && lx.cx.includes(r.date)) : [];
+  const allCx = !!lx && lx.cx.length > 0 && !lx.booked;
+  const quit = allCx && seenAt != null && seenAt < today - rec;   // every appointment cancelled and last seen over 10 days ago
   let suggest = null;
   if (!["Paused", "Discontinued"].includes(status)) {
     if (status !== "Complete" && txDone >= total && (lastTx == null || lastTx < today - rec)) suggest = "Complete";
+    else if (status !== "Complete" && quit) suggest = "Discontinued";
     else if (status !== "Complete" && txDone >= 1 && (status === "Pending Start" || status === "")) suggest = "In Progress";
     else if (status === "" && txDone === 0 && futureMT) suggest = "Pending Start";
   }
+  const cancelled = /^(discontinued|paused|complete)$/i.test(status) || suggest === "Complete" || suggest === "Discontinued" || !(cxRows.length || allCx) ? null
+    : [cxRows.length ? `Cancelled in NextGen, still on the tracker: ${[...new Set(cxRows.map(r => r.date))].sort((a, b) => a - b).map(fmtDate).join(", ")}` : "",
+      allCx ? `Nothing booked in NextGen, last seen ${seenAt != null ? fmtDate(seenAt) : "never"}` : ""].filter(Boolean).join(". ");
   /* authorization (separate from protocol) */
   const authFlags = [];
   if (active) {
@@ -323,7 +353,7 @@ function derive(p) {
   const measDue = rows.filter(r => r.measX && r.date != null && r.date < today && !r.miss);
   const lastRow = rows.filter(r => r.type !== "F/U" && r.date != null).sort(cmp).pop();
   const bidf = bidfMissing(p), todayVisit = rows.some(r => r.date === today && !r.miss && !r.alt);
-  return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest,
+  return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
     authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && todayVisit && bidf.length > 0,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
 }
@@ -410,7 +440,8 @@ function attentionHtml() {
   const exempt = r => r.note.includes(EXEMPT_TAG);
   const dec = P.flatMap(p => p.d.decisions.map(r => ({ p, r })));
   return gi(`No appointment in ${state.cfg.recentDays}+ days: pause or discontinue?`, P.filter(p => p.d.stale).map(p => item(p, "", `${p.d.txDone}/${p.d.total} treatments, last ${p.d.lastTx ? fmtDate(p.d.lastTx) : "none"}`, "red", null, btn("status", p.tab, "Paused", "Paused") + btn("status", p.tab, "Discontinued", "Discontinued"))), "Nobody is stale")
-    + gi("Status update suggested", P.filter(p => p.d.suggest).map(p => item(p, `<span class="chip">${esc(p.status || "blank")} \u2192 ${esc(p.d.suggest)}</span>`, "", "amb", null, btn("status", p.tab, p.d.suggest, "Apply"))), "Statuses are current")
+    + gi("Status update suggested", P.filter(p => p.d.suggest).map(p => item(p, `<span class="chip">${esc(p.status || "blank")} \u2192 ${esc(p.d.suggest)}</span>`, p.d.suggest === "Discontinued" ? `Every NextGen appointment cancelled, last seen ${fmtDate(p.d.lastSeen)}` : "", "amb", null, btn("status", p.tab, p.d.suggest, "Apply"))), "Statuses are current")
+    + gi("Cancelled in NextGen: update status?", P.filter(p => p.d.cancelled).map(p => item(p, "", p.d.cancelled, "amb", null, ["Paused", "Discontinued", "Complete"].map(s => btn("status", p.tab, s, s)).join(""))), "None")
     + gi("BIDF info needed today", A.filter(p => p.d.bidfToday).map(p => item(p, "", `Scheduled today. Enter ${p.d.bidf.join("; ")}`, "red", null, `<button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button>`)), "None")
     + gi("Auth flags", A.filter(p => p.d.authFlags.length).map(p => item(p, "", p.d.authFlags.join("; "), "red")), "No auth issues")
     + gi("Protocol", A.filter(p => p.d.protoFlags.length).map(p => item(p, "", p.d.protoFlags.join("; "), "amb")), "None due")
@@ -489,7 +520,7 @@ function noteForm(p, r) {
 function visitCard(p, r) {
   const treat = r.type !== "F/U", pay = payOf(p, r), kind = OUTCOMES.find(k => r.note.includes(k)), [tm, ap] = (fmtTime(r.time) || "\u2013 ").split(" ");
   let h = `<div class="card ${cardCls(r)}"><div class="chead"><div class="ctime">${tm}<span>${ap || ""}</span></div>
-    <div class="cmain"><div class="cname">${ptLink(p, r.row)} <span class="chip">${esc(apptTypeName(r))}</span>${r.alt ? ' <span class="chip amb">Other clinic</span>' : ""}</div><div class="sub">MRN ${esc(p.mrnRaw || "not entered")}</div></div>${cardMenu(p, r)}</div>`;
+    <div class="cmain"><div class="cname">${ptLink(p, r.row)} <span class="chip">${esc(apptTypeName(r))}</span>${r.alt ? ' <span class="chip amb">Other clinic</span>' : ""}${chairs().length > 1 && chairPick() === "all" && chairOf(p, r) ? ` <span class="chip">${esc(chairOf(p, r))}</span>` : ""}</div><div class="sub">MRN ${esc(p.mrnRaw || "not entered")}</div></div>${cardMenu(p, r)}</div>`;
   if (r.miss) return h + `<div class="cbody"><div class="mline"><span class="chip amb">${esc(kind || "Missed")}</span> ${r.freebie ? `<span class="chip">${r.freebie === "Used" ? "Freebie used" : "Waived"}</span>` : bt("classify", p.tab, r.row, "", "Classify freebie", "pri")}</div></div></div>`;
   h += `<div class="cbody">`;
   if (p.d.bidfToday) h += `<div class="item red bidf"><b>BIDF info needed</b><div class="sub">Enter ${esc(p.d.bidf.join("; "))}</div><button class="sm" data-pt="${esc(p.tab)}" data-sec="pb">Enter benefits</button></div>`;
@@ -502,10 +533,10 @@ function visitCard(p, r) {
   return h + `</div></div>`;
 }
 /* schedule variances: why today's treatment count differs from the number of patients in treatment */
-function variances(day) {
-  const P = state.patients.filter(p => (["In Progress", "Tapering"].includes(p.status) || (p.status === "" && p.d.txDone > 0)));
+function variances(day, byChair) {
+  const P = state.patients.filter(p => (!byChair || inChair(p)) && (["In Progress", "Tapering"].includes(p.status) || (p.status === "" && p.d.txDone > 0)));
   const ws = weekStart(day);
-  const grads = state.patients.filter(p => p.d.txDone >= p.d.total && p.d.lastTx != null && p.d.lastTx >= ws && p.d.lastTx <= day);
+  const grads = state.patients.filter(p => (!byChair || inChair(p)) && p.d.txDone >= p.d.total && p.d.lastTx != null && p.d.lastTx >= ws && p.d.lastTx <= day);
   const inTx = P.filter(p => p.d.txDone < p.d.total || p.rows.some(r => r.date === day && r.type !== "F/U"));
   const treated = inTx.filter(p => p.rows.some(r => r.date === day && r.type !== "F/U" && !r.miss && !r.alt));
   const groups = { "In follow-up": [], "Missed": [], "Away": [], "At another clinic": [], "Not scheduled": [] };
@@ -520,7 +551,7 @@ function variances(day) {
   return { expected: inTx.length, actual: treated.length, groups, grads };
 }
 function varianceHtml(day, open) {
-  const v = variances(day), lines = Object.entries(v.groups).filter(([, a]) => a.length);
+  const v = variances(day, true), lines = Object.entries(v.groups).filter(([, a]) => a.length);
   const gradTxt = v.grads.length ? `<div class="vg"><b>Graduated this week</b> ${v.grads.map(p => `${ptLink(p)} <span class="sub">${fmtDate(p.d.lastTx)}</span>`).join(", ")}</div>` : "";
   return `<details class="group var" data-open="var|${day}"${open || state.open.has("var|" + day) ? " open" : ""}><summary class="gs">Schedule variances <span class="sub">${v.actual} of ${v.expected} patients in treatment are being treated</span></summary>
     ${lines.length || gradTxt ? lines.map(([k, a]) => `<div class="vg"><b>${esc(k)}</b> <span class="n">${a.length}</span><div>${a.map(([p, d]) => `${ptLink(p)}${d ? ` <span class="sub">${esc(d)}</span>` : ""}`).join(", ")}</div></div>`).join("") + gradTxt : '<div class="none">No variances</div>'}</details>`;
@@ -533,10 +564,10 @@ function hoursOf(day) {
   return { closed: false, txt: `${fmtTime(h.open)}–${fmtTime(h.close)}${h.bs != null && h.be != null ? `, break ${fmtTime(h.bs)}–${fmtTime(h.be)}` : ""}` };
 }
 function viewToday() {
-  const t = todaySerial() + state.dayOffset, P = state.patients, lbl = state.dayOffset ? "this day" : "today", hrs = hoursOf(t);
-  const todays = P.flatMap(p => p.rows.filter(r => r.date === t).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 0) - (b.r.time ?? 0));
+  const t = todaySerial() + state.dayOffset, P = state.patients.filter(onSched), lbl = state.dayOffset ? "this day" : "today", hrs = hoursOf(t);
+  const todays = P.flatMap(p => p.rows.filter(r => r.date === t && inChair(p, r)).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 0) - (b.r.time ?? 0));
   const tx = todays.filter(({ r }) => r.type !== "F/U"), fu = todays.filter(({ r }) => r.type === "F/U");
-  let h = `<div class="wk"><button data-act="dprev">‹ Prev</button><b>${DAYS[dow(t)]} ${fmtDateY(t)}</b><button data-act="dnext">Next ›</button></div>`;
+  let h = chairBar() + `<div class="wk"><button data-act="dprev">‹ Prev</button><b>${DAYS[dow(t)]} ${fmtDateY(t)}</b><button data-act="dnext">Next ›</button></div>`;
   h += `<div class="sub" style="margin:-4px 0 10px">${tx.length} treatment${tx.length === 1 ? "" : "s"}, ${fu.length} follow-up${fu.length === 1 ? "" : "s"}${hrs && !hrs.closed ? `. Open ${esc(hrs.txt)}` : ""}${state.dayOffset ? ' <button class="sm" data-act="dthis">Back to today</button>' : ""}</div>`;
   if (hrs?.closed) h += `<div class="item red"><b>Clinic closed</b> ${esc(state.closures.get(t))}</div>`;
   h += varianceHtml(t, false);
@@ -546,12 +577,12 @@ function viewToday() {
 }
 
 function viewWeek() {
-  const t = todaySerial(), start = weekStart(t) + 7 * state.weekOffset, P = state.patients;
-  let html = `<div class="wk"><button data-act="prev">\u2039 Prev</button><b>${fmtDate(start)} \u2013 ${fmtDate(start + 6)}</b><button data-act="next">Next \u203A</button></div>`;
+  const t = todaySerial(), start = weekStart(t) + 7 * state.weekOffset, P = state.patients.filter(onSched);
+  let html = chairBar() + `<div class="wk"><button data-act="prev">\u2039 Prev</button><b>${fmtDate(start)} \u2013 ${fmtDate(start + 6)}</b><button data-act="next">Next \u203A</button></div>`;
   if (state.weekOffset) html += `<div style="margin:-4px 0 10px"><button data-act="this">Back to this week</button></div>`;
   for (let i = 1; i < 6; i++) {
-    const day = start + i, v = variances(day);
-    const rows = P.flatMap(p => p.rows.filter(r => r.date === day).map(r => ({ p, r }))).sort((x, y) => (x.r.time ?? 0) - (y.r.time ?? 0));
+    const day = start + i, v = variances(day, true);
+    const rows = P.flatMap(p => p.rows.filter(r => r.date === day && inChair(p, r)).map(r => ({ p, r }))).sort((x, y) => (x.r.time ?? 0) - (y.r.time ?? 0));
     const note = Object.entries(v.groups).filter(([, a]) => a.length).map(([k, a]) => `${a.length} ${k.toLowerCase()}`).join(", ");
     const hrs = hoursOf(day);
     html += `<div class="day${day === t ? " today" : ""}"><h2><span>${DAYS[i]} ${fmtDate(day)}</span><span class="n">${v.actual} of ${v.expected} treated</span></h2>${hrs ? `<div class="${hrs.closed ? "item red" : "sub"}" style="margin-bottom:4px">${esc(hrs.closed ? hrs.txt : `Open ${hrs.txt}`)}</div>` : ""}${note ? `<div class="sub" style="margin-bottom:4px">Variances: ${esc(note)}</div>` : ""}`;
@@ -567,7 +598,7 @@ function viewWeek() {
 }
 function dayEntries(day) {
   const chair = [], prov = [], noTime = [];
-  for (const p of state.patients) for (const r of p.rows) {
+  for (const p of state.patients.filter(onSched)) for (const r of p.rows) {
     if (r.date !== day || r.miss || r.alt) continue;
     if (r.time == null) { noTime.push({ p, r }); continue; }
     if (chairMin(r.type)) chair.push({ p, r, start: r.time, end: r.time + chairMin(r.type) });
@@ -584,8 +615,8 @@ function slotsFor(day, ent) {
 }
 function viewSched() {
   if (!state.clinic) return `<div class="none">The Clinic Schedule sheet does not exist yet. It holds the Monday to Friday chair hours everyone sees.</div><div class="actions"><button class="pri" data-act="mkSched">Create Clinic Schedule sheet</button></div>`;
-  const day = todaySerial() + state.schedOffset, ent = dayEntries(day);
-  let html = `<div class="wk"><button data-act="sprev">\u2039 Prev</button><b>${DAYS[dow(day)]} ${fmtDateY(day)}</b><button data-act="snext">Next \u203A</button></div>`;
+  const day = todaySerial() + state.schedOffset, all = dayEntries(day), keep = e => inChair(e.p, e.r), ent = { chair: all.chair.filter(keep), prov: all.prov.filter(keep), noTime: all.noTime.filter(keep) };
+  let html = chairBar() + `<div class="wk"><button data-act="sprev">\u2039 Prev</button><b>${DAYS[dow(day)]} ${fmtDateY(day)}</b><button data-act="snext">Next \u203A</button></div>`;
   if (state.schedOffset) html += `<div style="margin:-4px 0 10px"><button data-act="sthis">Back to today</button></div>`;
   const d = dow(day); if (d === 0 || d === 6) return html + `<div class="none">Weekend. The chair schedule covers Monday to Friday.</div>`;
   if (!state.clinic.closureTable) html += `<div class="item amb">Add the holiday closure table to the Clinic Schedule sheet. <button class="sm" data-act="mkSched">Add it</button></div>`;
@@ -595,9 +626,9 @@ function viewSched() {
   else {
     if (!sl.h || sl.h.open == null) html += `<div class="hint">No hours entered for this day on the Clinic Schedule sheet. Showing the booked range.</div>`;
     html += sl.slots.map(s => {
-      const occ = ent.chair.filter(e => e.start < s.e && e.end > s.s), who = new Set(occ.map(e => e.p.tab));
+      const occ = ent.chair.filter(e => e.start < s.e && e.end > s.s), clash = chairClash(occ);
       const txt = occ.map(e => `<b>${esc(e.p.tab)}</b> ${e.start >= s.s ? `<span class="chip${e.r.type === "Daily" || e.r.type === "Taper" ? "" : " amb"}">${esc(e.r.type)}</span>` : "\u21B3"}`).join(" &nbsp; ");
-      return `<div class="slot${who.size > 1 ? " bad" : s.brk ? " closed" : ""}"><span class="t">${fmtTime(s.s)}</span><span>${s.brk && !occ.length ? "Break" : txt}${who.size > 1 ? ' <span class="chip red">chair conflict</span>' : ""}</span></div>`;
+      return `<div class="slot${clash ? " bad" : s.brk ? " closed" : ""}"><span class="t">${fmtTime(s.s)}</span><span>${s.brk && !occ.length ? "Break" : txt}${clash ? ' <span class="chip red">chair conflict</span>' : ""}</span></div>`;
     }).join("");
     const out = ent.chair.filter(e => e.start < sl.open || e.end > sl.close);
     if (out.length) html += `<div class="item red" style="margin-top:8px">Outside chair hours: ${out.map(e => `${esc(e.p.tab)} ${fmtTime(e.start)}`).join(", ")}</div>`;
@@ -655,7 +686,7 @@ async function writeChairSheet(offset = state.schedOffset) {
       ws.getRangeByIndexes(3, 0, grid.length, 6).values = grid;
       grid.forEach((row, ri) => row.slice(1).forEach((v, ci) => {
         const c = ws.getRangeByIndexes(3 + ri, 1 + ci, 1, 1), s = times[ri], occ = ents[ci].chair.filter(e => e.start < s + step && e.end > s);
-        if (v === "closed" || v.startsWith("CLOSED")) c.format.fill.color = "#e8ecef"; else if (new Set(occ.map(e => e.p.tab)).size > 1) c.format.fill.color = "#fbe9e7"; else if (occ.some(e => e.r.type === "MT" || e.r.type === "MTR")) c.format.fill.color = "#fdf1d8"; else if (occ.length) c.format.fill.color = "#e2f1f1";
+        if (v === "closed" || v.startsWith("CLOSED")) c.format.fill.color = "#e8ecef"; else if (chairClash(occ)) c.format.fill.color = "#fbe9e7"; else if (occ.some(e => e.r.type === "MT" || e.r.type === "MTR")) c.format.fill.color = "#fdf1d8"; else if (occ.length) c.format.fill.color = "#e2f1f1";
       }));
       ws.getRange("A:A").format.columnWidth = 80; ws.getRange("B:F").format.columnWidth = 120; ws.activate(); await ctx.sync();
     });
@@ -973,10 +1004,13 @@ function noteText(p, r, dr) {
   const screen = NOTE_QS.filter(q => yes(q) && q.k !== "pain");
   const out = [`Comments: Pt. arrived in ${dr.mood} mood, ` + (screen.length ? `Pt reports ${screen.map(q => `${q.flag}: ${det(q.k)}`).join("; ")}.` : "Pt reports no changes to daily routine screening questions.")];
   if (dr.comments.trim()) out.push("", dr.comments.trim());
-  out.push("", (dr.a.pain === "Yes" ? `Patient reported pain or discomfort during treatment: ${det("pain")}.` : "Patient denied discomfort.") + " Pt successfully completed Tx w/out incident.");
+  /* the yes/no observations feed these sentences; the questions themselves stay out of the note */
+  const obs = [dr.a.ear === "Yes" ? "Pt wore ear plugs." : "Pt was not wearing ear plugs.",
+    /^yes/i.test(dr.a.mus) ? "Involuntary muscle movements observed, within normal limits." : "No involuntary muscle movements observed.",
+    dr.a.pain === "Yes" ? `Patient reported pain or discomfort during treatment: ${det("pain")}.` : "Patient denied discomfort."];
+  out.push("", obs.join(" ") + " Pt successfully completed Tx w/out incident.");
   const n = typeof r.tx === "number" ? r.tx : p.d.txDone + 1;
-  out.push("", `${n}/${p.d.total} completed`, "", `-${dr.initials.trim() || "[initials]"}`, "", "Observations:", "");
-  NOTE_QS.forEach(q => out.push(`${q.q} ${yes(q) ? `Yes: ${det(q.k)}` : dr.a[q.k]}`));
+  out.push("", `${n}/${p.d.total} completed`, "", `-${dr.initials.trim() || "[initials]"}`);
   return out.join("\n");
 }
 async function copyText(text, ta) {
@@ -1362,6 +1396,28 @@ async function buildPlan(quiet) {
     if (dev.other.test(ev)) t.evOther = true; tally.set(mrn, t);
   }
   const isOther = mrn => { const t = tally.get(mrn); if (!t) return false; if (t.o || t.u) return t.o > t.u; return t.evOther && !state.patients.some(p => p.mrn === mrn); };
+  // from the ALL TMS list only: each visit's chair (the resource booked), and per patient the cancellations, whether anything is still booked, the last kept visit
+  if (!ps) {
+    const v = {}, pt = {}, c = {}, names = new Set(), cnt = {};
+    for (const r of state.file.rows) {
+      const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
+      if (!mrn || isOther(mrn) || dev.other.test(pv)) continue;
+      const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
+      if (date == null || sts === "Skip" || !ev) continue;
+      const x = c[mrn] || (c[mrn] = { cx: [], on: [], booked: false, lastKept: null });
+      if (sts === "Cancelled") x.cx.push(date);
+      else if (sts === "Scheduled" || sts === "Kept") {
+        x.on.push(date);
+        if (sts === "Scheduled" && date >= from) x.booked = true;
+        if (sts === "Kept" && date <= from) x.lastKept = Math.max(x.lastKept ?? 0, date);
+        if (dev.ours.test(pv)) { v[`${mrn}|${date}`] = pv; names.add(pv); const k = cnt[mrn] || (cnt[mrn] = {}); k[pv] = (k[pv] || 0) + 1; }
+      }
+    }
+    for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); delete x.on; }   // rebooked the same day: not a cancellation
+    for (const [mrn, k] of Object.entries(cnt)) pt[mrn] = Object.entries(k).sort((a, b) => b[1] - a[1])[0][0];
+    state.lx = { v, pt, c, chairs: [...names].sort() };
+    state.patients.forEach(p => p.d = derive(p));
+  }
   const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
   for (const r of state.file.rows) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
@@ -1511,13 +1567,13 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report });
+    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx });
   const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
   for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
 }
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk,
-    pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report });
+    pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null });
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -1643,6 +1699,7 @@ Office.onReady(info => {
         avDel: () => { readAvailEditor($("ptsBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); renderDash(); },
         prev: () => { state.weekOffset--; renderDash(); }, next: () => { state.weekOffset++; renderDash(); }, this: () => { state.weekOffset = 0; renderDash(); },
         sthis: () => { state.schedOffset = 0; renderDash(); },
+        chair: () => { state.chair = v; try { localStorage.setItem("tms_chair", v); } catch { /* session only */ } renderDash(); },
         dthis: () => { state.dayOffset = 0; renderDash(); },
         dprev: () => { do { state.dayOffset--; } while ([0, 6].includes(dow(todaySerial() + state.dayOffset))); renderDash(); },
         dnext: () => { do { state.dayOffset++; } while ([0, 6].includes(dow(todaySerial() + state.dayOffset))); renderDash(); },
