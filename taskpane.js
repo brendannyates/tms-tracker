@@ -983,7 +983,6 @@ async function saveAvailability(tab, av) {
 
 /* ---------- treatment note drafter (Daily treatments only) ---------- */
 const NOTE_QS = [
-  { k: "ear", q: "Is the patient wearing ear plugs?", opts: ["No", "Yes"], def: "No" },
   { k: "mus", q: "Were there any involuntary muscle movements?", opts: ["Yes (normal)", "No"], def: "Yes (normal)" },
   { k: "med", q: "Are there any changes in medication?", flag: "change in medication" },
   { k: "pain", q: "Was there any pain or discomfort during treatment?", flag: "pain or discomfort during treatment" },
@@ -1005,7 +1004,7 @@ function noteText(p, r, dr) {
   const out = [`Comments: Pt. arrived in ${dr.mood} mood, ` + (screen.length ? `Pt reports ${screen.map(q => `${q.flag}: ${det(q.k)}`).join("; ")}.` : "Pt reports no changes to daily routine screening questions.")];
   if (dr.comments.trim()) out.push("", dr.comments.trim());
   /* the yes/no observations feed these sentences; the questions themselves stay out of the note */
-  const obs = [dr.a.ear === "Yes" ? "Pt wore ear plugs." : "Pt was not wearing ear plugs.",
+  const obs = [
     /^yes/i.test(dr.a.mus) ? "Involuntary muscle movements observed, within normal limits." : "No involuntary muscle movements observed.",
     dr.a.pain === "Yes" ? `Patient reported pain or discomfort during treatment: ${det("pain")}.` : "Patient denied discomfort."];
   out.push("", obs.join(" ") + " Pt successfully completed Tx w/out incident.");

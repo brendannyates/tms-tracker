@@ -93,7 +93,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 - **Visit cards** are colored like the tab's row highlight: MT light blue, MTR green, F/U pink, other clinic orange. Each shows **Payment $X** (from column A), or **Payment not set** when the cost for that visit type is missing. A patient missing BIDF info shows **BIDF info needed** on the card.
 - **Record missed** (No-show or Same-day cancel) opens a pop-up with **Use freebie** or **Waived**. It warns when the patient will have 1 or 0 freebies left. The decision goes in Notes and Remaining Freebies (N7) counts down. The card shows the result with Undo.
 - **Mark pulses delivered** shows what the protocol calls for and writes F, H, J and the technician.
-- **Draft treatment note** builds the daily note. The yes/no observations are turned into sentences (ear plugs, muscle movements, pain, and any reported changes) and the questions are not copied in; **Copy note** puts it on the clipboard.
+- **Draft treatment note** builds the daily note. The yes/no observations are turned into sentences (muscle movements, pain, and any reported changes) and the questions are not copied in; **Copy note** puts it on the clipboard.
 - **Measures needed** opens PHQ-9 and GAD-7 entry. **Move measures** sends them to a chosen upcoming visit and notes it on the original row, suggesting an MT, MTR or F/U within 7 days.
 - **MT** cards add MT details and the protocol picker. Daily cards add the note drafter, with the MT baseline sleep and caffeine as a quiet reference.
 
