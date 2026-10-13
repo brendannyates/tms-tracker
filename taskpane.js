@@ -50,7 +50,7 @@ const state = {
   open: new Set(), dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all"
 };
 try { state.chair = localStorage.getItem("tms_chair") || "all"; } catch { /* storage unavailable */ }
-/* Discontinued patients are left off the Day, Week and chair schedules */
+/* Discontinued patients are left off the schedules, Attention and the roster (except its Discontinued filter) */
 const onSched = p => !/^discontinued/i.test(String(p.status).trim());
 /* chairs: from the saved appointment list's resource names (for example Castro MagV1 and Castro MagV2). A visit's chair is the
    resource booked that day, else the chair the patient's daily treatments are usually on. Each person picks a chair on their own device. */
@@ -436,7 +436,7 @@ function renderDash() {
 function syncAtt() { const wide = document.body.clientWidth >= 640; document.body.classList.toggle("wide", wide); document.body.classList.toggle("attc", wide && !!state.attCollapsed); if (wide !== state.wideAtt) { state.wideAtt = wide; $("attWrap").open = wide; } }
 
 function attentionHtml() {
-  const P = state.patients, A = P.filter(p => p.d.active);
+  const P = state.patients.filter(onSched), A = P.filter(p => p.d.active);
   const exempt = r => r.note.includes(EXEMPT_TAG);
   const dec = P.flatMap(p => p.d.decisions.map(r => ({ p, r })));
   return gi(`No appointment in ${state.cfg.recentDays}+ days: pause or discontinue?`, P.filter(p => p.d.stale).map(p => item(p, "", `${p.d.txDone}/${p.d.total} treatments, last ${p.d.lastTx ? fmtDate(p.d.lastTx) : "none"}`, "red", null, btn("status", p.tab, "Paused", "Paused") + btn("status", p.tab, "Discontinued", "Discontinued"))), "Nobody is stale")
@@ -710,7 +710,7 @@ function dayCode(p, day) {
   const a = rs.find(r => r.action); if (a) return a.action;
   return "\u00B7";
 }
-const PT_FILTERS = { all: ["All", () => true], active: ["Active", p => p.d.active], nofu: ["Follow-up not scheduled", p => p.d.active && p.d.fuStatus === "not scheduled"], nonext: ["No upcoming visit", p => p.d.active && !p.d.next && p.d.txDone < p.d.total] };
+const PT_FILTERS = { all: ["All", onSched], active: ["Active", p => p.d.active], nofu: ["Follow-up not scheduled", p => p.d.active && p.d.fuStatus === "not scheduled"], nonext: ["No upcoming visit", p => p.d.active && !p.d.next && p.d.txDone < p.d.total], disc: ["Discontinued", p => !onSched(p)] };
 function viewPatients() {
   const ws = weekStart(todaySerial()) + 7 * state.weekOffset, days = [1, 2, 3, 4, 5].map(i => ws + i), f = PT_FILTERS[state.ptFilter] || PT_FILTERS.all;
   const bar = `<div class="wk"><div class="fchips">${Object.entries(PT_FILTERS).map(([k, [lab, fn]]) => `<button class="sm${k === state.ptFilter ? " on" : ""}" data-act="ptFilter" data-v="${k}" aria-pressed="${k === state.ptFilter}">${esc(lab)} <span class="n">${state.patients.filter(fn).length}</span></button>`).join("")}</div><button class="pri" data-act="addPt">Add patient</button></div>`;

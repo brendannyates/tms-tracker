@@ -46,7 +46,7 @@ Across the top: **Import list**, **Open in a new window** (⧉), **Full screen**
 
 | Menu | Use it for |
 |---|---|
-| Schedule | **Day** shows one weekday's visits; **Prev** and **Next** move between weekdays, **Back to today** returns. **Week** shows Monday to Friday with "X of Y treated" and the reasons for each day. Discontinued patients are left off both. When the appointment list has more than one chair (for example Castro MagV1 and Castro MagV2), buttons above the schedule show one chair or both; your pick is remembered on your computer. |
+| Schedule | **Day** shows one weekday's visits; **Prev** and **Next** move between weekdays, **Back to today** returns. **Week** shows Monday to Friday with "X of Y treated" and the reasons for each day. Discontinued patients are left off both, and off Attention and the Patients list (use its **Discontinued** filter to find them). When the appointment list has more than one chair (for example Castro MagV1 and Castro MagV2), buttons above the schedule show one chair or both; your pick is remembered on your computer. |
 | Patients | The roster for the week, with filters (All, Active, Follow-up not scheduled, No upcoming visit) and **Add patient**. Select a patient for their full view. |
 | Clinic | The chair schedule and the protocol list. |
 
