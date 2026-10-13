@@ -18,7 +18,6 @@ const BILL = [
 const BEFORE_HDR = "Before ded.";
 const TAB_RE = /^([A-Z]{1,6})(?: (\d+))?$/;
 const ACTIVE = ["Pending Start", "In Progress", "Tapering"];
-const STATUSES = ["Pending Start", "In Progress", "Tapering", "Paused", "Discontinued", "Complete"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
@@ -71,6 +70,8 @@ const POPOUT = /[?&]popout=1\b/.test(location.search);
 const pop = { dlg: null, calls: 0 };                                   // task pane side
 const rpc = { id: 0, wait: new Map(), parts: [], snapWait: [] };       // pop-out side
 const $ = id => document.getElementById(id);
+const colLetter = i => { let s = ""; for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };   // 0-based column index to letters (A, Z, AA)
+const colIndex = l => l.split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;   // letters back to a 0-based index
 const esc =s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 /* ---------- dates and times ---------- */
@@ -170,7 +171,12 @@ async function refresh() {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
       const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
-      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.d7.load("values"); x.e.load("values"); }); await ctx.sync();
+      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.d7.load("values"); x.e.load("values"); });
+      /* sheet names are already known, so the Protocols and Clinic Schedule reads ride along with this sync (names match case-insensitively, as getItem does) */
+      const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
+      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule");
+      const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null;
+      [prv, cs].forEach(r => r && r.load("values")); await ctx.sync();
       const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
       const live = x => x.name === "New Template" || (!/^(discontinued|complete)/i.test(String(x.d7.values[0][0]).trim()) && x.e.values.some(([v]) => (eDate(v) ?? 0) >= cut));
       state.stale = sg.filter(x => !live(x)).map(x => x.name); const stale = new Set(state.stale);
@@ -185,10 +191,7 @@ async function refresh() {
         return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_LAST}`), s9: g("S9") };
       });
-      const prW = ctx.workbook.worksheets.getItemOrNullObject("Protocols"), csW = ctx.workbook.worksheets.getItemOrNullObject("Clinic Schedule");
       await ctx.sync();
-      const prv = prW.isNullObject ? null : prW.getRange("A2:I40"), cs = csW.isNullObject ? null : csW.getRange("A3:H40");
-      [prv, cs].forEach(r => r && r.load("values")); await ctx.sync();
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -357,7 +360,6 @@ function derive(p) {
     authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && todayVisit && bidf.length > 0,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
 }
-const isUnavail = (p, day) => p.avail.some(w => w.type === "Unavailable" && w.from <= day && day <= w.to);
 function availText(p) {
   const t = todaySerial(), parts = [];
   const un = p.avail.filter(w => w.type === "Unavailable" && w.to >= t).sort((a, b) => a.from - b.from)[0];
@@ -693,14 +695,6 @@ async function writeChairSheet(offset = state.schedOffset) {
     toast("Chair Schedule sheet updated.");
   } catch (e) { fail(e); }
 }
-function viewFollowUp() {
-  const A = state.patients.filter(p => p.d.active);
-  const notFu = A.filter(p => p.d.fuStatus === "not scheduled"), fuOk = A.filter(p => p.d.fuStatus === "scheduled").sort((a, b) => a.d.fuNext.date - b.d.fuNext.date);
-  const noNext = A.filter(p => !p.d.next && p.d.txDone < p.d.total);
-  return group("Follow-up not scheduled", notFu.map(p => item(p, "", availText(p), "red")), "Every follow-up has a date")
-    + group("Follow-up scheduled", fuOk.map(p => item(p, `${DAYS[dow(p.d.fuNext.date)]} ${fmtDate(p.d.fuNext.date)} ${fmtTime(p.d.fuNext.time)}${p.d.fuNext.tele ? " tele" : ""}`, "", "grn", p.d.fuNext.row)), "None")
-    + group("No upcoming treatment visit", noNext.map(p => item(p, "", availText(p), "amb")), "Everyone has a next visit");
-}
 /* Patients: the roster and week at a glance */
 function dayCode(p, day) {
   const rs = p.rows.filter(r => r.date === day); if (!rs.length) return "";
@@ -798,7 +792,7 @@ async function syncActiveSheet(force) {
   if (!force && state.hasAP && (state.apSig ?? settings.get("tms_ap_sig")) === m.sig) { state.apSig = m.sig; return; }
   state.apBusy = true;
   try {
-    const n = m.rows.length, last = AP_FIRST + n - 1, end = Math.max(last, AP_FIRST), legend = end + 2, col = i => String.fromCharCode(65 + i);
+    const n = m.rows.length, last = AP_FIRST + n - 1, end = Math.max(last, AP_FIRST), legend = end + 2, col = colLetter;
     await Excel.run(async ctx => {
       let ws = ctx.workbook.worksheets.getItemOrNullObject(AP_SHEET); await ctx.sync();
       if (ws.isNullObject) ws = ctx.workbook.worksheets.add(AP_SHEET);
@@ -1103,7 +1097,7 @@ async function ensureCost(ctx, ws) {
 async function rebuildTab(ctx, name) {
   const old = ctx.workbook.worksheets.getItem(name), tpl = ctx.workbook.worksheets.getItem("New Template");
   const src = old.getRange("A1:AN49"); src.load("formulas"); old.load("position"); await ctx.sync();
-  const F = src.formulas, at = a => { const m = a.match(/^([A-Z]+)(\d+)$/), c = m[1].split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1; return F[+m[2] - 1][c]; };
+  const F = src.formulas, at = a => { const m = a.match(/^([A-Z]+)(\d+)$/), c = colIndex(m[1]); return F[+m[2] - 1][c]; };
   const isK = v => !(typeof v === "string" && v.startsWith("="));   // a typed entry, not a formula
   const txt = a => String(at(a) ?? "").trim();
   const pos = old.position; old.name = `${name} (old)`.slice(0, 31);
@@ -1136,7 +1130,7 @@ async function rebuildTab(ctx, name) {
   /* check the transfer, then delete the earlier tab */
   const back = ws.getRange("A1:Y49"); back.load("values"); await ctx.sync();
   const same = (a, b) => (a === "" || a == null) ? (b === "" || b == null) : typeof a === "number" ? typeof b === "number" && Math.abs(a - b) < 1e-9 : String(a) === String(b);
-  const bad = [...wrote].filter(([a, v]) => { const m = a.match(/^([A-Z]+)(\d+)$/), c = m[1].split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1; return !same(v, back.values[+m[2] - 1][c]); }).map(([a]) => a);
+  const bad = [...wrote].filter(([a, v]) => { const m = a.match(/^([A-Z]+)(\d+)$/), c = colIndex(m[1]); return !same(v, back.values[+m[2] - 1][c]); }).map(([a]) => a);
   if (!bad.length) { old.delete(); await ctx.sync(); }
   return { name, deleted: !bad.length, bad };
 }
@@ -1234,9 +1228,11 @@ async function addPatient(d) {
     state.pendingNew = state.pendingNew.filter(x => x.mrn !== normMrn(d.apMrn));
     if (!POPOUT) resetAddPatient();
     await refresh();
-    const np = state.patients.find(x => x.tab === name); if (np) await placeMeasures([np]);
-    toast(`Created ${name}.`); await refresh();
+    const np = state.patients.find(x => x.tab === name), meas = !!np && planMeasures(np).length > 0; if (meas) await placeMeasures([np]);
+    toast(`Created ${name}.`);
+    // buildPlan() refreshes on its own, so refresh here only when measures were written and no preview rebuild follows
     if (state.file && state.file.rows.some(r => normMrn(r[state.file.map.mMrn]) === normMrn(d.apMrn))) { show("imp"); await buildPlan(); toast(`Created ${name}. The preview now includes its dates.`); }
+    else if (meas) await refresh();
     return true;
   } catch (e) { fail(e); }
 }
@@ -1289,7 +1285,7 @@ function saveList(f) {
 }
 async function writeList({ headers, rows, dateCol, meta }) {
   const cols = headers.length;
-  const colL = n => { let s = ""; for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; }, last = colL(cols - 1);
+  const last = colLetter(cols - 1);
   await Excel.run(async ctx => {
     let ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync();
     if (ws.isNullObject) ws = ctx.workbook.worksheets.add(LIST_SHEET); else ws.getRange().clear();
@@ -1487,7 +1483,8 @@ async function applyPlan() {
     if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })));
     const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab))) : 0;
     toast(`Updated ${ch.length} tab${ch.length === 1 ? "" : "s"}${sug.length ? `, ${sug.length} status${sug.length > 1 ? "es" : ""}` : ""}${nx ? `, measures re-planned for ${reflow.size}` : ""}.`);
-    await refresh(); show("sch");
+    if (sug.length || reflow.size) await refresh();   // the refresh above is current unless statuses or measures were just written
+    show("sch");
   } catch (e) { fail(e); }
 }
 
