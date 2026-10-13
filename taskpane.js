@@ -8,7 +8,10 @@
 "use strict";
 
 /* ---------- tab layout ---------- */
-const LOG_FIRST = 10, LOG_LAST = 49;
+const LOG_FIRST = 10, LOG_LAST = 49, LOG_READ = 150;   // the template's log is A10:T49; an import can grow it (see growLogs)
+/* a grown log is found from column A's PR formula: its $L$10:$L$n range stretches with every row inserted inside the log */
+const logEnd = f => { const m = String(f || "").match(new RegExp(String.raw`\$L\$${LOG_FIRST}:\$L\$(\d+)`)); return m ? Math.max(LOG_LAST, +m[1]) : LOG_LAST; };
+const BLANK_ROW = { pr: null, tx: "", tech: "", date: null, time: null, pulses: [null, null, null], delivered: false, type: "", miss: false, action: "", alt: false, note: "", tele: false, freebie: "", phq: "", gad: "", measX: false, measVal: false };
 const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, time: 19 }; // 0-based in A:T
 const COST_FIRST = 12, WK_FIRST = 20, AV_FIRST = 29, AV_LAST = 48;
 const BILL = [
@@ -189,7 +192,7 @@ async function refresh() {
       const L = sheets.items.filter(s => okNames.has(s.name)).map(s => {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
         return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
-          wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_LAST}`), s9: g("S9") };
+          wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") };
       });
       await ctx.sync();
       state.closures = new Map();
@@ -219,7 +222,8 @@ async function refresh() {
           ben: { bidf: money0(w[0]), dedNA: isNA(w[3]), dedRem: money0(w[3]), dedBlank: w[3] === "" || w[3] == null, oopNA: isNA(w[4]), oopRem: money0(w[4]),
             mtr: String(w[5] || ""), ext: typeof w[6] === "number" ? w[6] : 0, lastSched: isNum(w[7]) ? Math.floor(w[7]) : null },
           cost: BILL.map((b, i) => ({ after: money0(cv[i + 1][2]), before: money0(cv[i + 1][3]) })),
-          rows: parseLog(l.log.values),
+          canGrow: /LET\(/.test(String(l.a10.formulas[0][0])),   // only a PR formula in A10 can say where a grown log ends
+          rows: parseLog(l.log.values.slice(0, logEnd(l.a10.formulas[0][0]) - LOG_FIRST + 1)),
           week: Object.fromEntries([1, 2, 3, 4, 5].map(d => { const v = l.wk.values[d - 1] || []; return [d, { from: isNum(v[0]) ? Math.round(v[0] * 1440) : null, to: isNum(v[1]) ? Math.round(v[1] * 1440) : null }]; })),
           avail: l.av.values.filter(v => AV_TYPE.includes(v[0]) && isNum(v[1])).map(v => ({ type: v[0], from: Math.floor(v[1]), to: isNum(v[2]) ? Math.floor(v[2]) : Math.floor(v[1]), note: String(v[3] || "") }))
         };
@@ -858,6 +862,28 @@ async function applyOps(ops) {
   if (POPOUT) return callPane("applyOps", [ops]);
   await Excel.run(async ctx => { for (const o of ops) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; } await ctx.sync(); });
 }
+/* new visit-log rows, in A:T only so the benefits block beside the log stays put. Each goes inside the log (planTab never puts one
+   past the last row), so Excel stretches the PR formulas, header counts and rules over it. It takes everything from a row of the
+   same visit type (fill, borders, validation, conditional formats, height) and keeps that row's formulas, with the typed cells blank. */
+async function growLogs(list) {
+  if (!list.length) return;
+  if (POPOUT) return callPane("growLogs", [list]);
+  await Excel.run(async ctx => {
+    for (const { tab, ins } of list) {
+      const ws = ctx.workbook.worksheets.getItem(tab);
+      ins.forEach(({ row }) => ws.getRange(`A${row}:T${row}`).insert(Excel.InsertShiftDirection.down));   // ascending, so each lands on its final row
+      const src = ins.map(({ src }) => { const r = ws.getRange(`A${src}:T${src}`); r.load("formulasR1C1"); r.format.load("rowHeight"); return r; });
+      await ctx.sync();
+      ins.forEach(({ row }, i) => {
+        const r = ws.getRange(`A${row}:T${row}`);
+        r.copyFrom(src[i], Excel.RangeCopyType.all);
+        r.formulasR1C1 = [src[i].formulasR1C1[0].map(f => typeof f === "string" && f.startsWith("=") ? f : "")];
+        r.format.rowHeight = src[i].format.rowHeight;
+      });
+      await ctx.sync();
+    }
+  });
+}
 const writeCells = (tab, pairs) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })));
 function patchRow(tab, row, f) { const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return; Object.assign(r, f); p.d = derive(p); renderDash(); }
 const findPR = (tab, row) => { const p = state.patients.find(x => x.tab === tab); return [p, p && p.rows.find(x => x.row === row)]; };
@@ -1076,21 +1102,23 @@ async function placeMeasuresClick() {
    and the PR formula in column A, and rebuilds tabs from an earlier layout as fresh copies of New Template. ---------- */
 /* PR (patient responsibility) per visit. With a deductible in W4, visits charge the before-deductible cost (Y) in date order
    until W4 is used up; the visit that crosses it pays what is left plus PR on the rest; then PR (X). Missed visits are not charged. */
-const prF = r => `=IF(OR($L${r}="",$M${r}="x"),"",LET(L,$L$${LOG_FIRST}:$L$${LOG_LAST},M,$M$${LOG_FIRST}:$M$${LOG_LAST},E,$E$${LOG_FIRST}:$E$${LOG_LAST},tl,ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${LOG_LAST})),`
+const prF = (r, last = LOG_LAST) => `=IF(OR($L${r}="",$M${r}="x"),"",LET(L,$L$${LOG_FIRST}:$L$${last},M,$M$${LOG_FIRST}:$M$${last},E,$E$${LOG_FIRST}:$E$${last},tl,ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${last})),`
   + `c,LAMBDA(col,(L="MT")*N(INDEX(col,1))+((L="Daily")+(L="Taper"))*N(INDEX(col,2))+(L="MTR")*N(INDEX(col,3))+(L="F/U")*NOT(tl)*N(INDEX(col,4))+(L="F/U")*tl*N(INDEX(col,5))),`
   + `aft,c($X$${COST_FIRST}:$X$${COST_FIRST + 4}),bef,c($Y$${COST_FIRST}:$Y$${COST_FIRST + 4}),i,ROW()-${LOG_FIRST - 1},a,INDEX(aft,i),b,INDEX(bef,i),d,$W$4,`
   + `IF(OR(NOT(ISNUMBER(d)),d<=0,b<=0),a,LET(key,IF(E="",1E6,E)*100+ROW(E),rem,MAX(0,d-SUMPRODUCT(bef*(M<>"x")*(key<INDEX(key,i)))),IF(rem<=0,a,IF(b<=rem,b,rem+a*(b-rem)/b))))))`;
 /* a PR cell is ours to replace when it is blank or still holds a cost-table lookup; a typed amount is left alone */
 const isPrFormula = f => f === "" || f == null || (typeof f === "string" && f.startsWith("=") && /\$X\$12|\$AE\$18|LET\(/.test(f));
 async function ensureCost(ctx, ws) {
-  const a = ws.getRange(`A${LOG_FIRST}:A${LOG_LAST}`), y = ws.getRange("Y11"); a.load("formulas"); y.load("values"); await ctx.sync();
+  const a10 = ws.getRange(`A${LOG_FIRST}`); a10.load("formulas"); await ctx.sync();
+  const last = logEnd(a10.formulas[0][0]);
+  const a = ws.getRange(`A${LOG_FIRST}:A${last}`), y = ws.getRange("Y11"); a.load("formulas"); y.load("values"); await ctx.sync();
   if (String(y.values[0][0]).trim() !== BEFORE_HDR) {
     ws.getRange(`Y11:Y${COST_FIRST + 4}`).copyFrom(`X11:X${COST_FIRST + 4}`, Excel.RangeCopyType.formats);
     ws.getRange("Y11").values = [[BEFORE_HDR]];
   }
   ws.getRange("W4").dataValidation.clear();   // an amount or N/A
   ws.getRange(`X${COST_FIRST}:Y${COST_FIRST + 4}`).numberFormat = Array(5).fill(["$#,##0.00", "$#,##0.00"]);
-  a.formulas = a.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i) : v[0]]);
+  a.formulas = a.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, last) : v[0]]);
 }
 /* copy an earlier-layout tab's entries into a fresh copy of New Template. Every copied cell is read back from the new tab;
    only when all of them match is the earlier tab deleted. Otherwise it stays as "NAME (old)". */
@@ -1312,7 +1340,7 @@ async function loadList() {
   return parseReport(vals, name, true);
 }
 function planTab(p, appts, from, to, o) {
-  const R = p.rows.map(r => ({ ...r })), orig = p.rows;
+  const R = p.rows.map(r => ({ ...r, _o: r }));
   const st = { cleared: 0, miss: 0, none: 0, unrecorded: 0, exempt: 0, unclass: 0, types: 0, sameCancel: 0, early: 0, earlyNew: 0, noMod: 0, elsewhere: 0 };
   const tag = (r, t) => { if (!r.note.split("; ").includes(t)) r.note = r.note ? `${r.note}; ${t}` : t; };
   const untag = (r, t) => { r.note = r.note.split("; ").filter(x => x !== t).join("; "); };
@@ -1340,29 +1368,54 @@ function planTab(p, appts, from, to, o) {
       else { tag(r, UNCLASS_TAG); st.unclass++; }
     }
   }
-  // 2. today and later: Expected (and today's Kept) fill undelivered rows in order, by exact type for external patients
-  const events = appts.filter(a => (a.status === "Scheduled" || a.status === "Kept") && a.date >= from);
+  // 2. today and later: Expected (and today's Kept) fill undelivered rows in row order, by exact type for external patients
+  const events = appts.filter(a => (a.status === "Scheduled" || a.status === "Kept") && a.date >= from).sort(cmp);
   const strict = !!p.external || !!o.ps, norm = t => (t === "" || t === "Taper") ? "Daily" : t;
   const poolOf = r => strict ? norm(r.type) : (r.type === "F/U" ? "fu" : "tx"), evPool = e => strict ? e.type : (e.type === "F/U" ? "fu" : "tx");
   const eligible = r => !r._p && !r.delivered && (o.ps || !r.alt) && !r.miss;
   const inWin = r => eligible(r) && r.date != null && r.date >= from && r.date <= to;
-  const over = r => !r._p && !r.delivered && (o.ps || !r.alt) && !r.miss && (r.date == null || r.date > to);
-  for (const pool of strict ? ["Daily", "MT", "MTR", "F/U"] : ["fu", "tx"]) {
-    const win = R.filter(r => poolOf(r) === pool && inWin(r)), ov = R.filter(r => poolOf(r) === pool && over(r));
-    const done = R.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
-    for (const e of events.filter(e => evPool(e) === pool).sort(cmp)) {
-      const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
-      const r = win.shift() || ov.shift(); if (!r) { st.none++; continue; }
-      r.date = e.date; r.time = e.time; r.miss = false; r.freebie = "";
-      if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; st.types++; }
-      if (e.type === "F/U") { if (e.tele) tag(r, TELE_TAG); else untag(r, TELE_TAG); }
-      if (o.ps) { r.alt = !o.ours(e.loc); if (r.alt) st.elsewhere++; }
+  const over = r => eligible(r) && (r.date == null || r.date > to);
+  const fill = rows => {
+    const f = { cleared: 0, types: 0, elsewhere: 0 }, left = [];
+    for (const pool of strict ? ["Daily", "MT", "MTR", "F/U"] : ["fu", "tx"]) {
+      const free = rows.filter(r => poolOf(r) === pool && (inWin(r) || over(r)));
+      const done = rows.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
+      for (const e of events.filter(e => evPool(e) === pool)) {
+        const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
+        const r = free.shift(); if (!r) { left.push(e); continue; }
+        r.date = e.date; r.time = e.time; r.miss = false; r.freebie = "";
+        if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; f.types++; }
+        if (e.type === "F/U") { if (e.tele) tag(r, TELE_TAG); else untag(r, TELE_TAG); }
+        if (o.ps) { r.alt = !o.ours(e.loc); if (r.alt) f.elsewhere++; }
+      }
+      free.filter(r => r.date != null && r.date <= to).forEach(r => { r.date = null; r.time = null; r.miss = false; r.freebie = ""; untag(r, TELE_TAG); if (o.ps) r.alt = false; f.cleared++; });
     }
-    win.forEach(r => { r.date = null; r.time = null; r.miss = false; r.freebie = ""; untag(r, TELE_TAG); if (o.ps) r.alt = false; st.cleared++; });
+    return { f, left };
+  };
+  let rows = R.map(r => ({ ...r })), res = fill(rows);
+  // more booked visits than free rows (each no-show or MT redo uses one up): add rows to the log, each after the visits it follows
+  // and never past the last row, so they land inside the log and Excel stretches every reference to it
+  const ins = [];
+  if (res.left.length && o.grow) {
+    const G = R.map((r, i) => ({ ...r, _d: rows[i].date }));
+    for (const e of res.left) {
+      let at = 0; G.forEach((r, i) => { if (r.delivered || (r._d != null && r._d <= e.date) || poolOf(r) === evPool(e)) at = i + 1; });
+      at = Math.min(Math.max(at, 1), G.length - 1);
+      G.splice(at, 0, { ...BLANK_ROW, type: e.type, pulses: [null, null, null], _o: null, _d: e.date });
+    }
+    if (G.length <= LOG_READ) { rows = G; res = fill(rows); }
   }
+  Object.assign(st, res.f); st.none = res.left.length;
+  rows.forEach((r, i) => { r.row = LOG_FIRST + i; });
+  rows.forEach((r, i) => {
+    if (r._o) return;
+    const same = rows.filter(x => x._o && x.type === r.type).sort((x, y) => Math.abs(x.row - r.row) - Math.abs(y.row - r.row))[0];
+    const src = same || rows.slice(0, i).reverse().find(x => x._o) || rows.find(x => x._o);
+    ins.push({ row: r.row, src: src.row });
+  });
   const ops = []; let fbDelta = 0;
-  R.forEach((r, i) => {
-    const b = orig[i];
+  rows.forEach(r => {
+    const b = r._o || BLANK_ROW;
     if (r.freebie !== b.freebie) { r.note = withFreebie(r.note, r.freebie); fbDelta += (r.freebie === "Used" ? 1 : 0) - (b.freebie === "Used" ? 1 : 0); }
     if (r.date !== b.date) ops.push([`E${r.row}`, r.date ?? ""]);
     if (r.time !== b.time) ops.push([`T${r.row}`, r.time == null ? "" : r.time / 1440]);
@@ -1373,11 +1426,12 @@ function planTab(p, appts, from, to, o) {
   });
   if (fbDelta) ops.push(["N7", Math.max(0, p.d.left - fbDelta)]);   // NextGen "Waived" = a freebie used
   // significant disruptions re-flow the measures: an MTR or F/U moved, or 2+ missed visits within a week
-  const moved = R.some((r, i) => (r.type === "MTR" || r.type === "F/U") && orig[i].date != null && orig[i].date !== r.date) || R.some((r, i) => r.type === "MTR" && orig[i].type !== "MTR");
-  const missDates = R.filter(r => r.miss && r.date != null).map(r => r.date).sort((a, b) => a - b), newMiss = new Set(R.filter((r, i) => r.miss && !orig[i].miss).map(r => r.date));
+  const was = r => r._o || BLANK_ROW;
+  const moved = rows.some(r => (r.type === "MTR" || r.type === "F/U") && was(r).date != null && was(r).date !== r.date) || rows.some(r => r.type === "MTR" && was(r).type !== "MTR");
+  const missDates = rows.filter(r => r.miss && r.date != null).map(r => r.date).sort((a, b) => a - b), newMiss = new Set(rows.filter(r => r.miss && !was(r).miss).map(r => r.date));
   let multi = false; for (let i = 1; i < missDates.length; i++) if (missDates[i] - missDates[i - 1] <= 6 && (newMiss.has(missDates[i]) || newMiss.has(missDates[i - 1]))) multi = true;
-  const dates = R.filter((r, i) => r.date !== orig[i].date && r.date != null).map(r => r.date);
-  return { name: p.tab, ops, set: dates.length, ...st, changed: ops.length > 0, reflow: moved || multi };
+  const dates = rows.filter(r => r.date !== was(r).date && r.date != null).map(r => r.date);
+  return { name: p.tab, ops, ins, added: ins.length, set: dates.length, ...st, changed: ops.length > 0 || ins.length > 0, reflow: moved || multi || ins.length > 0 };
 }
 async function buildPlan(quiet) {
   if (!state.file) return;
@@ -1444,7 +1498,7 @@ async function buildPlan(quiet) {
     let p = latest.get(mrn); const code = codes.get(mrn);
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
     if (!p) continue;
-    const pl = planTab(p, appts, from, maxDate, { ...o, mrn });
+    const pl = planTab(p, appts, from, maxDate, { ...o, mrn, grow: p.canGrow });
     // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
     const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
@@ -1465,6 +1519,10 @@ function renderPlan() {
   let h = `<h2>Preview${ps ? ": patient-specific report" : ""}</h2><div class="sub">${state.file.saved ? `Saved list (${esc(listRun(state.file))})` : esc(state.file.name || "")}. Today through ${fmtDateY(to)}. Past visits only change for no-shows and same-day cancels.</div>`;
   h += ch.length ? `<table><thead><tr><th>Tab</th><th class="num">Dates</th><th class="num">Types</th><th class="num">Cleared</th><th class="num">Missed</th></tr></thead><tbody>${ch.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.set}</td><td class="num">${p.types}</td><td class="num">${p.cleared}</td><td class="num">${p.miss}</td></tr>`).join("")}
     <tr><th>Total</th><th class="num">${tot("set")}</th><th class="num">${tot("types")}</th><th class="num">${tot("cleared")}</th><th class="num">${tot("miss")}</th></tr></tbody></table>` : `<div class="none">The tracker already matches this report.</div>`;
+  const grown = ch.filter(p => p.added), full = plans.filter(p => p.none);
+  if (grown.length) h += `<div class="sub" style="margin-top:6px">Rows added to the visit log: ${grown.map(p => `${esc(p.name)} ${p.added}`).join(", ")}. They take the formatting of a row of the same visit type.</div>`;
+  const nf = full.reduce((n, p) => n + p.none, 0);
+  if (nf) h += `<div class="item red" style="margin-top:6px">No row for ${nf} booked visit${nf === 1 ? "" : "s"} on ${full.map(p => esc(p.name)).join(", ")}: the PR formula in A10 is missing. Run Update tabs on the banner, then import again.</div>`;
   const pv = ch.filter(p => p.e2).length;
   if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
   if (state.pendingNew.length) h += `<div class="sub" style="margin-top:6px">${state.pendingNew.length} patient${state.pendingNew.length > 1 ? "s" : ""} in the report ${state.pendingNew.length > 1 ? "have" : "has"} no tracker yet. See the top of the dashboard.</div>`;
@@ -1474,6 +1532,7 @@ function renderPlan() {
 async function applyPlan() {
   const plan = state.plan, ch = plan.plans.filter(p => p.changed), reflow = new Set(plan.plans.filter(p => p.reflow).map(p => p.name));
   try {
+    await growLogs(ch.filter(p => p.ins.length).map(p => ({ tab: p.name, ins: p.ins })));   // rows first: the ops address the grown log
     await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
     const f = state.file;
     if (!plan.ps && !f.saved) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); await saveList(f); }
@@ -1584,7 +1643,7 @@ function callPane(fn, args) {
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
-  refresh: () => refresh(), applyOps: ops => applyOps(ops), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
+  refresh: () => refresh(), applyOps: ops => applyOps(ops), growLogs: x => growLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: () => setupColumns(), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
   saveSetting: (k, v) => saveSetting(k, v)
 };
