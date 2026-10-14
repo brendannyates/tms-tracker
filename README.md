@@ -21,6 +21,7 @@ Tested with fictional patients:
 |---|---|
 | `manifest.xml` | Office add-in manifest (version 1.2). Requires ExcelApi 1.9, which Excel on the web supports. Points to the GitHub Pages pilot host, `https://brendannyates.github.io/tms-tracker`, served from `main`. |
 | `taskpane.html`, `taskpane.js` | The add-in. A single static page with no build step. |
+| `benefits.js`, `tests/` | Sohar benefits import: matching and plan (pure functions) and their tests. |
 | `schedule.html` | The patient schedule window: print, save as PDF, or full screen. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
@@ -146,6 +147,16 @@ The add-in rebuilds this sheet in the Patients roster layout for the current wee
 - **Order and Tx #:** after every import the visit log reads top to bottom by date (open rows with no date last), so a follow-up sits between the treatments around it. Only the typed cells move (B, C, E, F, H, J, L to T); the formulas in A, D, G, I and K stay on their rows. C numbers MT, Daily, Taper and MTR rows from 1 down the log, skipping missed visits and follow-ups, so D (D2 minus C) is the treatments left. The preview lists the tabs re-sorted or renumbered.
 - **Saved list:** applying an ALL TMS list copies it to the **Appt List** tab (replaced each time). The add-in reads it back on open, so the new-patient banner and a new tab's dates still work without uploading again, and **Preview again** in Import list reruns it. Patient-specific reports are not saved there.
 - **Measures:** they are re-planned only after a significant disruption: an MTR or F/U moved, the log re-sorted, or 2 or more missed visits within a week.
+
+## Sohar benefits import
+
+Import list > **Import Sohar benefits** takes the "Benefits (TMS Tracker)" file from the Sohar Eligibility add-in (or its Sohar Results sheet saved as CSV; discovery rows are ignored). Matching and the plan live in `benefits.js`, which has tests in `tests/` (`npm test`).
+
+- **Matching:** by MRN (A4), ignoring punctuation and leading zeros. If a patient has more than one course, the open tab with the highest course number is used. The latest Sohar result per MRN wins.
+- **What it writes:** W4 deductible remaining (N/A when the plan has no deductible), W5 out-of-pocket max remaining, and E6 insurance (payer and plan) only when E6 is blank. Copay and coinsurance are shown for reference; the cost table is not changed.
+- **Blank cells are filled by default.** W4 and W5 are the amounts at the start of the course (column A's PR formula subtracts visits charged since), so a tab that already has a different amount is shown with both values and left unticked. Tick it only if the tracker's number is wrong.
+- **Not imported:** ineligible or errored verifications (the preview says so), and patients with no tracker tab (listed by the last four MRN digits).
+- Nothing changes until **Apply**.
 
 ## Measures placeholders
 

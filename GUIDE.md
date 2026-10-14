@@ -94,6 +94,20 @@ After applying, delete the exported file from your computer. The workbook keeps 
 
 For an external patient seen at several locations, run their patient-specific report and choose **Patient-specific** before selecting the file. That report is not kept on the Appt List tab.
 
+## Import benefits from Sohar
+
+After a Sohar verification run, the Sohar Eligibility add-in can fill in each tracker's deductible and out-of-pocket max for you.
+
+1. In the Sohar Eligibility workbook, select **Download benefits CSV** (step 5), or **Benefits (TMS Tracker)** in full screen. In Excel on the web the rows land on the **Export** sheet; use File > Export > Download as CSV.
+2. In this panel, select **Import list**, scroll to **Import Sohar benefits**, and choose the file.
+3. Review the preview. Each tab shows the payer, plan, copay and coinsurance, and what will change:
+   - Blank **Deductible remaining** (W4), **Out-of-pocket max remaining** (W5) and **Insurance** (E6) are ticked to fill.
+   - If the tab already has a different amount, it is shown unticked with both numbers. W4 and W5 are the amounts at the start of the course, so only tick it if the tracker's number is wrong.
+   - Inactive or errored verifications are not imported; the preview says to check coverage.
+4. Select **Apply**. Copay and coinsurance are for reference; set the cost table yourself.
+
+Delete the downloaded file afterward.
+
 ## Add a patient
 
 When NextGen has a patient without a tab, the banner lists them; select one to start a tracker with the MRN and LASFIR filled in. Otherwise, go to **Patients > Add patient**.

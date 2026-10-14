@@ -1315,6 +1315,48 @@ function parseReport(all, name, saved) {
   return { headers, rows: all.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== "")), asOf, asOfMin, map, name, saved: !!saved };
 }
 
+/* ---------- Sohar benefits import (benefits.js does the matching; this shows the plan and applies ticked rows) ---------- */
+async function onBenFile(e) {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array", raw: true });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" });
+    const parsed = SoharBenefits.parseSoharBenefits(rows);
+    if (parsed.error) throw new Error(parsed.error);
+    state.benPlan = SoharBenefits.planBenefits(parsed.records, state.patients);
+    state.benPlan.file = f.name;
+    renderBenPlan();
+  } catch (err) { fail(err); }
+}
+function renderBenPlan() {
+  const plan = state.benPlan, box = $("benPlan"); if (!plan) { box.hidden = true; return; }
+  const show = v => v === "" || v == null ? "blank" : typeof v === "number" ? money(v) : esc(v);
+  const n = plan.rows.reduce((s, r) => s + r.changes.filter(c => c.on && c.kind !== "same").length, 0);
+  const rows = plan.rows.map((r, i) => {
+    const x = r.rec, info = [x.payer, x.plan, x.copay !== "" ? `copay $${x.copay}` : "", x.coins ? `coinsurance ${x.coins}` : "", x.flag].filter(Boolean).map(esc).join(" · ");
+    const ch = r.changes.filter(c => c.kind !== "same").map((c, j) => `<label class="chk"><input type="checkbox" data-benrow="${i}" data-benc="${r.changes.indexOf(c)}" ${c.on ? "checked" : ""}> ${esc(c.label)} (${c.cell}): ${show(c.from)} &rarr; <b>${show(c.to)}</b>${c.kind === "change" ? ' <span class="chip amb">differs</span>' : ""}</label>`).join("");
+    const same = r.changes.filter(c => c.kind === "same").map(c => esc(c.label)).join(", ");
+    return `<div class="item${r.note && !r.changes.length ? " amb" : ""}"><b>${esc(r.tab)}</b> <span class="sub">MRN ${esc(r.mrnRaw)}</span><div class="sub">${info}</div>${ch}${same ? `<div class="sub">Already matches: ${same}</div>` : ""}${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}</div>`;
+  }).join("");
+  const un = plan.unmatched.length ? `<div class="hint">${plan.unmatched.length} patient${plan.unmatched.length > 1 ? "s" : ""} in the file ha${plan.unmatched.length > 1 ? "ve" : "s"} no tracker tab here (MRN ending ${plan.unmatched.map(r => esc(String(r.mrn).slice(-4))).join(", ")}).</div>` : "";
+  box.innerHTML = `<div class="hint">${esc(plan.file)}: ${plan.rows.length} tracker tab${plan.rows.length === 1 ? "" : "s"} matched.</div>${rows || '<div class="hint">No tabs matched by MRN.</div>'}${un}
+    <div class="actions"><button id="benApply" ${n ? "" : "disabled"}>Apply ${n} change${n === 1 ? "" : "s"}</button><button id="benClear">Clear</button></div>`;
+  box.hidden = false;
+  box.querySelectorAll("[data-benrow]").forEach(cb => cb.onchange = () => { plan.rows[+cb.dataset.benrow].changes[+cb.dataset.benc].on = cb.checked; renderBenPlan(); });
+  $("benApply").onclick = applyBenPlan;
+  $("benClear").onclick = () => { state.benPlan = null; renderBenPlan(); };
+}
+async function applyBenPlan() {
+  const ops = SoharBenefits.benefitOps(state.benPlan);
+  if (!ops.length) return;
+  try {
+    await applyOps(ops);
+    const tabs = new Set(ops.map(o => o.tab)).size;
+    toast(`Benefits imported: ${ops.length} cell${ops.length === 1 ? "" : "s"} on ${tabs} tab${tabs === 1 ? "" : "s"}.`);
+    state.benPlan = null; renderBenPlan(); await refresh();
+  } catch (e) { fail(e); }
+}
+
 /* The last applied ALL TMS list lives on the Appt List tab, so it survives closing the pane: new-patient banners and
    new tabs keep their dates without uploading it again. The run date is stored as text so parseReport reads it back. */
 const LIST_SHEET = "Appt List", LIST_HEAD = 6;
@@ -1821,7 +1863,7 @@ Office.onReady(info => {
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
   $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
-  $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
+  $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
