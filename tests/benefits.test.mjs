@@ -65,3 +65,20 @@ test("Sohar Results rows from discovery are ignored", () => {
   const rows = [["MRN", "Sent As", "Deductible Remaining", "Sohar Status"], ["900", "Discovery", "", "Coverage found"], ["900", "Verification", "100", "complete.eligible"]];
   assert.equal(B.parseSoharBenefits(rows).records.length, 1);
 });
+
+test("final tracker file: extra Service/Source/Exported columns are read, ESK-only rows left out", () => {
+  const H = [...HDR, "Service", "Source", "Exported"];
+  const r = (o) => H.map((h) => o[h] ?? "");
+  const rows = [H,
+    r({ MRN: "900", "Deductible Remaining": "0", "OOP Remaining": "800", "Sohar Status": "complete.eligible", "Sohar Date": "2026-10-15", Service: "TMS", Source: "Discovery, then verification" }),
+    r({ MRN: "901", "Deductible Remaining": "100", "Sohar Status": "complete.eligible", Service: "TMS; ESK" }),
+    r({ MRN: "905", "Deductible Remaining": "50", "Sohar Status": "complete.eligible", Service: "ESK" }),
+    r({ MRN: "903", "Deductible Remaining": "20", "Sohar Status": "complete.eligible", Service: "" }),
+  ];
+  const p = B.parseSoharBenefits(rows);
+  assert.deepEqual(p.records.map((x) => x.mrn), ["900", "901", "903"]);
+  assert.equal(p.otherService, 1);
+  assert.equal(p.records[0].source, "Discovery, then verification");
+  const plan = B.planBenefits(p.records, PATIENTS);
+  assert.equal(plan.unmatched.length, 0, "the ESK-only patient is not reported as unmatched");
+});
