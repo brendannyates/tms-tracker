@@ -1409,6 +1409,7 @@ async function onBenFile(e) {
     if (parsed.error) throw new Error(parsed.error);
     state.benPlan = SoharBenefits.planBenefits(parsed.records, state.patients);
     state.benPlan.file = f.name;
+    state.benPlan.otherService = parsed.otherService || 0;
     renderBenPlan();
   } catch (err) { fail(err); }
 }
@@ -1423,7 +1424,8 @@ function renderBenPlan() {
     return `<div class="item${r.note && !r.changes.length ? " amb" : ""}"><b>${esc(r.tab)}</b> <span class="sub">MRN ${esc(r.mrnRaw)}</span><div class="sub">${info}</div>${ch}${same ? `<div class="sub">Already matches: ${same}</div>` : ""}${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
   const un = plan.unmatched.length ? `<div class="hint">${plan.unmatched.length} patient${plan.unmatched.length > 1 ? "s" : ""} in the file ha${plan.unmatched.length > 1 ? "ve" : "s"} no tracker tab here (MRN ending ${plan.unmatched.map(r => esc(String(r.mrn).slice(-4))).join(", ")}).</div>` : "";
-  box.innerHTML = `<div class="hint">${esc(plan.file)}: ${plan.rows.length} tracker tab${plan.rows.length === 1 ? "" : "s"} matched.</div>${rows || '<div class="hint">No tabs matched by MRN.</div>'}${un}
+  const other = plan.otherService ? ` ${plan.otherService} patient${plan.otherService === 1 ? "" : "s"} booked only for ESK left out.` : "";
+  box.innerHTML = `<div class="hint">${esc(plan.file)}: ${plan.rows.length} tracker tab${plan.rows.length === 1 ? "" : "s"} matched.${other}</div>${rows || '<div class="hint">No tabs matched by MRN.</div>'}${un}
     <div class="actions"><button id="benApply" ${n ? "" : "disabled"}>Apply ${n} change${n === 1 ? "" : "s"}</button><button id="benClear">Clear</button></div>`;
   box.hidden = false;
   box.querySelectorAll("[data-benrow]").forEach(cb => cb.onchange = () => { plan.rows[+cb.dataset.benrow].changes[+cb.dataset.benc].on = cb.checked; renderBenPlan(); });

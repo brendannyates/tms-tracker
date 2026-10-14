@@ -18,6 +18,8 @@
     level: "Coverage Level", covStart: "Coverage Start", covEnd: "Coverage End", copay: "Copay", coins: "Coinsurance",
     ded: "Deductible", dedRem: "Deductible Remaining", dedStatus: "Deductible Status", oop: "OOP Max", oopRem: "OOP Remaining",
     oopStatus: "OOP Status", flag: "Benefit Flag", status: "Sohar Status", date: "Sohar Date", sentAs: "Sent As",
+    // Final tracker file only: which service the patient is booked for (TMS / ESK), and where the policy came from.
+    service: "Service", source: "Source",
   };
 
   /** 2D rows from the CSV/xlsx -> {records} or {error}. The header row is the first one with MRN and a benefit column. */
@@ -27,15 +29,18 @@
     const idx = {};
     rows[hi].forEach((h, i) => { const k = Object.keys(FIELDS).find((f) => norm(FIELDS[f]) === norm(h)); if (k && idx[k] == null) idx[k] = i; });
     const records = [];
+    let otherService = 0;
     for (const r of rows.slice(hi + 1)) {
       if (!(r || []).some((c) => !blank(c))) continue;
       const o = {};
       for (const [k, i] of Object.entries(idx)) o[k] = String(r[i] ?? "").trim();
       // The Sohar Results sheet also has discovery rows; only verified benefits belong in a tracker.
       if (o.sentAs && o.sentAs !== "Verification") continue;
+      // The final tracker file covers TMS and ESK; rows booked only for another service are left out.
+      if (o.service && !/\btms\b/i.test(o.service)) { otherService++; continue; }
       records.push(o);
     }
-    return { records };
+    return { records, otherService };
   }
 
   /** What the tracker shows today for W4 / W5: "N/A", a number, or "" when blank. */
