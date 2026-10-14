@@ -54,7 +54,9 @@ Across the top: **Import list**, **Open in a new window** (⧉), **Full screen**
 
 Banners at the top flag an out-of-date appointment list, new NextGen patients without a tab, and tabs needing an update. Each can be dismissed or snoozed for 3 hours.
 
-**A bigger view:** drag the panel's edge wider, or use ⧉ or ⛶ to open the tracker in its own window. Keep the panel open while the window is in use; the window saves through it.
+**A bigger view:** drag the panel's edge wider, or use ⧉ to open the tracker in its own window. **Full screen** (⛶) fills the screen without a new window: the menu floats at the top over a softly blurred page. Press Esc or ⛶ to leave. If Excel shows it as a window over the workbook instead, keep the panel open while you use it; that window saves through the panel.
+
+**Appointment list check** (Day view, above the visit cards) compares the day with the last imported appointment list. It names any NextGen visit missing from the tracker (no tab yet, the patient is Discontinued on the tracker, or the list wasn't imported) and any visit on a tab that NextGen doesn't have. When everything matches it says so in one line.
 
 ## Daily use
 
@@ -66,7 +68,7 @@ Each visit card is colored like the tab's row highlight: MT light blue, MTR gree
 - **Draft treatment note** (daily treatments) builds the note from mood on arrival, observations and technician comments. The yes/no observation answers become sentences in the note; the questions are not copied into it. **Copy note** puts it on the clipboard for the chart.
 - **Cancelled in NextGen: update status?** (Attention) lists patients whose cancelled appointments are still on the tracker, or who have nothing left booked, with Paused, Discontinued and Complete buttons. When every appointment is cancelled and the last visit was more than 10 days ago (the recent-visit window in Settings), Discontinued is suggested and applied with the next import.
 - A number in **# of MT redos** (D4) sets **MTR approved** (W6) to Yes on its own.
-- **MT** cards also take the MT details (hotspot, MT %, amps, baseline sleep and caffeine); select **Save MT details**.
+- **MT** cards also take the MT details (hotspot, MT %, amps, baseline sleep and caffeine); select **Save MT details**. **Print course schedule** on the MT card opens the printout set to the rest of the course; it stays highlighted until a schedule has been given.
 - The ⋯ menu also has **Print schedule** and **Open patient**.
 
 ## Import the appointment list
@@ -86,6 +88,9 @@ What the import does:
 - Every Expected visit gets a row. When the visit log runs out (each no-show or MT redo uses a row), rows are added inside the log with the same formatting as rows of that visit type, so the last treatments and the final follow-up still show. The preview lists the tabs that grew.
 - Past visits never change, except no-shows and same-day cancels, which are always recorded so the freebie decision isn't missed. A kept visit with no row on the tab gets one with its date; enter the pulses.
 - The visit log is put in date order, top to bottom, and Tx # (C) is renumbered: MT, Daily and MTR rows count, follow-ups and missed visits don't. Tx Remaining (D) follows.
+- Rows with an appointment date take row 10's formatting; empty rows go back to the template's gray. Rows you colored yourself are left alone. **Settings > Fix visit-log formatting** runs the same check on every tab.
+- A visit listed twice on the report gets one row. If NextGen corrects a no-show to kept or booked, the next import undoes the miss and gives the freebie back.
+- Discontinued tabs are not updated. The preview names any that NextGen still has booked.
 - Patients booked on the other device are left out (a Brainsway patient doesn't appear on a MagV tracker).
 - Measures are re-planned only after a real disruption: an MTR or F/U moved, or 2 or more misses in a week.
 - The list is kept on the **Appt List** tab, replaced each time you apply. Closing the panel no longer loses it: the new-patient banner and a new tab's dates keep working, and **Preview again** reruns it.
@@ -130,7 +135,7 @@ Select a patient on the Patients menu to see:
 
 ## Print a patient schedule
 
-From a visit card's ⋯ menu or the patient view, choose **Print schedule**. Pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it in its own window with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
+From **Print course schedule** on an MT card, a visit card's ⋯ menu, or the patient view, choose **Print schedule**. Pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it in its own window with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
 
 The schedule includes the MRN. Hand it to the patient or save it only where patient information is allowed.
 

@@ -81,21 +81,24 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 | Patients | The roster with filters: All (everyone but Discontinued), Active, Follow-up not scheduled, No upcoming visit, Discontinued. **Add patient** is here. Selecting a patient opens the patient view. |
 | Clinic | Chair and Protocols. |
 
-**Settings** is its own screen (gear, top right): clinic location, device, warning days, recent-visit window, **Rebuild Active Patients sheet** (it rebuilds on its own; this forces it) and Place measure placeholders.
+**Settings** is its own screen (gear, top right): clinic location, device, warning days, recent-visit window, **Rebuild Active Patients sheet** (it rebuilds on its own; this forces it), Place measure placeholders and **Fix visit-log formatting** (see Import).
 
 ### New window and full screen
 
-**Open in a new window** (⧉) opens the whole tracker in its own window; **Full screen** (⛶) opens it at full size, and inside that window the same button switches the browser to full screen. In Excel on the web only the task pane can reach the workbook, so the window sends every read and save through the pane: keep the pane open while you use it. The pane shows a notice, and **Close the other window** closes it.
+**Open in a new window** (⧉) opens the whole tracker in its own browser window. **Full screen** (⛶) never opens a new window: the pane itself goes browser full screen when Excel's frame allows it (Esc or ⛶ exits); otherwise the tracker opens inside the Excel page, over the workbook (an Office dialog with `displayInIframe`), where ⛶ then tries the whole monitor. In full screen the header and menu tabs float on a frosted-glass bar, the page blurs as it scrolls under it, and pop-ups (freebie, print, the schedule) blur what is behind them. The workbook itself can't be blurred: Office draws its own overlay behind an in-page window.
+
+The separate and in-page windows can't reach the workbook in Excel on the web, so they send every read and save through the pane: keep the pane open while you use them. The pane shows a notice, and **Close the other window** closes it. Pane full screen needs no relay.
 
 ### Today
 
+- **Appointment list check:** the saved appointment list against the tabs for the day shown, per patient, counting treatments and follow-ups. It names any visit Expected or Kept in NextGen that isn't on a tab (no tracker tab, with **Create tracker**; Discontinued on the tracker; or not imported, with **Import the list again**) and any visit on a tab that the list doesn't have. When they agree it says "All N visits on the appointment list are on the tracker." It covers the list's dates from a month back on.
 - **Schedule variances:** "X of Y patients in treatment are being treated", with the reasons: in follow-up, missed, away, at another clinic, not scheduled, and graduated this week.
 - **Visit cards** are colored like the tab's row highlight: MT light blue, MTR green, F/U pink, other clinic orange. Each shows **Payment $X** (from column A), or **Payment not set** when the cost for that visit type is missing. A patient missing BIDF info shows **BIDF info needed** on the card.
 - **Record missed** (No-show or Same-day cancel) opens a pop-up with **Use freebie** or **Waived**. It warns when the patient will have 1 or 0 freebies left. The decision goes in Notes and Remaining Freebies (N7) counts down. The card shows the result with Undo.
 - **Mark pulses delivered** shows what the protocol calls for and writes F, H, J and the technician.
 - **Draft treatment note** builds the daily note. The yes/no observations are turned into sentences (muscle movements, pain, and any reported changes) and the questions are not copied in; **Copy note** puts it on the clipboard.
 - **Measures needed** opens PHQ-9 and GAD-7 entry. **Move measures** sends them to a chosen upcoming visit and notes it on the original row, suggesting an MT, MTR or F/U within 7 days.
-- **MT** cards add MT details and the protocol picker. Daily cards add the note drafter, with the MT baseline sleep and caffeine as a quiet reference.
+- **MT** cards add **Print course schedule** (opens the print pop-up on Rest of course, highlighted until a schedule is given on or after the MT date), MT details and the protocol picker. Daily cards add the note drafter, with the MT baseline sleep and caffeine as a quiet reference.
 
 ### Week
 
@@ -145,6 +148,9 @@ The add-in rebuilds this sheet in the Patients roster layout for the current wee
 - **Every Expected visit gets a row:** free rows fill in row order, so the log stays in date order. When a pool runs out (no-shows and MT redos use rows), rows are inserted in A:T only, after the visits they follow and never below the last log row, so Excel stretches the PR formulas, header counts and conditional formats over them. Each new row copies a row of the same visit type (fill, borders, validation, height, formulas) with the typed cells blank. The add-in finds a grown log from the range in A10's PR formula, so a tab without that formula (Update tabs adds it) is not grown and the preview says so.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations (any date) have their date and time cleared so the row is free for another visit, unless the patient is still booked or seen that day. A Kept visit on or after the tab's first dated row that has no row that day gets one, with its date and time, so the pulses can be entered.
 - **Order and Tx #:** after every import the visit log reads top to bottom by date (open rows with no date last), so a follow-up sits between the treatments around it. Only the typed cells move (B, C, E, F, H, J, L to T); the formulas in A, D, G, I and K stay on their rows. C numbers MT, Daily, Taper and MTR rows from 1 down the log, skipping missed visits and follow-ups, so D (D2 minus C) is the treatments left. The preview lists the tabs re-sorted or renumbered.
+- **Formatting follows the dates:** after the writes, every log row with a date in E takes row 10's formatting (fill, font, borders, alignment, number formats), and a row without one takes New Template's blank (gray) row for that position, the last two rows mapping to its last two. Rows the import inserted, re-dated or re-sorted always follow; other rows only when they have no fill of their own, so a hand-colored row is left alone. Cell properties only: the conditional formats (MT, MTR, F/U, missed highlights) and validation stay. The same pass runs once each time the pane opens and from **Settings > Fix visit-log formatting**.
+- **Duplicates:** the same visit listed twice (same day, type and time, for example on the provider's schedule and the chair) gets one row; the preview counts them. A no-show or same-day cancel an earlier list recorded is undone, freebie included, when NextGen now shows that day's visit Expected or Kept with no no-show; misses marked in the add-in stay.
+- **Discontinued tabs** are not updated. If NextGen still has them booked, the preview names them, and so does the Day view's appointment list check.
 - **Saved list:** applying an ALL TMS list copies it to the **Appt List** tab (replaced each time). The add-in reads it back on open, so the new-patient banner and a new tab's dates still work without uploading again, and **Preview again** in Import list reruns it. Patient-specific reports are not saved there.
 - **Measures:** they are re-planned only after a significant disruption: an MTR or F/U moved, the log re-sorted, or 2 or more missed visits within a week.
 
@@ -169,7 +175,7 @@ Import list > **Import Sohar benefits** takes the "Benefits (TMS Tracker)" file 
 
 ## Schedule printout
 
-**Print schedule** (in a visit card's ⋯ menu, or **Print or save schedule** in the patient view) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
+**Print schedule** (in a visit card's ⋯ menu, **Print course schedule** on every MT card, or **Print or save schedule** in the patient view) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
 
 **Open schedule** opens the schedule in its own window (`schedule.html`), not in a workbook tab. Nothing is added to the workbook. The window shows the clinic logo centered over the table, the report's "As of" time, and the visits (no patient-name column).
 
