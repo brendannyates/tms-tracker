@@ -1774,18 +1774,9 @@ function openSchedule(tab, from, to) {
   const body = scheduleRows(p, from, to); if (!body.length) return toast("No scheduled visits in that date range.", true);
   const d = serialToDate(todaySerial());
   const obj = { fname: `${p.code} schedule ${d.getUTCMonth() + 1}.${d.getUTCDate()}.pdf`, asOf: `As of: ${asOfText()}`,
-    rows: body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]]) }, data = JSON.stringify(obj);
-  /* only one add-in window can be open: inside the pop-out (or while it is open) the schedule shows over the page instead */
-  if (POPOUT || pop.dlg || !Office.context.requirements.isSetSupported("DialogApi", "1.2")) return openSchedOverlay(p, obj);
-  Office.context.ui.displayDialogAsync(new URL("schedule.html", location.href).href, { height: 80, width: 70 }, res => {
-    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "A schedule window is already open." : "The schedule window was blocked. Allow pop-ups for Excel and try again.", true);
-    const dlg = res.value; let logged = false;
-    dlg.addEventHandler(Office.EventType.DialogMessageReceived, async m => {
-      if (m.message === "ready") dlg.messageChild(data);
-      else if (m.message === "close") dlg.close();
-      else if ((m.message === "printed" || m.message === "saved") && !logged) { logged = true; try { await logSchedule(p); await refresh(); } catch (e) { fail(e); } }
-    });
-  });
+    rows: body.map(r => [r[0], r[1], fmtDateY(r[2]), r[3] === "" ? "" : fmtTime(Math.round(r[3] * 1440)), r[4], r[5], r[6]]) };
+  /* never a separate window: the schedule floats over the add-in on a blurred backdrop */
+  openSchedOverlay(p, obj);
 }
 
 let schedFor = null;
@@ -1848,13 +1839,13 @@ async function onPopMessage(arg) {
   pop.calls--;
   toChild({ k: "ack", id: m.id, ok, err, result: result === undefined ? null : result });
 }
-function openPopout(full) {
-  if (pop.dlg) return toast("The tracker is already open in another window.");
-  if (!Office.context.requirements.isSetSupported("DialogApi", "1.2")) return toast("This version of Excel can't open the tracker in a window.", true);
-  const url = new URL(location.href); url.search = full ? "?popout=1&full=1" : "?popout=1"; url.hash = "";
-  /* full: shown inside the Excel page over the workbook (displayInIframe), not as a separate browser window */
-  Office.context.ui.displayDialogAsync(url.href, full ? { height: 100, width: 100, displayInIframe: true } : { height: 85, width: 75 }, res => {
-    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "Close the other add-in window first." : "The window was blocked. Allow pop-ups for Excel and try again.", true);
+/* Full screen floats over the Excel page (an in-page dialog, displayInIframe), never a separate browser window */
+function openPopout() {
+  if (pop.dlg) return toast("Full screen is already open.");
+  if (!Office.context.requirements.isSetSupported("DialogApi", "1.2")) return toast("This version of Excel can't open full screen.", true);
+  const url = new URL(location.href); url.search = "?popout=1&full=1"; url.hash = "";
+  Office.context.ui.displayDialogAsync(url.href, { height: 95, width: 95, displayInIframe: true }, res => {
+    if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "Close the other add-in window first." : `Full screen couldn't open (${res.error.message}). Try again.`, true);
     pop.dlg = res.value; $("popNote").hidden = false;
     pop.dlg.addEventHandler(Office.EventType.DialogMessageReceived, onPopMessage);
     pop.dlg.addEventHandler(Office.EventType.DialogEventReceived, () => { pop.dlg = null; $("popNote").hidden = true; });
@@ -1875,20 +1866,21 @@ function initPopout() {
     } else if (m.k === "toast") toast(m.msg, m.err);
   }, () => Office.context.ui.messageParent(JSON.stringify({ k: "ready" })));
 }
-/* Full screen, never a new window: the pane itself goes browser full screen when Excel's frame allows it; otherwise the tracker
-   opens inside the Excel page, over the workbook. Either way the menu floats on frosted glass over a blurred page (body.fs). */
+/* Full screen: the tracker floats inside the Excel page over the workbook; the menu sits on frosted glass over a blurred page (body.fs).
+   In full screen the same button closes it. */
 function fullScreen() {
-  if (document.fullscreenElement) return document.exitFullscreen();
-  const inPage = () => POPOUT ? toast("Full screen isn't available here. Maximize the window instead.", true) : openPopout(true);
-  if (document.fullscreenEnabled && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(inPage); else inPage();
+  if (POPOUT) { try { Office.context.ui.messageParent(JSON.stringify({ k: "close" })); } catch { /* pane gone */ } return; }
+  openPopout();
 }
-const FULL = POPOUT && /[?&]full=1\b/.test(location.search);
+const FULL = POPOUT;
 function syncFs() {
-  const on = FULL || !!document.fullscreenElement, b = $("btnFull");
-  document.body.classList.toggle("fs", on);
-  const tip = document.fullscreenElement ? "Exit full screen" : FULL ? "Full screen (whole monitor)" : "Full screen"; b.title = tip; b.setAttribute("aria-label", tip);
+  const b = $("btnFull");
+  document.body.classList.toggle("fs", FULL);
+  const tip = FULL ? "Exit full screen" : "Full screen"; b.title = tip; b.setAttribute("aria-label", tip);
   syncAtt();
 }
+/* the ⋯ menus blur the add-in behind them; the shade also catches the click that closes them */
+function syncShade() { $("menuShade").hidden = !document.querySelector("details.kebab[open]"); }
 /* settings live in the document, which only the task pane can save */
 function saveSetting(k, v) {
   if (POPOUT) return callPane("saveSetting", [k, v]);
@@ -1924,13 +1916,16 @@ Office.onReady(info => {
   $("clinicTabs").onclick = e => { const b = e.target.closest("[data-cv]"); if (b) { state.clinicTab = b.dataset.cv; renderDash(); } };
   $("btnImport").onclick = () => show("imp"); $("apBack").onclick = () => show("pts");
   $("btnSettings").onclick = () => show("settings"); $("setBack").onclick = () => show(state.lastView || "sch");
-  $("btnPop").onclick = () => openPopout(false); $("btnFull").onclick = fullScreen;
+  $("btnFull").onclick = fullScreen;
   $("popClose").onclick = closePopout;
-  window.addEventListener("resize", syncAtt); document.addEventListener("fullscreenchange", syncFs); syncFs();
+  window.addEventListener("resize", syncAtt); syncFs();
+  document.addEventListener("toggle", e => { if (e.target.matches && e.target.matches("details.kebab")) syncShade(); }, true);
+  new MutationObserver(() => { if (!$("menuShade").hidden) syncShade(); }).observe(document.body, { childList: true, subtree: true }); // a re-render removed the open menu
   window.addEventListener("message", e => { if (e.origin === location.origin && e.data && e.data.sched) onSchedMessage(e.data.sched); });
   document.addEventListener("click", e => {
     const el = e.target;
-    document.querySelectorAll("details.kebab[open]").forEach(k => { if (!k.contains(el)) k.open = false; });
+    document.querySelectorAll("details.kebab[open]").forEach(k => { if (!k.contains(el) || el.closest(".menu button")) k.open = false; }); // outside click, shade click, or a menu choice
+    syncShade();
     const bn = el.closest("[data-banner]"); if (bn) { if (bn.dataset.bact === "snooze") snooze(bn.dataset.banner); else { state.dismissed.add(bn.dataset.banner); renderBanners(); } return; }
     if (el.closest("[data-mclose]") || el.id === "modal") return closeModal();
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);

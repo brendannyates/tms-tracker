@@ -8,7 +8,6 @@ This guide is for anyone at MHS who uses a TMS tracker workbook: technicians, ca
 
 - **Excel on the web.** The add-in runs in Excel in a browser (Edge or Chrome). It does not run in the desktop Excel app at MHS.
 - **A tracker workbook in OneDrive or SharePoint,** built from the current MagV template. It needs the **New Template** tab; **Protocols** and **Clinic Schedule** are used when present.
-- **Pop-ups allowed for Excel** in your browser, for schedule printouts and the separate tracker window.
 - **NextGen PM access** to run the appointment report.
 
 ## Install
@@ -42,7 +41,7 @@ Do this once per clinic workbook. Settings save with the workbook, so everyone u
 
 ## Finding your way around
 
-Across the top: **Import list**, **Open in a new window** (⧉), **Full screen** (⛶), **Settings** (gear) and **Refresh**.
+Across the top: **Import list**, **Full screen** (⛶), **Settings** (gear) and **Refresh**.
 
 | Menu | Use it for |
 |---|---|
@@ -54,7 +53,7 @@ Across the top: **Import list**, **Open in a new window** (⧉), **Full screen**
 
 Banners at the top flag an out-of-date appointment list, new NextGen patients without a tab, and tabs needing an update. Each can be dismissed or snoozed for 3 hours.
 
-**A bigger view:** drag the panel's edge wider, or use ⧉ to open the tracker in its own window. **Full screen** (⛶) fills the screen without a new window: the menu floats at the top over a softly blurred page. Press Esc or ⛶ to leave. If Excel shows it as a window over the workbook instead, keep the panel open while you use it; that window saves through the panel.
+**A bigger view:** drag the panel's edge wider, or use **Full screen** (⛶): the tracker floats over the Excel page, with the menu at the top over a softly blurred page. ⛶ closes it. Keep the panel open while you use it; full screen saves through the panel.
 
 **Appointment list check** (Day view, above the visit cards) compares the day with the last imported appointment list. It names any NextGen visit missing from the tracker (no tab yet, the patient is Discontinued on the tracker, or the list wasn't imported) and any visit on a tab that NextGen doesn't have. When everything matches it says so in one line.
 
@@ -135,7 +134,7 @@ Select a patient on the Patients menu to see:
 
 ## Print a patient schedule
 
-From **Print course schedule** on an MT card, a visit card's ⋯ menu, or the patient view, choose **Print schedule**. Pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it in its own window with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
+From **Print course schedule** on an MT card, a visit card's ⋯ menu, or the patient view, choose **Print schedule**. Pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it over the add-in with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
 
 The schedule includes the MRN. Hand it to the patient or save it only where patient information is allowed.
 
@@ -159,7 +158,7 @@ The sheet is view only and is rebuilt whenever something changes. Make changes o
 | No TMS button on the Home tab | Upload the manifest again (Install, steps 2 to 4). Make sure you're in Excel on the web, not the desktop app. |
 | "This doesn't look like the 1 Appt List - ALL TMS report" | Run the memorized report named exactly **1 Appt List - ALL TMS** and upload that export unchanged. |
 | A banner says tabs were left untouched | Its layout doesn't match the template. Use **Update tabs**, or check that A1 says PATIENT: and A3 says MRN:. |
-| The schedule window doesn't open | Allow pop-ups for Excel in your browser. If the tracker is already open in its own window, the schedule shows over the page instead. |
+| The schedule doesn't show | Close and reopen it from the card's ⋯ menu or the patient view; it opens over the add-in, not in a separate window. |
 | Numbers look out of date | Select **Refresh** (top right). |
 | Active Patients didn't change | It skips the rewrite when nothing changed. Use **Settings > Rebuild Active Patients sheet**. |
 | The Appt List tab couldn't be read | Import the list again. |
