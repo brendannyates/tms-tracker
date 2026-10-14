@@ -1941,12 +1941,13 @@ Office.onReady(info => {
     if (el.dataset.dk && el.tagName === "SELECT" && draftInput(el)) renderDash();
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
-  $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick; $("btnFmt").onclick = formatLogsClick;
+  $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
   $("file").onchange = onFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
   $("btnAdd").onclick = () => addPatient(collectAddPatient());
+  $("btnFmt").onclick = formatLogsClick;
   fillAddPatientForm(); show("sch");
   if (POPOUT) initPopout(); else refresh();
 });
