@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Patient schedule</title>
-<!-- Opened by the task pane with Office.context.ui.displayDialogAsync. The schedule arrives by messageChild; nothing is stored. -->
+<!-- Shown by the task pane in an iframe over the add-in (?embed=1); the schedule arrives by postMessage; nothing is stored.
+     The messageChild path below is kept only so an old pane that still opens this as a dialog keeps working. -->
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -34,7 +35,6 @@ tr{break-inside:avoid}
   <span class="msg" id="msg">Loading the schedule…</span>
   <button class="pri" id="print" disabled>Print</button>
   <button id="pdf" disabled>Save as PDF</button>
-  <button id="full" hidden>Full screen</button>
   <button id="close">Close</button>
 </div>
 <main class="page">
@@ -80,9 +80,7 @@ function savePdf() {
 
 $("print").onclick = () => { window.print(); tell("printed"); };
 $("pdf").onclick = () => { try { savePdf(); } catch (e) { $("msg").textContent = `Could not build the PDF (${e.message}). Use Print and choose Save as PDF instead.`; } };
-$("close").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); tell("close"); };
-if (document.fullscreenEnabled) { $("full").hidden = false; $("full").onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => { $("full").hidden = true; }); }
-document.addEventListener("fullscreenchange", () => { $("full").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen"; });
+$("close").onclick = () => tell("close");
 
 if (!EMBED) Office.onReady(() => {
   Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, a => { try { render(JSON.parse(a.message)); } catch { $("msg").textContent = "The schedule could not be read. Close this window and try again."; } },

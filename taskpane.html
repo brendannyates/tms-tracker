@@ -121,7 +121,7 @@ body:not(.wide) .hact button{padding:3px 7px}
 #schedOverlay{position:fixed;inset:0;z-index:40;background:#fff}
 #schedFrame{width:100%;height:100%;border:0}
 /* pop-out window: more room, so content gets a comfortable max width */
-body.popout #btnPop,body.popout #popNote{display:none!important}
+body.popout #popNote{display:none!important}
 body.popout section{max-width:1280px;margin:0 auto}
 .g3w.hdr{color:var(--mute);font-size:11px}
 .g4r{display:grid;grid-template-columns:1fr 1fr 1.2fr 28px;gap:4px;align-items:center;margin-bottom:3px}
@@ -187,8 +187,12 @@ body.wide.attc details.att{padding:8px 0}
 body.wide.attc details.att>summary{writing-mode:vertical-rl;transform:rotate(180deg);justify-content:flex-end;width:100%;align-items:center}
 body.wide.attc .attTog{margin:0 0 6px}
 body.wide.attc .attTog::before{content:"\203A"}
-/* pop-ups blur what is behind them */
+/* pop-ups blur what is behind them: the modal, the schedule printout, and the ⋯ menus (over #menuShade) */
 #modal{backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+#schedOverlay{background:rgba(28,42,51,.28);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
+#schedFrame{border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
+#menuShade{position:fixed;inset:0;z-index:25;background:rgba(28,42,51,.12);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+details.kebab[open]{z-index:26}
 /* full screen (the pane in browser full screen, or the in-page window over Excel): the menu floats on frosted glass and the
    page blurs as it scrolls under it; the schedule printout floats over a blurred page too */
 body.fs{background:linear-gradient(160deg,#e9f1f2 0%,#f6f8f9 45%,#eef2f6 100%) fixed;min-height:100vh}
@@ -200,8 +204,6 @@ body.fs .banner,body.fs section{max-width:1280px;margin-left:auto;margin-right:a
 body.fs .banner{margin-top:12px;border-radius:10px}
 body.fs section{background:rgba(255,255,255,.82);border-radius:12px;margin-top:12px;margin-bottom:24px;box-shadow:0 2px 10px rgba(28,42,51,.06)}
 body.fs.wide details.att{top:calc(var(--chrome-h,110px) + 18px);max-height:calc(100vh - var(--chrome-h,110px) - 30px)}
-body.fs #schedOverlay{background:rgba(28,42,51,.28);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
-body.fs #schedFrame{border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
 body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
 [hidden]{display:none!important}
 </style>
@@ -210,7 +212,7 @@ body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
 <div id="chrome">
 <header>
   <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><div class="tt"><b id="wbTitle">TMS Tracker</b><span id="devTag" class="sub"></span></div></div>
-  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnPop" title="Open in a new window" aria-label="Open in a new window">&#x29C9;</button><button id="btnFull" title="Full screen" aria-label="Full screen">&#x26F6;</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
+  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnFull" title="Full screen" aria-label="Full screen">&#x26F6;</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
 </header>
 <nav class="tabs" id="mainTabs">
   <button data-view="sch" class="on">Schedule</button>
@@ -220,8 +222,8 @@ body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
 </div>
 
 <div id="popNote" class="banner" hidden>
-  <b>The tracker is open in another window.</b> Keep this pane open: that window reads and saves through it.
-  <div class="actions" style="margin-top:6px"><button class="sm" id="popClose">Close the other window</button></div>
+  <b>The tracker is open full screen over Excel.</b> Keep this pane open: full screen reads and saves through it.
+  <div class="actions" style="margin-top:6px"><button class="sm" id="popClose">Close full screen</button></div>
 </div>
 
 <div id="reportBanner" class="banner red" hidden>
@@ -358,7 +360,8 @@ body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
 </section>
 
 <div id="modal" hidden><div id="modalBody" role="dialog" aria-modal="true"></div></div>
-<div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule" allow="fullscreen"></iframe></div>
+<div id="menuShade" hidden></div>
+<div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule"></iframe></div>
 <div id="toast" role="status"></div>
 <script src="benefits.js"></script>
 <script src="taskpane.js"></script>

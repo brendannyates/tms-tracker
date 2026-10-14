@@ -22,7 +22,7 @@ Tested with fictional patients:
 | `manifest.xml` | Office add-in manifest (version 1.2). Requires ExcelApi 1.9, which Excel on the web supports. Points to the GitHub Pages pilot host, `https://brendannyates.github.io/tms-tracker`, served from `main`. |
 | `taskpane.html`, `taskpane.js` | The add-in. A single static page with no build step. |
 | `benefits.js`, `tests/` | Sohar benefits import: matching and plan (pure functions) and their tests. |
-| `schedule.html` | The patient schedule window: print, save as PDF, or full screen. |
+| `schedule.html` | The patient schedule printout, shown over the add-in: print or save as PDF. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
 | `package.json` | Helper scripts: `certs`, `start`, `validate`, `check`, `set-host`. |
@@ -71,7 +71,7 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 
 ## Layout
 
-- **Header:** the clinic logo and the workbook's name (for example "San Rafael Pt Tracking - MagV"), with the tracker device under it. **Import list**, **Open in a new window**, **Full screen**, **Settings** (gear) and **Refresh** sit at the top right.
+- **Header:** the clinic logo and the workbook's name (for example "San Rafael Pt Tracking - MagV"), with the tracker device under it. **Import list**, **Full screen**, **Settings** (gear) and **Refresh** sit at the top right.
 - **Banners:** the stale appointment list (with the NextGen directions), new patients needing a tracker, tabs left untouched, and tabs needing updates. Each banner can be dismissed for the session or snoozed for 3 hours.
 - **Main menu:**
 
@@ -83,11 +83,11 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 
 **Settings** is its own screen (gear, top right): clinic location, device, warning days, recent-visit window, **Rebuild Active Patients sheet** (it rebuilds on its own; this forces it), Place measure placeholders and **Fix visit-log formatting** (see Import).
 
-### New window and full screen
+### Full screen
 
-**Open in a new window** (⧉) opens the whole tracker in its own browser window. **Full screen** (⛶) never opens a new window: the pane itself goes browser full screen when Excel's frame allows it (Esc or ⛶ exits); otherwise the tracker opens inside the Excel page, over the workbook (an Office dialog with `displayInIframe`), where ⛶ then tries the whole monitor. In full screen the header and menu tabs float on a frosted-glass bar, the page blurs as it scrolls under it, and pop-ups (freebie, print, the schedule) blur what is behind them. The workbook itself can't be blurred: Office draws its own overlay behind an in-page window.
+**Full screen** (⛶) floats the tracker inside the Excel page, over the workbook (an Office dialog with `displayInIframe`). It never opens a separate browser window, and there is no new-window option. In full screen the header and menu tabs float on a frosted-glass bar, the page blurs as it scrolls under it, and ⛶ closes it. Everywhere, pop-ups (freebie, print, the schedule) and the ⋯ menus blur the add-in behind them; clicking the blurred area closes a menu. The workbook itself can't be blurred: Office draws its own overlay behind the in-page window.
 
-The separate and in-page windows can't reach the workbook in Excel on the web, so they send every read and save through the pane: keep the pane open while you use them. The pane shows a notice, and **Close the other window** closes it. Pane full screen needs no relay.
+The in-page window can't reach the workbook in Excel on the web, so it sends every read and save through the pane: keep the pane open while you use it. The pane shows a notice, and **Close full screen** closes it.
 
 ### Today
 
@@ -177,12 +177,12 @@ Import list > **Import Sohar benefits** takes the "Benefits (TMS Tracker)" file 
 
 **Print schedule** (in a visit card's ⋯ menu, **Print course schedule** on every MT card, or **Print or save schedule** in the patient view) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
 
-**Open schedule** opens the schedule in its own window (`schedule.html`), not in a workbook tab. Nothing is added to the workbook. The window shows the clinic logo centered over the table, the report's "As of" time, and the visits (no patient-name column).
+**Open schedule** shows the schedule over the add-in on a blurred backdrop (`schedule.html` in a frame), not in a workbook tab or a separate window. Nothing is added to the workbook. It shows the clinic logo centered over the table, the report's "As of" time, and the visits (no patient-name column).
 
 - **Print** opens the browser's print dialog, Letter landscape. Long schedules run onto more pages with the header row repeated.
 - **Save as PDF** downloads `SMIJOH schedule 10.6.pdf`. If it fails, use Print and choose Save as PDF.
 
-Either one writes "Schedule provided m/d" to Notes and the date to W8. **Full screen** fills the screen with the schedule. The schedule contains the MRN, so keep it only where PHI is allowed. Excel may ask you to allow the window the first time. When the tracker is already open in its own window, the schedule shows over the page instead, since Excel allows one add-in window at a time.
+Either one writes "Schedule provided m/d" to Notes and the date to W8. The schedule contains the MRN, so keep it only where PHI is allowed.
 
 ## Open items
 
