@@ -7,7 +7,8 @@
     "certs": "npx office-addin-dev-certs install",
     "start": "npx http-server . -S -C ~/.office-addin-dev-certs/localhost.crt -K ~/.office-addin-dev-certs/localhost.key -p 3000 -c-1",
     "validate": "npx office-addin-manifest validate manifest.xml",
-    "check": "node --check taskpane.js",
+    "check": "node --check taskpane.js && node --check benefits.js",
+    "test": "node --test",
     "set-host": "node scripts/set-host.mjs"
   }
 }
