@@ -1055,23 +1055,30 @@ async function arrangeLogs(list) {
    row 10's or the blank row's), so a hand-colored row is left alone. Cell properties and number formats only: the template's
    conditional formats (the MT, MTR, F/U and missed highlights) and validation stay as they are. Returns the rows reformatted. */
 const FMT_Q = { format: { fill: { color: true }, font: { bold: true, color: true, italic: true, name: true, size: true }, borders: { color: true, style: true, weight: true }, horizontalAlignment: true } };
+/* Excel reports a setting it can't give one value for (mixed fonts in a cell, a pattern fill) as null, and rejects null when it's written back */
+const dropBlank = o => {
+  if (o === null || o === undefined || o === "") return undefined;
+  if (typeof o !== "object") return o;
+  const r = {}; for (const [k, v] of Object.entries(o)) { const x = dropBlank(v); if (x !== undefined) r[k] = x; }
+  return Object.keys(r).length ? r : undefined;
+};
 const fmtCell = c => {
   const f = c.format || {}, b = f.borders || {};
-  return { format: { fill: { color: (f.fill || {}).color }, font: f.font, horizontalAlignment: f.horizontalAlignment,
-    borders: Object.fromEntries(["top", "bottom", "left", "right"].filter(k => b[k]).map(k => [k, b[k].style === "None" ? { style: "None" } : b[k]])) } };
+  return dropBlank({ format: { fill: { color: (f.fill || {}).color }, font: f.font, horizontalAlignment: f.horizontalAlignment,
+    borders: Object.fromEntries(["top", "bottom", "left", "right"].filter(k => b[k]).map(k => [k, b[k].style === "None" ? { style: "None" } : b[k]])) } }) || {};
 };
 const fillOf = c => String((((c || {}).format || {}).fill || {}).color || "").toUpperCase();
 async function formatLogs(list) {
   if (!list.length) return 0;
   if (POPOUT) return callPane("formatLogs", [list]);
-  let n = 0;
+  let n = 0; const skipped = [];
   await Excel.run(async ctx => {
     const tpl = ctx.workbook.worksheets.getItemOrNullObject("New Template"); await ctx.sync();
     const bl = tpl.isNullObject ? null : tpl.getRange(`A${LOG_FIRST + 1}:T${LOG_LAST}`), bp = bl && bl.getCellProperties(FMT_Q);
     if (bl) bl.load("numberFormat");
     const G = list.map(({ tab, touched }) => {
       const ws = ctx.workbook.worksheets.getItem(tab), a10 = ws.getRange(`A${LOG_FIRST}`), b = ws.getRange(`B${LOG_FIRST}:B${LOG_FIRST + LOG_READ - 1}`);
-      a10.load("formulas"); b.load("values"); return { ws, a10, b, touched: new Set(touched || []) };
+      a10.load("formulas"); b.load("values"); return { tab, ws, a10, b, touched: new Set(touched || []) };
     });
     await ctx.sync();
     /* three tabs per read: cell properties are bulky, and Excel on the web caps how much one sync can return */
@@ -1079,6 +1086,7 @@ async function formatLogs(list) {
       const part = G.slice(k, k + 3);
       part.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.rg = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.rg.load("values,numberFormat"); g.cp = g.rg.getCellProperties(FMT_Q); });
       await ctx.sync();
+      const jobs = [];
       for (const g of part) {
         const P = g.cp.value, V = g.rg.values, NF = g.rg.numberFormat, first = P[0].map(fmtCell);
         for (let i = 1; i < V.length; i++) {
@@ -1088,12 +1096,17 @@ async function formatLogs(list) {
           const plain = P[i].every((c, j) => fillOf(c) === fillOf(P[0][j]) || (bp && fillOf(c) === fillOf(bp.value[ti][j])));
           if (!g.touched.has(r) && !plain) continue;
           if (P[i].every((c, j) => JSON.stringify(fmtCell(c)) === JSON.stringify(want[j])) && NF[i].every((f, j) => f === wantNf[j])) continue;
-          const row = g.ws.getRange(`A${r}:T${r}`); row.setCellProperties([want]); row.numberFormat = [wantNf]; n++;
+          jobs.push({ g, r, want, wantNf });
         }
       }
-      await ctx.sync();
+      const put = j => { const row = j.g.ws.getRange(`A${j.r}:T${j.r}`); row.setCellProperties([j.want]); row.numberFormat = [j.wantNf]; };
+      /* one bad row shouldn't stop the rest: if the batch fails, rows go one at a time and the ones Excel refuses are skipped */
+      jobs.forEach(put);
+      try { await ctx.sync(); n += jobs.length; }
+      catch (e) { for (const j of jobs) { put(j); try { await ctx.sync(); n++; } catch (e2) { console.error(e2); skipped.push(`${j.g.tab} row ${j.r}`); } } }
     }
   });
+  if (skipped.length) toast(`Couldn't reformat ${skipped.length} visit-log row${skipped.length === 1 ? "" : "s"} (${skipped.slice(0, 5).join(", ")}${skipped.length > 5 ? ", ..." : ""}). Everything else was applied.`, true, true);
   return n;
 }
 async function formatLogsClick() {
