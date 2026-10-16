@@ -225,11 +225,14 @@ async function refresh() {
       state.templateOk = layout.get("New Template") === 3;
       state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !layout.get(x.name)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
       state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: 0 };   // tabs not named by LASFIR are left alone without a mention
-      const L = sheets.items.filter(s => layout.get(s.name) >= 2).map(s => {
+      /* read in batches: Excel on the web caps how much one sync can return, and each log is 3,000 cells */
+      const L = [];
+      for (const s of sheets.items.filter(s => layout.get(s.name) >= 2)) {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
-        return { name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
-          wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") };
-      });
+        L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
+          wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") });
+        if (L.length % 8 === 0) await ctx.sync();
+      }
       await ctx.sync();
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
@@ -1017,7 +1020,8 @@ async function growLogs(list) {
       ins.forEach(({ row }, i) => {
         const r = ws.getRange(`A${row}:T${row}`);
         r.copyFrom(src[i], Excel.RangeCopyType.all);
-        r.formulasR1C1 = [src[i].formulasR1C1[0].map(f => typeof f === "string" && f.startsWith("=") ? f : "")];
+        /* copyFrom brought the formulas; blank the typed cells (writing the formulas back in R1C1 fails on the PR formula) */
+        src[i].formulasR1C1[0].forEach((f, c) => { if (!(typeof f === "string" && f.startsWith("="))) r.getCell(0, c).clear("Contents"); });
         r.format.rowHeight = src[i].format.rowHeight;
       });
       await ctx.sync();
@@ -1070,21 +1074,25 @@ async function formatLogs(list) {
       a10.load("formulas"); b.load("values"); return { ws, a10, b, touched: new Set(touched || []) };
     });
     await ctx.sync();
-    G.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.rg = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.rg.load("values,numberFormat"); g.cp = g.rg.getCellProperties(FMT_Q); });
-    await ctx.sync();
-    for (const g of G) {
-      const P = g.cp.value, V = g.rg.values, NF = g.rg.numberFormat, first = P[0].map(fmtCell);
-      for (let i = 1; i < V.length; i++) {
-        const r = LOG_FIRST + i, dated = isNum(V[i][C.date]); if (!dated && !bp) continue;
-        const ti = (r >= g.end - 1 ? LOG_LAST - (g.end - r) : Math.min(r, LOG_LAST - 2)) - LOG_FIRST - 1;   // New Template row for this position, 0 = row 11
-        const want = dated ? first : bp.value[ti].map(fmtCell), wantNf = dated ? NF[0] : bl.numberFormat[ti];
-        const plain = P[i].every((c, j) => fillOf(c) === fillOf(P[0][j]) || (bp && fillOf(c) === fillOf(bp.value[ti][j])));
-        if (!g.touched.has(r) && !plain) continue;
-        if (P[i].every((c, j) => JSON.stringify(fmtCell(c)) === JSON.stringify(want[j])) && NF[i].every((f, j) => f === wantNf[j])) continue;
-        const row = g.ws.getRange(`A${r}:T${r}`); row.setCellProperties([want]); row.numberFormat = [wantNf]; n++;
+    /* three tabs per read: cell properties are bulky, and Excel on the web caps how much one sync can return */
+    for (let k = 0; k < G.length; k += 3) {
+      const part = G.slice(k, k + 3);
+      part.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.rg = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.rg.load("values,numberFormat"); g.cp = g.rg.getCellProperties(FMT_Q); });
+      await ctx.sync();
+      for (const g of part) {
+        const P = g.cp.value, V = g.rg.values, NF = g.rg.numberFormat, first = P[0].map(fmtCell);
+        for (let i = 1; i < V.length; i++) {
+          const r = LOG_FIRST + i, dated = isNum(V[i][C.date]); if (!dated && !bp) continue;
+          const ti = (r >= g.end - 1 ? LOG_LAST - (g.end - r) : Math.min(r, LOG_LAST - 2)) - LOG_FIRST - 1;   // New Template row for this position, 0 = row 11
+          const want = dated ? first : bp.value[ti].map(fmtCell), wantNf = dated ? NF[0] : bl.numberFormat[ti];
+          const plain = P[i].every((c, j) => fillOf(c) === fillOf(P[0][j]) || (bp && fillOf(c) === fillOf(bp.value[ti][j])));
+          if (!g.touched.has(r) && !plain) continue;
+          if (P[i].every((c, j) => JSON.stringify(fmtCell(c)) === JSON.stringify(want[j])) && NF[i].every((f, j) => f === wantNf[j])) continue;
+          const row = g.ws.getRange(`A${r}:T${r}`); row.setCellProperties([want]); row.numberFormat = [wantNf]; n++;
+        }
       }
+      await ctx.sync();
     }
-    await ctx.sync();
   });
   return n;
 }
@@ -1691,7 +1699,12 @@ async function loadList() {
   let vals = null;
   await Excel.run(async ctx => {
     const ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync(); if (ws.isNullObject) return;
-    const u = ws.getUsedRange(true); u.load("values"); await ctx.sync(); vals = u.values;
+    const u = ws.getUsedRange(true); u.load("rowIndex,columnIndex,rowCount,columnCount"); await ctx.sync(); vals = [];
+    /* 500 rows per read: a long report can pass the cap on what one sync returns in Excel on the web */
+    const c1 = colLetter(u.columnIndex), c2 = colLetter(u.columnIndex + u.columnCount - 1);
+    for (let i = 0; i < u.rowCount; i += 500) {
+      const r = ws.getRange(`${c1}${u.rowIndex + i + 1}:${c2}${u.rowIndex + Math.min(i + 500, u.rowCount)}`); r.load("values"); await ctx.sync(); vals.push(...r.values);
+    }
   });
   if (!vals || vals.length <= LIST_HEAD) return null;
   const name = String((vals.find(r => String(r[0]).trim() === "File") || [])[1] || LIST_SHEET);
