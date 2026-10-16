@@ -86,7 +86,7 @@
       add("W5", "Out-of-pocket max remaining", current(p.ben.oopNA, p.ben.oopRem, p.ben.oopRem == null && !p.ben.oopNA), oop);
       if (blank(p.insurance) && !blank(rec.payer)) add("E6", "Insurance", "", rec.plan ? `${rec.payer} (${rec.plan})` : rec.payer);
       if (!out.changes.length) out.note = "No deductible or OOP amounts in the Sohar file.";
-      else if (out.changes.some((c) => c.kind === "change")) out.note = "The tracker already has a different amount. W4 and W5 are the amounts at the start of the course, so only replace them if the tracker's number is wrong.";
+      else if (out.changes.some((c) => c.kind === "change")) out.note = "The tracker already has a different amount. Deductible and out-of-pocket max remaining are the amounts at the start of the course, so only replace them if the tracker's number is wrong.";
       rows.push(out);
     }
     rows.sort((a, b) => a.tab.localeCompare(b.tab));

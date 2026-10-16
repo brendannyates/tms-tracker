@@ -1,16 +1,33 @@
 /* TMS Tracker: Excel (web) task-pane add-in. A light augmentation over the organization's patient tracker template.
    One tab per course (LASFIR or "LASFIR 2") cloned from "New Template". Information stays where the template keeps it:
    header A1:H7 (MRN A4, # of txs D2, # of MT redos D4, MD on-site D6, status D7, provider E2, TAS E4, insurance E6, auth F4:G4,
-   update protocol by G2, progress note sent G6), protocol J2:O4, auth assessment N6, remaining freebies N7, visit log A10:T49
-   (time in T), home clinic S9, and the benefits block V1:Y48 (BIDF W1, deductible W4, OOP max W5, MTR approved W6,
-   extensions W7, last schedule W8, cost by code V11:Y16, weekly availability V19:X24, dates away V28:Y48).
+   update protocol by G2, progress note sent G6), protocol J2:O4, freebies left N6, auth assessment N7, visit log A10:T49
+   (time in T) closed by the TX SUMMARY row with its checkbox in A, home clinic S9, weekly availability V19:X24 and dates away V28:Y48.
+   Benefits live on the Benefits tab, one row per MRN (see BEN_COLS). They keep their old cell names (W1 BIDF, W4 deductible,
+   W5 OOP max, W6 MTR approved, W7 extensions, W8 last schedule, X12:Y16 cost by code) as keys, and applyOps sends those there.
+   Tabs in the previous layout (freebies in N7, benefits in V1:Y16) are still read; Match New Template moves them over.
    PHI: MRNs are read into memory to match NextGen rows; they are never sent anywhere. Names typed in Add patient become LASFIR. */
 "use strict";
 
 /* ---------- tab layout ---------- */
 const LOG_FIRST = 10, LOG_LAST = 49, LOG_READ = 150;   // the template's log is A10:T49; an import can grow it (see growLogs)
 /* a grown log is found from column A's PR formula: its $L$10:$L$n range stretches with every row inserted inside the log */
+const prEnd = f => { const m = String(f || "").match(new RegExp(String.raw`\$L\$${LOG_FIRST}:\$L\$(\d+)`)); return m ? +m[1] : null; };   // where the PR formula's ranges stop
 const logEnd = f => { const m = String(f || "").match(new RegExp(String.raw`\$L\$${LOG_FIRST}:\$L\$(\d+)`)); return m ? Math.max(LOG_LAST, +m[1]) : LOG_LAST; };
+/* the TX SUMMARY row closes the log, so the row above it is the log's real end (rows added by hand below the formula's range count) */
+const SUM_RE = /tx\s*summary/i, SUM_LABEL = "TX SUMMARY / TMS CONNECT / FINAL FOLLOW UP";
+const endOf = (colB, f) => { const i = colB.findIndex(v => SUM_RE.test(String(v ?? ""))); return i > 0 ? LOG_FIRST + i - 1 : logEnd(f); };
+async function tabEnd(ctx, ws) {
+  const a10 = ws.getRange(`A${LOG_FIRST}`), b = ws.getRange(`B${LOG_FIRST}:B${LOG_FIRST + LOG_READ - 1}`); a10.load("formulas"); b.load("values"); await ctx.sync();
+  return endOf(b.values.map(r => r[0]), a10.formulas[0][0]);
+}
+/* Benefits tab: one row per MRN. Keys are the cells the benefits block used to have on each tab. */
+const BEN_SHEET = "Benefits", BEN_FIRST = 2, BEN_LAST = 1000;
+const BEN_COLS = { MRN: "A", Patient: "B", W1: "C", W4: "D", W5: "E", W6: "F", W7: "G", W8: "H", X12: "I", X13: "J", X14: "K", X15: "L", X16: "M", Y12: "N", Y13: "O", Y14: "P", Y15: "Q", Y16: "R", Updated: "S" };
+const BEN_HDR = ["MRN", "Patient", "BIDF estimate", "Deductible remaining", "Out-of-pocket max remaining", "MTR approved", "Extensions added (90868)", "Last schedule provided",
+  "MT PR", "Daily PR", "MTR PR", "F/U in-office PR", "F/U telehealth PR", "MT before ded.", "Daily before ded.", "MTR before ded.", "F/U in-office before ded.", "F/U telehealth before ded.", "Last updated"];
+const BEN_KEYS = Object.keys(BEN_COLS).filter(k => /^[WXY]\d+$/.test(k)), BEN_STAMP = "BEN_STAMP";
+const isBenKey = a => a === BEN_STAMP || BEN_KEYS.includes(a);
 const BLANK_ROW = { pr: null, tx: "", tech: "", date: null, time: null, pulses: [null, null, null], delivered: false, type: "", miss: false, action: "", alt: false, note: "", tele: false, freebie: "", phq: "", gad: "", measX: false, measVal: false };
 const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, time: 19 }; // 0-based in A:T
 const COST_FIRST = 12, WK_FIRST = 20, AV_FIRST = 29, AV_LAST = 48;
@@ -18,7 +35,6 @@ const BILL = [
   { k: "MT", code: "90867", label: "MT" }, { k: "Daily", code: "90868", label: "Daily" }, { k: "MTR", code: "90869", label: "MTR / MT redo" },
   { k: "FUo", code: "99214", label: "F/U in-office" }, { k: "FUt", code: "99214", label: "F/U telehealth" }
 ];
-const BEFORE_HDR = "Before ded.";
 const TAB_RE = /^([A-Z]{1,6})(?: (\d+))?$/;
 const ACTIVE = ["Pending Start", "In Progress", "Tapering"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -32,9 +48,8 @@ const TELE_TAG = "Tele";
 const SNOOZE_MS = 3 * 3600e3;
 /* A tab is only read or written if it matches the current template: PATIENT: in A1, MRN: in A3, and these headers in row 8. */
 const SIG = [[0, "tx #"], [2, "date"], [9, "type"], [10, "miss"], [12, "action"], [16, "notes:"]];   // offsets within C8:S8
-/* Update tabs only touches trackers with a visit (column E) on or after the cutoff whose status (D7) isn't Discontinued or Complete */
+/* Updates and Match New Template only touch trackers with a visit (column E) on or after the cutoff whose status (D7) isn't Discontinued or Complete */
 const CUTOFF_DEFAULT = "2026-10-12";
-const KNOWN_SHEETS = ["Appt List", "Active Patients", "Protocols", "New Template", "Clinic Schedule", "Chair Schedule", "Patient Schedule", "Standard + Specialty Tx", "Config"];
 const EXEMPT_TAG = "NextGen: Exempt, confirm", UNCLASS_TAG = "NextGen: no-show not classified";
 /* One add-in, one workbook per device. The device comes from the workbook name unless the setting overrides it. */
 const DEVICES = { MagV: { chair: "MagV1", other: /brainsway|\bBW\b/i, ours: /magv|mag\s?venture/i }, Brainsway: { chair: "Brainsway", other: /magv|mag\s?venture/i, ours: /brainsway|\bBW\b/i } };
@@ -147,12 +162,13 @@ function showModal(html) { $("modalBody").innerHTML = html; $("modal").hidden = 
 function closeModal() { $("modal").hidden = true; $("modalBody").innerHTML = ""; }
 
 /* ---------- read the workbook ---------- */
-/* a missed visit's freebie decision lives in Notes ("Freebie used" or "Freebie waived"); N7 counts the freebies left */
+/* a missed visit's freebie decision lives in Notes ("Freebie used" or "Freebie waived"); p.fbCell (N6) counts the freebies left */
 const freebieOf = note => /\bfreebie used\b/i.test(note) ? "Used" : /\bfreebie waived\b/i.test(note) ? "Waived" : "";
 const withFreebie = (note, v) => [...String(note || "").split("; ").filter(x => x && !/^freebie (used|waived)$/i.test(x)), ...(v ? [FREEBIE_TAG[v]] : [])].join("; ");
 const isNA = v => /^n\/?a$/i.test(String(v ?? "").trim());
-/* current template: Time in T8 and the cost table header in V11 */
-const isCurrent = (t8, v11) => String(t8).trim().toLowerCase() === "time" && String(v11).trim().toLowerCase() === "code";
+/* layout 3 (current): Time in T8 and Freebie Count in J6, benefits on the Benefits tab. Layout 2: Time in T8 and the cost table
+   header in V11 (freebies in N7, benefits on the tab). Anything else is an earlier layout, rebuilt from New Template. */
+const layoutOf = (t8, j6, v11) => String(t8).trim().toLowerCase() !== "time" ? 0 : /^freebie count/i.test(String(j6).trim()) ? 3 : String(v11).trim().toLowerCase() === "code" ? 2 : 0;
 function parseLog(vals) {
   const blank = x => x === "" || x == null;
   return vals.map((v, i) => {
@@ -174,25 +190,26 @@ async function refresh() {
     await Excel.run(async ctx => {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
-      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
-      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.d7.load("values"); x.e.load("values"); });
-      /* sheet names are already known, so the Protocols and Clinic Schedule reads ride along with this sync (names match case-insensitively, as getItem does) */
+      const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), j6: s.getRange("J6"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
+      sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
+      /* sheet names are already known, so the Protocols, Clinic Schedule and Benefits reads ride along with this sync (names match case-insensitively, as getItem does) */
       const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
-      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule");
-      const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null;
-      [prv, cs].forEach(r => r && r.load("values")); await ctx.sync();
+      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET);
+      const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:S${BEN_LAST}`) : null;
+      [prv, cs, bn].forEach(r => r && r.load("values")); await ctx.sync();
+      readBen(bn ? bn.values : null);
       const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
       const live = x => x.name === "New Template" || (!/^(discontinued|complete)/i.test(String(x.d7.values[0][0]).trim()) && x.e.values.some(([v]) => (eDate(v) ?? 0) >= cut));
       state.stale = sg.filter(x => !live(x)).map(x => x.name); const stale = new Set(state.stale);
       const ok = x => String(x.a1.values[0][0]).trim().toUpperCase() === "PATIENT:" && String(x.a3.values[0][0]).trim().toUpperCase() === "MRN:" && SIG.every(([i, w]) => String(x.h.values[0][i]).trim().toLowerCase() === w);
-      const cur = x => ok(x) && isCurrent(x.h.values[0][17], x.v11.values[0][0]);
-      const okNames = new Set(sg.filter(cur).map(x => x.name));
-      state.templateOk = okNames.has("New Template");
-      state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !cur(x)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
-      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: sheets.items.filter(s => !TAB_RE.test(s.name) && !KNOWN_SHEETS.includes(s.name) && !/ \(old\)$/.test(s.name)).length };
-      const L = sheets.items.filter(s => okNames.has(s.name)).map(s => {
+      const lay = x => ok(x) ? layoutOf(x.h.values[0][17], x.j6.values[0][0], x.v11.values[0][0]) : 0;
+      const layout = new Map(sg.map(x => [x.name, lay(x)]));
+      state.templateOk = layout.get("New Template") === 3;
+      state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !layout.get(x.name)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
+      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: 0 };   // tabs not named by LASFIR are left alone without a mention
+      const L = sheets.items.filter(s => layout.get(s.name) >= 2).map(s => {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
-        return { name: s.name, hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
+        return { name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") };
       });
       await ctx.sync();
@@ -200,31 +217,41 @@ async function refresh() {
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
       for (const l of L) {
-        const cv = l.cost.values, f = { cost: String(cv[0][3]).trim() !== BEFORE_HDR || !/LET\(/.test(String(l.a10.formulas[0][0])) };
+        const a10 = String(l.a10.formulas[0][0] || ""), end = endOf(l.log.values.map(r => r[1]), a10), sumA = (l.log.values[end + 1 - LOG_FIRST] || [])[0];
+        /* what Match New Template would change: the layout, a PR formula that doesn't read the Benefits tab or stops short of the
+           log, a summary row without its checkbox, or (New Template) the benefits block still on the tab */
+        const f = { layout: l.layout === 2, pr: !/Benefits!/.test(a10) || prEnd(a10) !== end, sum: typeof sumA !== "boolean", block: l.name === "New Template" && String(l.cost.values[0][0]).trim().toLowerCase() === "code" };
         if (Object.values(f).some(Boolean) && !stale.has(l.name)) state.fix.set(l.name, f);
         if (l.name === "New Template") continue;
-        const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, w = l.w18.values.map(r => r[0]), H = (a, c) => h[a - 2][c];
+        const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, H = (a, c) => h[a - 2][c];
         const mins = [0, 1, 2].map(i => pv[i][4]).filter(x => typeof x === "number");
         const m9 = String(l.s9.values[0][0] || "").match(/home\s*clinic\s*:\s*(.*)$/i), home = m9 ? m9[1].trim() : "";
-        const money0 = v => typeof v === "number" ? v : null;
+        const money0 = v => typeof v === "number" ? v : null, v3 = l.layout === 3, mrn = normMrn(H(4, 0));
+        /* layout 3 reads benefits from the patient's Benefits row; layout 2 from its own V1:Y16 */
+        const br = v3 ? (state.ben.rows.get(mrn) || {}).v || [] : null, bc = k => br[colIndex(BEN_COLS[k])];
+        const w = v3 ? ["W1", "", "", "W4", "W5", "W6", "W7", "W8"].map(k => k ? bc(k) : "") : l.w18.values.map(r => r[0]);
+        const cost = v3 ? BILL.map((b, i) => ({ after: money0(bc(`X${COST_FIRST + i}`)), before: money0(bc(`Y${COST_FIRST + i}`)) }))
+          : BILL.map((b, i) => ({ after: money0(l.cost.values[i + 1][2]), before: money0(l.cost.values[i + 1][3]) }));
+        const n6 = l.n67.values[0][0], n7 = l.n67.values[1][0], fbv = v3 ? n6 : n7;
         state.tabs.push({ name: l.name, code: m[1], course: +(m[2] || 1) });
         const p = {
-          tab: l.name, code: m[1], course: +(m[2] || 1), mrn: normMrn(H(4, 0)), mrnRaw: String(H(4, 0) || "").trim(),
+          tab: l.name, code: m[1], course: +(m[2] || 1), mrn, mrnRaw: String(H(4, 0) || "").trim(), mrnVal: H(4, 0), layout: l.layout,
+          fbCell: v3 ? "N6" : "N7", assessCell: v3 ? "N7" : "N6", benUpdated: v3 && isNum(bc("Updated")) ? Math.floor(bc("Updated")) : null,
           txApproved: typeof H(2, 3) === "number" ? H(2, 3) : 36, mtRedos: typeof H(4, 3) === "number" ? H(4, 3) : 0, mdReq: String(H(6, 3) || ""), status: String(H(7, 3) || ""),
           provider: String(H(2, 4) || "").trim(), tas: String(H(4, 4) || "").trim(),
           insurance: String(H(6, 4) || ""), kaiser: /kaiser/i.test(String(H(6, 4) || "")),
           authStart: isNum(H(4, 5)) ? H(4, 5) : null, authExp: isNum(H(4, 6)) ? H(4, 6) : null,
           updateBy: isNum(H(2, 6)) ? H(2, 6) : null, progSent: isNum(H(6, 6)) ? Math.floor(H(6, 6)) : null,
           txEnd: isNum(H(7, 5)) ? H(7, 5) : null, txRem: typeof H(7, 7) === "number" ? H(7, 7) : null,
-          authAssess: String(l.n67.values[0][0] || ""), freebiesLeft: typeof l.n67.values[1][0] === "number" ? l.n67.values[1][0] : null,
+          authAssess: String((v3 ? n7 : n6) || ""), freebiesLeft: typeof fbv === "number" ? fbv : null,
           protoRows: [0, 1, 2].map(i => ({ n: i + 1, row: 2 + i, hz: pv[i][0], dur: pv[i][1], trains: pv[i][2], wait: pv[i][3], site: String(pv[i][5] || "") })),
           protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null,
           home, external: !!home && !/^(srl|san rafael)$/i.test(home),
           ben: { bidf: money0(w[0]), dedNA: isNA(w[3]), dedRem: money0(w[3]), dedBlank: w[3] === "" || w[3] == null, oopNA: isNA(w[4]), oopRem: money0(w[4]),
             mtr: String(w[5] || ""), ext: typeof w[6] === "number" ? w[6] : 0, lastSched: isNum(w[7]) ? Math.floor(w[7]) : null },
-          cost: BILL.map((b, i) => ({ after: money0(cv[i + 1][2]), before: money0(cv[i + 1][3]) })),
-          canGrow: /LET\(/.test(String(l.a10.formulas[0][0])),   // only a PR formula in A10 can say where a grown log ends
-          rows: parseLog(l.log.values.slice(0, logEnd(l.a10.formulas[0][0]) - LOG_FIRST + 1)),
+          cost,
+          canGrow: /LET\(/.test(a10),   // only a PR formula in A10 can say where a grown log ends
+          rows: parseLog(l.log.values.slice(0, end - LOG_FIRST + 1)),
           week: Object.fromEntries([1, 2, 3, 4, 5].map(d => { const v = l.wk.values[d - 1] || []; return [d, { from: isNum(v[0]) ? Math.round(v[0] * 1440) : null, to: isNum(v[1]) ? Math.round(v[1] * 1440) : null }]; })),
           avail: l.av.values.filter(v => AV_TYPE.includes(v[0]) && isNum(v[1])).map(v => ({ type: v[0], from: Math.floor(v[1]), to: isNum(v[2]) ? Math.floor(v[2]) : Math.floor(v[1]), note: String(v[3] || "") }))
         };
@@ -250,7 +277,7 @@ async function refresh() {
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
-    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]] }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
+    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
     syncActiveSheet();
@@ -399,14 +426,13 @@ function renderBanners() {
   $("wbTitle").textContent = trackerTitle(); $("devTag").textContent = `${device()} tracker`;
   const sk = state.skipped, parts = [];
   if (sk.layout.length) parts.push(`${sk.layout.length} tab${sk.layout.length > 1 ? "s" : ""} in an older layout (${sk.layout.map(esc).join(", ")})`);
-  if (sk.other) parts.push(`${sk.other} tab${sk.other > 1 ? "s" : ""} not named by LASFIR`);
-  if (!state.templateOk) parts.push("the New Template tab does not match the current layout (Time in T8, Code in V11)");
+  if (!state.templateOk) parts.push("the New Template tab does not match the current layout (Time in T8, Freebie Count in J6)");
   const ns = state.stale.length;
-  $("cutoffNote").textContent = ns ? `${ns} tab${ns === 1 ? " is" : "s are"} left out of Update tabs: no visit on or after this date, or Discontinued/Complete.` : "";
+  $("cutoffNote").textContent = ns ? `${ns} tab${ns === 1 ? " is" : "s are"} left out of updates: no visit on or after this date, or Discontinued/Complete.` : "";
   $("skipText").innerHTML = parts.length ? `Left untouched: ${parts.join("; ")}. The add-in only reads and writes tabs that match the current template.` : "";
   show("skipNote", parts.length > 0);
   const n = state.fix.size, o = state.old.length, msg = [];
-  if (n) msg.push(`${n} tab${n === 1 ? "" : "s"} need the before-deductible cost column and the updated PR formula in column A`);
+  if (n) msg.push(`${n} tab${n === 1 ? " doesn't" : "s don't"} match New Template yet (${[...state.fix.keys()].map(esc).join(", ")}). Match New Template moves benefits to the ${BEN_SHEET} tab and freebies to N6, and brings the PR formula, colors by visit type, dropdowns, borders and the TX SUMMARY checkbox over every log row`);
   if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is deleted once its entries are copied over`);
   $("setupMsg").innerHTML = msg.join(". ") + ".";
   $("btnSetup").disabled = o > 0 && !state.templateOk;
@@ -785,7 +811,7 @@ function viewPatient() {
       <div class="hint">PR is the patient's cost per visit (after the deductible). With a deductible remaining, enter the before-deductible cost too: column A charges that until the deductible is used up, then PR. Enter N/A when there is no deductible.</div>
       ${btn("benSave", p.tab, "", "Save benefits")}
       <div class="g2" style="margin-top:10px"><label>Extension (daily visits)<input type="number" min="1" data-extn value="15"></label><label>New auth expiry<input type="date" data-extd></label></div>
-      <div class="hint">Adds to # of TXs (D2, now ${d.total}) and Extensions added (W7).</div>${btn("extend", p.tab, "", "Add extension")}</details>
+      <div class="hint">Adds to # of TXs (D2, now ${d.total}) and Extensions added on the ${p.layout === 3 ? BEN_SHEET + " tab" : "tab (W7)"}.</div>${btn("extend", p.tab, "", "Add extension")}</details>
     <details class="group" data-open="pm|${esc(p.tab)}"${state.open.has("pm|" + p.tab) ? " open" : ""}><summary class="gs">Measures over time <span class="sub">${meas.length} recorded</span></summary>
       ${meas.length ? `<table><thead><tr><th>Date</th><th>Visit</th><th class="num">PHQ-9</th><th class="num">GAD-7</th></tr></thead><tbody>${meas.map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(r.type)}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td></tr>`).join("")}</tbody></table>` : '<div class="none">No scores yet</div>'}</details>
     <div class="group"><h2>Upcoming appointments<span class="n">${d.sched.length}</span></h2>${up.length ? up.map(r => item(p, `${DAYS[dow(r.date)]} ${fmtDate(r.date)} ${fmtTime(r.time)} <span class="chip ${cardCls(r)}">${esc(apptTypeName(r))}</span>`, "", "", r.row)).join("") : '<div class="none">Nothing booked</div>'}
@@ -896,10 +922,67 @@ async function syncActiveSheet(force) {
 async function rebuildActiveClick() {
   if (POPOUT) return callPane("rebuildActive", []);
   state.apWarned = false; if (await syncActiveSheet(true)) toast(`${AP_SHEET} sheet rebuilt.`); }
-/* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true } */
+/* ---------- Benefits tab: one row per MRN (BEN_COLS). Rows are found by MRN; a new patient gets the next empty row. ---------- */
+function readBen(vals) {
+  const rows = new Map(); let next = BEN_FIRST;
+  (vals || []).slice(BEN_FIRST - 1).forEach((v, i) => {
+    const raw = v[0]; if (raw === "" || raw == null) return;
+    const k = normMrn(raw), row = BEN_FIRST + i; next = row + 1;
+    if (k && !rows.has(k)) rows.set(k, { row, v: v.slice() });
+  });
+  state.ben = { rows, next, has: !!vals };
+}
+async function benSheet(ctx) {
+  let ws = ctx.workbook.worksheets.getItemOrNullObject(BEN_SHEET); await ctx.sync();
+  if (!ws.isNullObject) return ws;
+  ws = ctx.workbook.worksheets.add(BEN_SHEET);
+  const last = colLetter(BEN_HDR.length - 1), hd = ws.getRange(`A1:${last}1`);
+  hd.values = [BEN_HDR]; hd.format.font.bold = true; hd.format.wrapText = true; hd.format.verticalAlignment = "Center";
+  hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.rowHeight = 32;
+  const money = ["C", "D", "E", ..."IJKLMNOPQR"], dates = ["H", "S"];
+  money.forEach(c => ws.getRange(`${c}${BEN_FIRST}:${c}${BEN_LAST}`).numberFormat = Array(BEN_LAST - BEN_FIRST + 1).fill(["$#,##0.00"]));
+  dates.forEach(c => ws.getRange(`${c}${BEN_FIRST}:${c}${BEN_LAST}`).numberFormat = Array(BEN_LAST - BEN_FIRST + 1).fill(["m/d/yyyy"]));
+  ws.getRange(`A:${last}`).format.columnWidth = 78; ws.getRange("A:B").format.columnWidth = 70;
+  ws.freezePanes.freezeRows(1);
+  if (!state.ben) readBen(null);
+  return ws;
+}
+/* entries: { mrn (normalized), mrnVal (as typed in A4), tab, key (W4, X12 ... or BEN_STAMP), v, quiet }. Every row written to gets
+   Last updated = today, unless every entry for it is quiet (the add-in's own bookkeeping, such as MTR approved following D4). */
+async function writeBen(ctx, entries) {
+  if (!entries.length) return;
+  const ws = await benSheet(ctx), B = state.ben, touched = new Map();
+  for (const e of entries) {
+    if (!e.mrn) continue;
+    let r = B.rows.get(e.mrn);
+    if (!r) { r = { row: B.next++, v: Array(BEN_HDR.length).fill("") }; B.rows.set(e.mrn, r); r.v[0] = e.mrnVal ?? e.mrn; ws.getRange(`A${r.row}`).values = [[r.v[0]]]; }
+    /* Patient names the newest course for this MRN */
+    const newest = state.patients.filter(p => p.mrn === e.mrn).sort((a, b) => b.course - a.course)[0], m = String(e.tab).match(TAB_RE);
+    const tab = newest && newest.course > +((m && m[2]) || 1) ? newest.tab : e.tab;
+    if (r.v[1] !== tab) { r.v[1] = tab; ws.getRange(`B${r.row}`).values = [[tab]]; }
+    if (e.key !== BEN_STAMP) { const c = BEN_COLS[e.key]; r.v[colIndex(c)] = e.v; ws.getRange(`${c}${r.row}`).values = [[e.v]]; }
+    touched.set(e.mrn, (touched.get(e.mrn) || false) || !e.quiet);
+  }
+  const t = todaySerial();
+  for (const [k, loud] of touched) if (loud) { const r = B.rows.get(k); r.v[colIndex(BEN_COLS.Updated)] = t; ws.getRange(`${BEN_COLS.Updated}${r.row}`).values = [[t]]; }
+}
+/* a benefits key on a current-layout tab is a Benefits row write; on a previous-layout tab it is still that tab's own cell */
+const benTarget = tab => state.patients.find(p => p.tab === tab && p.layout === 3);
+/* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true }. Benefits keys (W4, X12 ...)
+   on a current-layout tab go to that patient's Benefits row; { tab, a: BEN_STAMP } only stamps Last updated. */
 async function applyOps(ops) {
   if (POPOUT) return callPane("applyOps", [ops]);
-  await Excel.run(async ctx => { for (const o of ops) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; } await ctx.sync(); });
+  const ben = [], cells = [];
+  for (const o of ops) {
+    const p = isBenKey(o.a) && benTarget(o.tab);
+    if (p) ben.push({ mrn: p.mrn, mrnVal: p.mrnVal, tab: p.tab, key: o.a, v: o.clear ? "" : o.v && o.v[0][0], quiet: !!o.quiet });
+    else if (o.a !== BEN_STAMP) cells.push(o);
+  }
+  await Excel.run(async ctx => {
+    for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; }
+    await writeBen(ctx, ben);
+    await ctx.sync();
+  });
 }
 /* new visit-log rows, in A:T only so the benefits block beside the log stays put. Each goes inside the log (planTab never puts one
    past the last row), so Excel stretches the PR formulas, header counts and rules over it. It takes everything from a row of the
@@ -920,6 +1003,8 @@ async function growLogs(list) {
         r.format.rowHeight = src[i].format.rowHeight;
       });
       await ctx.sync();
+      /* the colors by visit type and the dropdowns are laid down again over the grown log, so the new rows get them too */
+      const end = await tabEnd(ctx, ws); applyRules(ws, end, end + 1); await ctx.sync();
     }
   });
 }
@@ -962,9 +1047,12 @@ async function formatLogs(list) {
     const tpl = ctx.workbook.worksheets.getItemOrNullObject("New Template"); await ctx.sync();
     const bl = tpl.isNullObject ? null : tpl.getRange(`A${LOG_FIRST + 1}:T${LOG_LAST}`), bp = bl && bl.getCellProperties(FMT_Q);
     if (bl) bl.load("numberFormat");
-    const G = list.map(({ tab, touched }) => { const ws = ctx.workbook.worksheets.getItem(tab), a10 = ws.getRange(`A${LOG_FIRST}`); a10.load("formulas"); return { ws, a10, touched: new Set(touched || []) }; });
+    const G = list.map(({ tab, touched }) => {
+      const ws = ctx.workbook.worksheets.getItem(tab), a10 = ws.getRange(`A${LOG_FIRST}`), b = ws.getRange(`B${LOG_FIRST}:B${LOG_FIRST + LOG_READ - 1}`);
+      a10.load("formulas"); b.load("values"); return { ws, a10, b, touched: new Set(touched || []) };
+    });
     await ctx.sync();
-    G.forEach(g => { g.end = logEnd(g.a10.formulas[0][0]); g.rg = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.rg.load("values,numberFormat"); g.cp = g.rg.getCellProperties(FMT_Q); });
+    G.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.rg = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.rg.load("values,numberFormat"); g.cp = g.rg.getCellProperties(FMT_Q); });
     await ctx.sync();
     for (const g of G) {
       const P = g.cp.value, V = g.rg.values, NF = g.rg.numberFormat, first = P[0].map(fmtCell);
@@ -1005,12 +1093,12 @@ function freebieModal(tab, row) {
   showModal(`<h3>${esc(kind)}: ${esc(p.tab)}, ${fmtDateY(r.date)}</h3><p class="sub">Classify this missed visit.</p>${warn ? `<div class="item amb">${esc(warn)}</div>` : ""}
     <div class="actions"><button class="pri" data-mf="Used" data-t="${esc(tab)}" data-row="${row}"${left <= 0 ? " disabled" : ""}>Use freebie</button><button data-mf="Waived" data-t="${esc(tab)}" data-row="${row}">Waived</button><button data-mclose>Decide later</button></div>`);
 }
-/* N7 holds the freebies left: using one takes one off, undoing it gives it back */
+/* the freebies left (N6; N7 on a previous-layout tab): using one takes one off, undoing it gives it back */
 async function setFreebie(tab, row, v) {
   const [p, r] = findPR(tab, row); if (!r) return;
   const note = withFreebie(r.note, v), n7 = Math.max(0, p.d.left + (r.freebie === "Used" ? 1 : 0) - (v === "Used" ? 1 : 0));
   try {
-    await writeCells(tab, [[`S${row}`, note], ["N7", n7]]); closeModal(); p.freebiesLeft = n7; patchRow(tab, row, { freebie: v, note });
+    await writeCells(tab, [[`S${row}`, note], [p.fbCell, n7]]); closeModal(); p.freebiesLeft = n7; patchRow(tab, row, { freebie: v, note });
     const left = p.d.left;
     toast(v === "Used" && left <= 1 ? (left === 1 ? "This patient has 1 freebie remaining after marking today's visit." : "This patient has zero remaining freebies.") : v === "Used" ? "Freebie used." : "Marked waived.", v === "Used" && left === 0);
   } catch (e) { fail(e); }
@@ -1018,7 +1106,7 @@ async function setFreebie(tab, row, v) {
 async function undoMiss(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return;
   const note = withFreebie(r.note.split("; ").filter(x => !/\(marked in add-in\)$/.test(x)).join("; "), "");
-  const pairs = [[`M${row}`, ""], [`S${row}`, note]]; if (r.freebie === "Used") pairs.push(["N7", p.d.left + 1]);
+  const pairs = [[`M${row}`, ""], [`S${row}`, note]]; if (r.freebie === "Used") pairs.push([p.fbCell, p.d.left + 1]);
   try { await writeCells(tab, pairs); if (r.freebie === "Used") p.freebiesLeft = p.d.left + 1; patchRow(tab, row, { miss: false, freebie: "", note }); toast("Undone."); } catch (e) { fail(e); }
 }
 /* pulses delivered = treatment complete (F, H, J). Treating technician goes in B. */
@@ -1169,7 +1257,8 @@ function draftInput(el) {
 /* ---------- measures placeholders (x in PHQ-9 and GAD-7) ----------
    Always on MT, MTR, F/U and the last treatment. Between them, every 5 treatments when the gap is 8 or more,
    and at least every 7 calendar days when visits are sparse (tapering), but never within 2 days or 2 visits before a milestone.
-   Only blank cells on undelivered, non-missed rows are filled. Existing x's and scores never move. */
+   Only blank cells on undelivered, non-missed rows are filled. Existing x's and scores never move. As on New Template, a Daily
+   (or Taper) row with measures also carries the Measures action flag in O; MT, MTR and F/U rows only get the x's. */
 function planMeasures(p) {
   const total = p.txApproved || 36, rows = p.rows.filter(r => r.type || typeof r.tx === "number");
   const isMs = r => STD_VISIT.includes(r.type) || (typeof r.tx === "number" && r.tx === total);
@@ -1186,10 +1275,11 @@ function planMeasures(p) {
   });
   const ops = [];
   for (const r of p.rows) {
-    if (!(target.has(r.row) || cadence.has(r.row)) || r.delivered || r.miss) continue;
-    if (!r.phq) ops.push([`P${r.row}`, "x"]);
-    if (!r.gad) ops.push([`Q${r.row}`, "x"]);
-    if (cadence.has(r.row) && !r.action) ops.push([`O${r.row}`, "Measures"]);
+    if (r.delivered || r.miss) continue;
+    const want = target.has(r.row) || cadence.has(r.row), daily = r.type === "Daily" || r.type === "Taper";
+    if (want && !r.phq) ops.push([`P${r.row}`, "x"]);
+    if (want && !r.gad) ops.push([`Q${r.row}`, "x"]);
+    if (daily && (want || r.measX) && !r.action) ops.push([`O${r.row}`, "Measures"]);
   }
   return ops;
 }
@@ -1202,30 +1292,109 @@ async function placeMeasures(patients) {
 async function placeMeasuresClick() {
   try { const n = await placeMeasures(state.patients.filter(p => p.d.active)); toast(n ? `Placed ${n} measure placeholder${n > 1 ? "s" : ""}.` : "Measure placeholders are already in place."); await refresh(); } catch (e) { fail(e); }
 }
-/* ---------- Update tabs: the template owns the layout. The add-in only adds the before-deductible cost column (Y11:Y16)
-   and the PR formula in column A, and rebuilds tabs from an earlier layout as fresh copies of New Template. ---------- */
-/* PR (patient responsibility) per visit. With a deductible in W4, visits charge the before-deductible cost (Y) in date order
-   until W4 is used up; the visit that crosses it pays what is left plus PR on the rest; then PR (X). Missed visits are not charged. */
-const prF = (r, last = LOG_LAST) => `=IF(OR($L${r}="",$M${r}="x"),"",LET(L,$L$${LOG_FIRST}:$L$${last},M,$M$${LOG_FIRST}:$M$${last},E,$E$${LOG_FIRST}:$E$${last},tl,ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${last})),`
+/* ---------- Match New Template: New Template owns the layout. Each active tracker gets its header formats, Freebie Count in N6
+   (auth assessment in N7), the PR formula in column A, its benefits moved to the Benefits tab, a TX SUMMARY row with its
+   checkbox, and New Template's conditional formats and dropdowns stretched over the whole log. Tabs from an earlier layout
+   are rebuilt as fresh copies of New Template. ---------- */
+/* PR (patient responsibility) per visit, from the patient's Benefits row (matched on the MRN in A4). With a deductible remaining
+   (D), visits charge the before-deductible cost (N:R) in date order until it is used up; the visit that crosses it pays what is
+   left plus PR on the rest; then PR (I:M). Missed visits are not charged. No Benefits row: blank. */
+const BR = c => `Benefits!$${c}$${BEN_FIRST}:$${c}$${BEN_LAST}`, BRX = (a, b) => `Benefits!$${a}$${BEN_FIRST}:$${b}$${BEN_LAST}`;
+const prF = (r, last = LOG_LAST) => `=IF(OR($L${r}="",$M${r}="x",$A$4=""),"",LET(bi,IFERROR(MATCH($A$4,${BR("A")},0),MATCH($A$4&"",${BR("A")}&"",0)),IF(ISNA(bi),"",`
+  + `LET(L,$L$${LOG_FIRST}:$L$${last},M,$M$${LOG_FIRST}:$M$${last},E,$E$${LOG_FIRST}:$E$${last},tl,ISNUMBER(SEARCH("tele",$S$${LOG_FIRST}:$S$${last})),`
   + `c,LAMBDA(col,(L="MT")*N(INDEX(col,1))+((L="Daily")+(L="Taper"))*N(INDEX(col,2))+(L="MTR")*N(INDEX(col,3))+(L="F/U")*NOT(tl)*N(INDEX(col,4))+(L="F/U")*tl*N(INDEX(col,5))),`
-  + `aft,c($X$${COST_FIRST}:$X$${COST_FIRST + 4}),bef,c($Y$${COST_FIRST}:$Y$${COST_FIRST + 4}),i,ROW()-${LOG_FIRST - 1},a,INDEX(aft,i),b,INDEX(bef,i),d,$W$4,`
-  + `IF(OR(NOT(ISNUMBER(d)),d<=0,b<=0),a,LET(key,IF(E="",1E6,E)*100+ROW(E),rem,MAX(0,d-SUMPRODUCT(bef*(M<>"x")*(key<INDEX(key,i)))),IF(rem<=0,a,IF(b<=rem,b,rem+a*(b-rem)/b))))))`;
+  + `aft,c(INDEX(${BRX("I", "M")},bi,0)),bef,c(INDEX(${BRX("N", "R")},bi,0)),i,ROW()-${LOG_FIRST - 1},a,INDEX(aft,i),b,INDEX(bef,i),d,INDEX(${BR("D")},bi),`
+  + `IF(OR(NOT(ISNUMBER(d)),d<=0,b<=0),a,LET(key,IF(E="",1E6,E)*100+ROW(E),rem,MAX(0,d-SUMPRODUCT(bef*(M<>"x")*(key<INDEX(key,i)))),IF(rem<=0,a,IF(b<=rem,b,rem+a*(b-rem)/b))))))))`;
 /* a PR cell is ours to replace when it is blank or still holds a cost-table lookup; a typed amount is left alone */
 const isPrFormula = f => f === "" || f == null || (typeof f === "string" && f.startsWith("=") && /\$X\$12|\$AE\$18|LET\(/.test(f));
-async function ensureCost(ctx, ws) {
-  const a10 = ws.getRange(`A${LOG_FIRST}`); a10.load("formulas"); await ctx.sync();
-  const last = logEnd(a10.formulas[0][0]);
-  const a = ws.getRange(`A${LOG_FIRST}:A${last}`), y = ws.getRange("Y11"); a.load("formulas"); y.load("values"); await ctx.sync();
-  if (String(y.values[0][0]).trim() !== BEFORE_HDR) {
-    ws.getRange(`Y11:Y${COST_FIRST + 4}`).copyFrom(`X11:X${COST_FIRST + 4}`, Excel.RangeCopyType.formats);
-    ws.getRange("Y11").values = [[BEFORE_HDR]];
+/* New Template's visit-log formulas, for log rows that lost theirs (rows inserted by hand) */
+const ROW_F = { D: r => `=IF(C${r}="", "", $D$2-C${r})`, G: r => `=F${r} + INDEX(G:G, ROW()-1)`, I: r => `=H${r} + INDEX(I:I, ROW()-1)`, K: r => `=J${r} + INDEX(K:K, ROW()-1)` };
+/* New Template's conditional formats, highest priority first, with the log's ranges stretched to its last row (end) and the
+   summary row (s) turning green when its checkbox in A is ticked. Colors are the template's own (white text = #FFFFFF). */
+const CF_W = "#FFFFFF", CF_K = "#000000";
+function cfSpec(end, s) {
+  const T = `T${LOG_FIRST}:T${end}`, A9 = `A9:S${end}`, A10 = `A${LOG_FIRST}:S${end}`;
+  const daily = { fill: "#D9D9D9", font: CF_K }, cap = { fill: "#5497C6", font: CF_W }, proto = { fill: "#5497C6", font: CF_K }, meas = { fill: "#FFF2CC", font: CF_K };
+  const mt = { fill: "#66FFFF", font: CF_K, bold: true }, alt = { fill: "#E79507", font: CF_W }, miss = { fill: "#7030A0", font: CF_W };
+  const fu = { fill: "#FF99CC", font: CF_K, bold: true }, mtr = { fill: "#92D050", font: CF_W, bold: true };
+  return [
+    { a: `A${s}:T${s}`, f: `=$A$${s}=TRUE`, fill: "#C6EFCE", font: "#006100" },
+    { a: T, f: '=$O10="Daily"', ...daily }, { a: T, f: '=$O10="Give Cap"', ...cap }, { a: T, f: '=$O10="Protocol"', ...proto }, { a: T, f: '=$O10="Measures"', ...meas },
+    { a: T, f: '=$L10="MT"', ...mt }, { a: T, f: '=$R10="x"', ...alt }, { a: T, f: '=$M10="x"', ...miss }, { a: T, f: '=$L10="F/U"', ...fu }, { a: T, f: '=$L10="MTR"', ...mtr },
+    { a: A9, f: '=$O9="Daily"', ...daily },
+    { a: "E9", f: "=LEN(TRIM(E9))>0", fill: "#5B9BD5", font: CF_K },
+    { a: "F7", f: '=AND(F7<>"",F7>$G$4)', fill: "#FFC7CE", font: "#9C0006" },
+    { a: A10, f: '=$O10="Give Cap"', ...cap }, { a: A9, f: '=$O9="Protocol"', ...proto }, { a: A9, f: '=$O9="Measures"', ...meas },
+    { a: A10, f: '=$L10="MT"', ...mt }, { a: `A9:A${end}`, f: '=$L9="MTR"', fill: "#92D050", font: CF_W },
+    { a: A9, f: '=$R9="x"', ...alt }, { a: A10, f: '=$M10="x"', ...miss },
+    { a: `E${LOG_FIRST}:E${end}`, cell: { formula1: "=$F$4", formula2: "=$G$4", operator: "NotBetween" }, fill: "#FF0000", font: CF_K },
+    { a: A10, f: '=$L10="F/U"', ...fu }, { a: A10, f: '=$L10="MTR"', ...mtr }
+  ];
+}
+const X_ONLY = { title: "Error", message: 'Mark Cell by using "x". Otherwise, leave blank' };
+const dvSpec = end => [
+  ["D6", "Yes,No"], ["F6", "Yes,No"], ["D7", "Pending Start,In Progress,Tapering,Paused,Discontinued,Complete"], ["O2:O4", SITES.join(",")],
+  [`L${LOG_FIRST}`, "Daily,MT,MTR,F/U"], [`L${LOG_FIRST + 1}:L${end}`, "Daily,MT,MTR,F/U,Taper"], [`M${LOG_FIRST}:N${end}`, "x", X_ONLY],
+  [`O${LOG_FIRST}:O${end}`, "Measures,Give Cap,Protocol"], [`V${AV_FIRST}:V${AV_LAST}`, AV_TYPE.join(",")]
+];
+/* replaces every conditional format on the tab with cfSpec, and the dropdowns in A1:T(summary) and the dates-away types with dvSpec */
+function applyRules(ws, end, s) {
+  ws.getRange().conditionalFormats.clearAll();
+  const fmt = (f, x) => { f.fill.color = x.fill; f.font.color = x.font; if (x.bold) { f.font.bold = true; f.font.italic = false; } };
+  /* add() puts each new rule at the top, so the lowest priority goes in first. Stop If True stays off: as on New Template,
+     a rule that only colors lets a lower one add its bold (a missed or red-dated F/U row is still bold). */
+  for (const x of cfSpec(end, s).reverse()) {
+    const cfs = ws.getRange(x.a).conditionalFormats;
+    const cf = cfs.add(x.cell ? Excel.ConditionalFormatType.cellValue : Excel.ConditionalFormatType.custom);
+    if (x.cell) { cf.cellValue.rule = x.cell; fmt(cf.cellValue.format, x); } else { cf.custom.rule.formula = x.f; fmt(cf.custom.format, x); }
+    cf.stopIfTrue = false;
   }
-  ws.getRange("W4").dataValidation.clear();   // an amount or N/A
-  ws.getRange(`X${COST_FIRST}:Y${COST_FIRST + 4}`).numberFormat = Array(5).fill(["$#,##0.00", "$#,##0.00"]);
-  a.formulas = a.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, last) : v[0]]);
+  ws.getRange(`A1:T${s}`).dataValidation.clear(); ws.getRange(`V${AV_FIRST}:V${AV_LAST}`).dataValidation.clear();
+  for (const [a, source, err] of dvSpec(end)) {
+    const dv = ws.getRange(a).dataValidation; dv.rule = { list: { inCellDropDown: true, source } };
+    if (err) dv.errorAlert = { showAlert: true, style: "Stop", title: err.title, message: err.message };
+  }
+}
+/* the benefits a previous-layout tab keeps in V1:Y16, as Benefits row entries (quiet: moving them is not an update). Every tracker
+   gets its row, so the Benefits tab lists every patient. */
+function benEntries(p, get) {
+  const out = [{ mrn: p.mrn, mrnVal: p.mrnVal, tab: p.tab, key: BEN_STAMP, quiet: true }];   // the row exists even with nothing entered yet
+  for (const k of BEN_KEYS) { const v = get(k); if (v !== "" && v != null) out.push({ mrn: p.mrn, mrnVal: p.mrnVal, tab: p.tab, key: k, v, quiet: true }); }
+  return out;
+}
+const TPL_SUM = LOG_LAST + 1;   // New Template's TX SUMMARY row
+async function matchTab(ctx, name) {
+  const isTpl = name === "New Template", ws = ctx.workbook.worksheets.getItem(name), tpl = ctx.workbook.worksheets.getItem("New Template");
+  const end = await tabEnd(ctx, ws), s = end + 1;
+  const hd = ws.getRange("A1:Y17"), lg = ws.getRange(`A${LOG_FIRST}:T${s}`), tl = tpl.getRange("J6:J7"); hd.load("values"); lg.load("values,formulas"); tl.load("values");
+  await ctx.sync();
+  const V = hd.values, at = a => { const m = a.match(/^([A-Z]+)(\d+)$/); return V[+m[2] - 1][colIndex(m[1])]; };
+  const layout = layoutOf(at("T8"), at("J6"), at("V11")), p = state.patients.find(x => x.tab === name);
+  /* 1. the benefits block moves to the Benefits tab (its values are the live ones: the tab has not been moved over yet) */
+  if (!isTpl && layout === 2 && p) await writeBen(ctx, benEntries(p, k => at(k)));
+  if (layout === 2 || isTpl) ws.getRange("V1:AA17").clear(Excel.ClearApplyTo.all);
+  /* 2. header: New Template's formats; freebies left move to N6 and the auth assessment to N7 */
+  if (!isTpl) {
+    ws.getRange("A1:T9").copyFrom(tpl.getRange("A1:T9"), Excel.RangeCopyType.formats);
+    if (layout === 2) ws.getRange("N6:N7").values = [[typeof at("N7") === "number" ? at("N7") : 3], [at("N6") ?? ""]];
+    ws.getRange("J6:J7").values = tl.values;
+  }
+  /* 3. visit log: the PR formula over the whole log, and the template's formulas on rows that lost them */
+  const F = lg.formulas;
+  ws.getRange(`A${LOG_FIRST}:A${end}`).formulas = F.slice(0, end - LOG_FIRST + 1).map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, end) : v[0]]);
+  for (let i = 1; i <= end - LOG_FIRST; i++) for (const [c, fx] of Object.entries(ROW_F)) if (F[i][colIndex(c)] === "") ws.getRange(`${c}${LOG_FIRST + i}`).formulas = [[fx(LOG_FIRST + i)]];
+  /* 4. the TX SUMMARY row: New Template's formats (merge, checkbox), FALSE in A until it's ticked */
+  if (!isTpl) ws.getRange(`A${s}:T${s}`).copyFrom(tpl.getRange(`A${TPL_SUM}:T${TPL_SUM}`), Excel.RangeCopyType.formats);
+  const sv = lg.values[s - LOG_FIRST];
+  if (typeof sv[0] !== "boolean") ws.getRange(`A${s}`).values = [[false]];
+  if (!SUM_RE.test(String(sv[1] ?? ""))) ws.getRange(`B${s}`).values = [[SUM_LABEL]];
+  /* 5. colors by visit type and the dropdowns, over every log row */
+  applyRules(ws, end, s);
+  await ctx.sync();
+  return { name, end };
 }
 /* copy an earlier-layout tab's entries into a fresh copy of New Template. Every copied cell is read back from the new tab;
-   only when all of them match is the earlier tab deleted. Otherwise it stays as "NAME (old)". */
+   only when all of them match is the earlier tab deleted. Otherwise it stays as "NAME (old)". Benefits go to the Benefits tab. */
 async function rebuildTab(ctx, name) {
   const old = ctx.workbook.worksheets.getItem(name), tpl = ctx.workbook.worksheets.getItem("New Template");
   const src = old.getRange("A1:AN49"); src.load("formulas"); old.load("position"); await ctx.sync();
@@ -1234,10 +1403,10 @@ async function rebuildTab(ctx, name) {
   const txt = a => String(at(a) ?? "").trim();
   const pos = old.position; old.name = `${name} (old)`.slice(0, 31);
   const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
-  const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); };
+  const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); }, ben = {};
   ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
   for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
-  const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N6", assess);
+  const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N7", assess);
   /* visit log: typed entries only, so the template's formulas (A, D, G, I, K) stay */
   const pilot = txt("T8").toLowerCase() === "freebie", timeCol = pilot ? "U" : txt("T8").toLowerCase() === "time" ? "T" : null;
   let used = 0;
@@ -1249,15 +1418,17 @@ async function rebuildTab(ctx, name) {
     if (timeCol) { const v = at(timeCol + r); if (isK(v)) put("T" + r, v); }
   }
   /* benefits, costs and availability from the pilot add-in's columns, when present */
-  if (txt("Y7") === "Plan type") [["Z9", "W4"], ["Z10", "W5"], ["Z11", "W6"], ["Z12", "W7"], ["Z13", "W8"], ["Z15", "W1"]].forEach(([s, d]) => { const v = at(s); if (v !== "" && isK(v)) put(d, v); });
-  if (txt("Y16") === "BILLING AND AUTH BY CODE") for (let i = 0; i < 5; i++) { const v = at(`AE${18 + i}`); if (typeof v === "number") put(`X${COST_FIRST + i}`, v); }
+  if (txt("Y7") === "Plan type") [["Z9", "W4"], ["Z10", "W5"], ["Z11", "W6"], ["Z12", "W7"], ["Z13", "W8"], ["Z15", "W1"]].forEach(([s, d]) => { const v = at(s); if (v !== "" && isK(v)) ben[d] = v; });
+  if (txt("Y16") === "BILLING AND AUTH BY CODE") for (let i = 0; i < 5; i++) { const v = at(`AE${18 + i}`); if (typeof v === "number") ben[`X${COST_FIRST + i}`] = v; }
   if (txt("AD25") === "WEEKLY AVAILABILITY") for (let i = 0; i < 5; i++) ["AF", "AG"].forEach((c, j) => { const v = at(`${c}${27 + i}`); if (typeof v === "number") put(`${j ? "X" : "W"}${WK_FIRST + i}`, v); });
   if (txt("Y26") === "Type") {
     const rg = []; for (let r = 27; r <= 48; r++) if (AV_TYPE.includes(txt("Y" + r))) rg.push(["Y", "Z", "AA", "AB"].map(c => at(c + r)));
     rg.slice(0, AV_LAST - AV_FIRST + 1).forEach((v, i) => ["V", "W", "X", "Y"].forEach((c, j) => put(`${c}${AV_FIRST + i}`, v[j])));
   }
   const fb = old.getRange("U4"); fb.load("values"); await ctx.sync();
-  put("N7", txt("T1") === "Freebies allowed" && typeof fb.values[0][0] === "number" ? fb.values[0][0] : Math.max(0, 3 - used));
+  put("N6", txt("T1") === "Freebies allowed" && typeof fb.values[0][0] === "number" ? fb.values[0][0] : Math.max(0, 3 - used));
+  const mrnVal = at("A4"), mrn = normMrn(mrnVal);
+  if (mrn) await writeBen(ctx, benEntries({ mrn, mrnVal, tab: name }, k => ben[k]));
   await ctx.sync();
   /* check the transfer, then delete the earlier tab */
   const back = ws.getRange("A1:Y49"); back.load("values"); await ctx.sync();
@@ -1266,31 +1437,48 @@ async function rebuildTab(ctx, name) {
   if (!bad.length) { old.delete(); await ctx.sync(); }
   return { name, deleted: !bad.length, bad };
 }
-/* rebuilding deletes the earlier tabs, so it asks first */
-function setupClick() {
-  if (state.old.length && !state.templateOk) return toast("New Template must match the current layout before earlier tabs can be rebuilt.", true);
-  if (!state.old.length) return setupColumns();
+/* rebuilding deletes the earlier tabs, so it asks first. force: every active tracker, not only the ones that look off */
+function setupClick(force) {
+  if (!state.templateOk) return toast("New Template must have Time in T8 and Freebie Count in J6 before tabs can match it.", true);
+  if (!state.old.length) return setupColumns(force === true);
   const n = state.old.length;
-  showModal(`<h3>Update tabs</h3><p class="sub">${n} tab${n > 1 ? "s" : ""} (${state.old.map(esc).join(", ")}) will be rebuilt from New Template. Each earlier tab is deleted once every copied entry checks out on the new tab. If anything doesn't match, the earlier tab is kept as "(old)".</p>
+  showModal(`<h3>Match New Template</h3><p class="sub">${n} tab${n > 1 ? "s" : ""} (${state.old.map(esc).join(", ")}) will be rebuilt from New Template. Each earlier tab is deleted once every copied entry checks out on the new tab. If anything doesn't match, the earlier tab is kept as "(old)".</p>
     <p class="sub">To get a deleted tab back, use the workbook's version history (File > Info > Previous versions).</p>
     <div class="actions"><button class="pri" data-act="setupGo">Rebuild and delete</button><button data-mclose>Cancel</button></div>`);
 }
-async function setupColumns() {
-  if (POPOUT) return callPane("setupColumns", []);
+async function setupColumns(force) {
+  if (POPOUT) return callPane("setupColumns", [force]);
   try {
-    if (state.old.length && !state.templateOk) return toast("New Template must match the current layout before earlier tabs can be rebuilt.", true);
-    const res = [];
+    if (!state.templateOk) return toast("New Template must have Time in T8 and Freebie Count in J6 before tabs can match it.", true);
+    const stale = new Set(state.stale), courseOf = n => (state.patients.find(p => p.tab === n) || { course: 0 }).course;
+    /* oldest course first, so the newest course of an MRN writes its Benefits row last */
+    const names = (force ? state.patients.filter(p => !stale.has(p.tab)).map(p => p.tab) : [...state.fix.keys()].filter(n => n !== "New Template")).sort((a, b) => courseOf(a) - courseOf(b));
+    const res = [], matched = [];
     await Excel.run(async ctx => {
-      const ws = n => ctx.workbook.worksheets.getItem(n);
-      if (state.fix.has("New Template")) await ensureCost(ctx, ws("New Template"));
+      await benSheet(ctx);   // first: a PR formula written before the Benefits tab exists would turn into #REF!
+      if (force || state.fix.has("New Template")) await matchTab(ctx, "New Template");
       for (const n of state.old) res.push(await rebuildTab(ctx, n));
-      for (const n of state.fix.keys()) if (n !== "New Template") await ensureCost(ctx, ws(n));
+      for (const n of names) matched.push((await matchTab(ctx, n)).name);
+      /* the Benefits tab lists every tracker: finished ones in the previous layout keep their own cells, and get a copy here */
+      const rest = state.patients.filter(p => p.layout === 2 && stale.has(p.tab) && p.mrn && !state.ben.rows.has(p.mrn)).sort((a, b) => b.course - a.course)
+        .filter((p, i, a) => a.findIndex(q => q.mrn === p.mrn) === i);
+      for (const p of rest) {
+        const b = p.ben, cost = Object.fromEntries(BILL.flatMap((x, i) => [[`X${COST_FIRST + i}`, p.cost[i].after], [`Y${COST_FIRST + i}`, p.cost[i].before]]));
+        const vals = { W1: b.bidf, W4: b.dedNA ? "N/A" : b.dedRem, W5: b.oopNA ? "N/A" : b.oopRem, W6: b.mtr, W7: b.ext || "", W8: b.lastSched, ...cost };
+        await writeBen(ctx, benEntries(p, k => vals[k]));
+      }
       await ctx.sync();
     });
-    const kept = res.filter(x => !x.deleted), done = res.length - kept.length;
-    toast(!res.length ? "Tabs updated." : kept.length
-      ? `Tabs updated. ${done} earlier tab${done === 1 ? "" : "s"} deleted. Kept ${kept.map(x => `${x.name} (old)`).join(", ")}: ${kept.map(x => x.bad.slice(0, 3).join(", ")).join("; ")} didn't copy over. Check those cells, then delete the "(old)" tab.`
-      : `Tabs updated. ${done} tab${done === 1 ? "" : "s"} rebuilt from New Template and the earlier ${done === 1 ? "tab" : "tabs"} deleted.`, kept.length > 0);
+    await refresh();
+    /* the log rows follow New Template's formatting (dated rows like row 10, undated ones like the template's blank rows), and measures are placed */
+    const done = state.patients.filter(p => matched.includes(p.tab) || res.some(x => x.name === p.tab));
+    await formatLogs(done.map(p => ({ tab: p.tab, touched: p.rows.map(r => r.row) })));
+    await placeMeasures(done.filter(p => p.d.active));
+    const kept = res.filter(x => !x.deleted), rebuilt = res.length - kept.length;
+    const parts = [matched.length ? `${matched.length} tab${matched.length === 1 ? "" : "s"} now match New Template` : "", rebuilt ? `${rebuilt} earlier tab${rebuilt === 1 ? "" : "s"} rebuilt and deleted` : ""].filter(Boolean);
+    toast(kept.length
+      ? `${parts.join(", ") || "Tabs updated"}. Kept ${kept.map(x => `${x.name} (old)`).join(", ")}: ${kept.map(x => x.bad.slice(0, 3).join(", ")).join("; ")} didn't copy over. Check those cells, then delete the "(old)" tab.`
+      : `${parts.join(", ") || "Tabs already match New Template"}.`, kept.length > 0);
     await refresh();
   } catch (e) { fail(e); }
 }
@@ -1343,15 +1531,16 @@ async function addPatient(d) {
       const ex = wsAll.getItemOrNullObject(name), tpl = wsAll.getItemOrNullObject("New Template"); await ctx.sync();
       if (!ex.isNullObject) throw new Error(`A tab named ${name} already exists.`);
       if (tpl.isNullObject) throw new Error("There is no New Template tab to copy.");
-      if (state.fix.has("New Template")) { await ensureCost(ctx, tpl); state.fix.delete("New Template"); }
       const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name;
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
-      set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N6", d.apAssess);
+      set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N7", d.apAssess);
       set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
       ws.getRange("D7").values = [["Pending Start"]];
       if (d.apHome) ws.getRange("S9").values = [[`Home Clinic: ${d.apHome}`]];
-      set("W1", bidf); set("W4", ded); set("W5", oop); set("W6", d.apMtr); set("W7", 0);
-      d.cost.forEach(([x, y], i) => { set(`X${COST_FIRST + i}`, x === "" ? "" : +x); set(`Y${COST_FIRST + i}`, y === "" ? "" : +y); });
+      /* benefits and cost by code go on the patient's Benefits row */
+      const mrn = normMrn(d.apMrn), bv = { W1: bidf, W4: ded, W5: oop, W6: d.apMtr, W7: 0 };
+      d.cost.forEach(([x, y], i) => { bv[`X${COST_FIRST + i}`] = x === "" ? "" : +x; bv[`Y${COST_FIRST + i}`] = y === "" ? "" : +y; });
+      if (mrn) await writeBen(ctx, Object.entries(bv).filter(([, v]) => v !== "" && v != null).map(([key, v]) => ({ mrn, mrnVal: d.apMrn, tab: name, key, v })));
       d.week.forEach(([f, t], i) => { if (f || t) ws.getRange(`W${WK_FIRST + i}:X${WK_FIRST + i}`).values = [[tf(f), tf(t)]]; });
       const rg = d.ranges.map(w => ["Unavailable", inputToSerial(w.from), inputToSerial(w.to) || inputToSerial(w.from), w.note || ""]).slice(0, AV_LAST - AV_FIRST + 1);
       if (rg.length) ws.getRange(`V${AV_FIRST}:Y${AV_FIRST + rg.length - 1}`).values = rg;
@@ -1416,29 +1605,31 @@ async function onBenFile(e) {
 function renderBenPlan() {
   const plan = state.benPlan, box = $("benPlan"); if (!plan) { box.hidden = true; return; }
   const show = v => v === "" || v == null ? "blank" : typeof v === "number" ? money(v) : esc(v);
-  const n = plan.rows.reduce((s, r) => s + r.changes.filter(c => c.on && c.kind !== "same").length, 0);
+  const n = plan.rows.reduce((s, r) => s + r.changes.filter(c => c.on && c.kind !== "same").length, 0), st = benStamps(plan).length;
   const rows = plan.rows.map((r, i) => {
     const x = r.rec, info = [x.payer, x.plan, x.copay !== "" ? `copay $${x.copay}` : "", x.coins ? `coinsurance ${x.coins}` : "", x.flag].filter(Boolean).map(esc).join(" · ");
-    const ch = r.changes.filter(c => c.kind !== "same").map((c, j) => `<label class="chk"><input type="checkbox" data-benrow="${i}" data-benc="${r.changes.indexOf(c)}" ${c.on ? "checked" : ""}> ${esc(c.label)} (${c.cell}): ${show(c.from)} &rarr; <b>${show(c.to)}</b>${c.kind === "change" ? ' <span class="chip amb">differs</span>' : ""}</label>`).join("");
+    const ch = r.changes.filter(c => c.kind !== "same").map((c, j) => `<label class="chk"><input type="checkbox" data-benrow="${i}" data-benc="${r.changes.indexOf(c)}" ${c.on ? "checked" : ""}> ${esc(c.label)} (${benTarget(r.tab) && isBenKey(c.cell) ? BEN_SHEET + " tab" : c.cell}): ${show(c.from)} &rarr; <b>${show(c.to)}</b>${c.kind === "change" ? ' <span class="chip amb">differs</span>' : ""}</label>`).join("");
     const same = r.changes.filter(c => c.kind === "same").map(c => esc(c.label)).join(", ");
     return `<div class="item${r.note && !r.changes.length ? " amb" : ""}"><b>${esc(r.tab)}</b> <span class="sub">MRN ${esc(r.mrnRaw)}</span><div class="sub">${info}</div>${ch}${same ? `<div class="sub">Already matches: ${same}</div>` : ""}${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}</div>`;
   }).join("");
   const un = plan.unmatched.length ? `<div class="hint">${plan.unmatched.length} patient${plan.unmatched.length > 1 ? "s" : ""} in the file ha${plan.unmatched.length > 1 ? "ve" : "s"} no tracker tab here (MRN ending ${plan.unmatched.map(r => esc(String(r.mrn).slice(-4))).join(", ")}).</div>` : "";
   const other = plan.otherService ? ` ${plan.otherService} patient${plan.otherService === 1 ? "" : "s"} booked only for ESK left out.` : "";
   box.innerHTML = `<div class="hint">${esc(plan.file)}: ${plan.rows.length} tracker tab${plan.rows.length === 1 ? "" : "s"} matched.${other}</div>${rows || '<div class="hint">No tabs matched by MRN.</div>'}${un}
-    <div class="actions"><button id="benApply" ${n ? "" : "disabled"}>Apply ${n} change${n === 1 ? "" : "s"}</button><button id="benClear">Clear</button></div>`;
+    <div class="actions"><button id="benApply" ${n || st ? "" : "disabled"}>${n ? `Apply ${n} change${n === 1 ? "" : "s"}` : "Mark as checked today"}</button><button id="benClear">Clear</button></div>`;
   box.hidden = false;
   box.querySelectorAll("[data-benrow]").forEach(cb => cb.onchange = () => { plan.rows[+cb.dataset.benrow].changes[+cb.dataset.benc].on = cb.checked; renderBenPlan(); });
   $("benApply").onclick = applyBenPlan;
   $("benClear").onclick = () => { state.benPlan = null; renderBenPlan(); };
 }
+/* every patient the Sohar file verified (amounts in hand, even when they already match) gets Last updated = today on the Benefits tab */
+const benStamps = plan => plan.rows.filter(r => r.changes.length && benTarget(r.tab)).map(r => ({ tab: r.tab, a: BEN_STAMP }));
 async function applyBenPlan() {
-  const ops = SoharBenefits.benefitOps(state.benPlan);
-  if (!ops.length) return;
+  const ops = SoharBenefits.benefitOps(state.benPlan), st = benStamps(state.benPlan);
+  if (!ops.length && !st.length) return;
   try {
-    await applyOps(ops);
+    await applyOps([...ops, ...st]);
     const tabs = new Set(ops.map(o => o.tab)).size;
-    toast(`Benefits imported: ${ops.length} cell${ops.length === 1 ? "" : "s"} on ${tabs} tab${tabs === 1 ? "" : "s"}.`);
+    toast(`Benefits imported: ${ops.length} cell${ops.length === 1 ? "" : "s"} on ${tabs} tab${tabs === 1 ? "" : "s"}${st.length ? `. Last updated set to today for ${st.length} patient${st.length === 1 ? "" : "s"}` : ""}.`);
     state.benPlan = null; renderBenPlan(); await refresh();
   } catch (e) { fail(e); }
 }
@@ -1588,7 +1779,7 @@ function planTab(p, appts, from, to, o) {
     if (r.miss !== b.miss) ops.push([`M${r.row}`, r.miss ? "x" : ""]);
     if (r.note !== b.note) ops.push([`S${r.row}`, r.note]);
   });
-  if (fbDelta) ops.push(["N7", Math.max(0, p.d.left - fbDelta)]);   // NextGen "Waived" = a freebie used
+  if (fbDelta) ops.push([p.fbCell, Math.max(0, p.d.left - fbDelta)]);   // NextGen "Waived" = a freebie used
   // the log reads top to bottom by date (undated open rows last; an undated treated or missed row stays after the visit above it),
   // and C numbers the treatments (MT, Daily, Taper, MTR) that weren't missed, so D (= D2 - C) is what's left
   let lk = -Infinity, lt = 0;
@@ -1709,7 +1900,7 @@ function renderPlan() {
   if (sorted.length) h += `<div class="sub" style="margin-top:6px">Visit log re-sorted by date, with Tx # renumbered: ${sorted.map(p => esc(p.name)).join(", ")}.</div>`;
   if (renum.length) h += `<div class="sub" style="margin-top:6px">Tx # renumbered: ${renum.map(p => esc(p.name)).join(", ")}.</div>`;
   const nf = full.reduce((n, p) => n + p.none, 0);
-  if (nf) h += `<div class="item red" style="margin-top:6px">No row for ${nf} booked visit${nf === 1 ? "" : "s"} on ${full.map(p => esc(p.name)).join(", ")}: the PR formula in A10 is missing. Run Update tabs on the banner, then import again.</div>`;
+  if (nf) h += `<div class="item red" style="margin-top:6px">No row for ${nf} booked visit${nf === 1 ? "" : "s"} on ${full.map(p => esc(p.name)).join(", ")}: the PR formula in A10 is missing. Run Match New Template on the banner, then import again.</div>`;
   const um = ch.filter(p => p.unmissed), dup = plans.reduce((n, p) => n + (p.dup || 0), 0), disc = state.plan.disc || [];
   if (um.length) h += `<div class="sub" style="margin-top:6px">Missed visits undone, since NextGen now shows them booked or kept: ${um.map(p => `${esc(p.name)} ${p.unmissed}`).join(", ")}.</div>`;
   if (dup) h += `<div class="sub" style="margin-top:6px">${dup} visit${dup === 1 ? " is" : "s are"} listed twice on the report (same day, type and time) and ${dup === 1 ? "gets" : "get"} one row.</div>`;
@@ -1828,7 +2019,7 @@ function callPane(fn, args) {
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: ops => applyOps(ops), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
-  writeChairSheet: o => writeChairSheet(o), setupColumns: () => setupColumns(), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
+  writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
   saveSetting: (k, v) => saveSetting(k, v)
 };
 async function onPopMessage(arg) {
@@ -1980,7 +2171,8 @@ Office.onReady(info => {
     if (el.dataset.dk && el.tagName === "SELECT" && draftInput(el)) renderDash();
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk) draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.classList.remove("on")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
-  $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = setupClick; $("btnMeas").onclick = placeMeasuresClick;
+  $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = () => setupClick(false); $("btnMeas").onclick = placeMeasuresClick;
+  $("btnMatch").onclick = () => setupClick(true);
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };

@@ -36,7 +36,7 @@ The files contain no PHI. `.gitignore` blocks spreadsheets and CSVs so a real wo
 **Try it locally:**
 1. `npm run set-host -- https://localhost:3000` (don't commit that change), `npm run certs` (once), then `npm start`.
 2. In Excel on the web: Insert > Add-ins > Upload My Add-in > `manifest.xml`.
-3. Open the add-in from the ribbon (Home > TMS). If tabs need updating, the banner offers **Update tabs**.
+3. Open the add-in from the ribbon (Home > TMS). If tabs don't match New Template, the banner offers **Match New Template**.
 
 **Deploy for the team:**
 1. Host the folder on an internal HTTPS location approved by Product/Engineering.
@@ -47,7 +47,7 @@ The files contain no PHI. `.gitignore` blocks spreadsheets and CSVs so a real wo
 
 ## Where things live on a patient tab
 
-The template owns the layout. The add-in reads and writes these cells and adds only the **Before ded.** column (Y11:Y16).
+New Template owns the layout. The add-in reads and writes these cells; benefits and cost by code live on the **Benefits** tab, one row per MRN.
 
 | Cells | Purpose |
 |---|---|
@@ -56,23 +56,23 @@ The template owns the layout. The add-in reads and writes these cells and adds o
 | E2 / E4 / E6 | Provider (set from the appointment list on import), care navigator (TAS), insurance. |
 | F4:G4, G2, G6 | Auth start and expiry, update protocol by, progress note sent on. |
 | J2:O4, N5 | Protocol rows 1 to 3 (Hz, pulses per train, trains, wait; N calculates minutes; O is the site) and the total duration. |
-| N6 / N7 | Auth assessment; **Remaining Freebies**. Using a freebie takes one off N7, undoing it gives it back. |
-| A10:A49 (PR) | The visit log is A10:T49 in the template and can grow on import (see Import). Patient responsibility per visit, by visit type in L (follow-ups by whether Notes says "tele"). With a deductible in W4, visits charge the Before ded. cost in date order until the deductible is used up; the visit that crosses it pays what is left plus PR on the rest; then PR. Missed visits show no charge. |
+| N6 / N7 | **Freebie Count** (freebies left, 3 on a new tab); auth assessment. Using a freebie takes one off N6, undoing it gives it back. |
+| A10:A49 (PR) | The visit log is A10:T49 in the template and can grow on import (see Import). Patient responsibility per visit, by visit type in L (follow-ups by whether Notes says "tele"). It reads the patient's Benefits row by the MRN in A4 (blank when there is none). With a deductible remaining, visits charge the before-deductible cost in date order until the deductible is used up; the visit that crosses it pays what is left plus PR on the rest; then PR. Missed visits show no charge. |
 | B / C / E / F, H, J | Treating technician, Tx #, date, pulses Left / Right / Other. Pulses entered = treatment delivered. |
 | L / M / O / P, Q / R / S / T | Visit type, Miss x, Action, PHQ-9 and GAD-7 (x = placeholder), Alt Clinic x, Notes, appointment time. |
 | S (Notes) | "Tele" marks a telehealth follow-up. A missed visit's freebie decision is "Freebie used" or "Freebie waived". The MT row also holds the MT details. "Schedule provided m/d" is written when a schedule is given. |
 | S9 | Home Clinic. Anything other than SRL makes the patient external. |
-| W1 / W4 / W5 | BIDF estimated course cost; deductible remaining and out-of-pocket max remaining, each an amount or **N/A**. |
-| W6 / W7 / W8 | MTR approved (with D4, decides whether 90869 is authorized; set to Yes on refresh when D4 is 1 or more); extensions added; last schedule provided. |
-| V11:Y16 | Cost by code: 90867 MT, 90868 Daily, 90869 MT redo, 99214 F/U in-office and telehealth. X is PR, Y is the cost before the deductible (only when one applies). |
+| Row after the log (B: TX SUMMARY) | Closes the log. Ticking the checkbox in A turns the row green. |
 | W20:X24, V29:Y48 | Weekly availability (earliest and latest start, Monday to Friday) and dates (Unavailable / Available, from, to, reason). |
 
-**Update tabs** (the banner) adds the Before ded. column and the PR formula to New Template and every tab. A PR cell is only replaced when it is blank or still holds a cost-table lookup; a typed amount stays. Tabs in an earlier layout (for example the pilot's Freebie and Time columns in T and U) are rebuilt: a fresh copy of New Template gets their entries, benefits, costs and availability, and every copied entry is read back from the new tab. When they all match, the earlier tab is deleted; if anything does not, it stays as "NAME (old)" and the add-in names the cells to check. Update tabs asks before rebuilding. A deleted tab can be recovered from the workbook's version history.
+**Benefits tab** (one row per MRN, the newest course's tab in Patient): BIDF estimated course cost; deductible remaining and out-of-pocket max remaining (each an amount or **N/A**); MTR approved (with D4, decides whether 90869 is authorized; set to Yes on refresh when D4 is 1 or more); extensions added; last schedule provided; cost by code (PR, then before the deductible) for 90867 MT, 90868 Daily, 90869 MT redo, 99214 F/U in-office and telehealth; **Last updated**, set to today whenever the add-in or a Sohar import changes or verifies the row. The add-in still calls these W1, W4 to W8 and X12:Y16 inside (the cells they used to have), and sends those writes to the Benefits row.
+
+**Match New Template** (the banner, or Settings for every active tab) brings active trackers (see the cutoff in Settings) in line with New Template: header formats, Freebie Count in N6 and the auth assessment in N7, benefits moved from V1:Y16 to the Benefits tab (availability stays on the tab), the PR formula over the whole log, the template's formulas on log rows that lost them, the TX SUMMARY row and its checkbox, New Template's conditional formats (colors by visit type in L, Action in O, Miss, Alt Clinic, auth dates) and dropdowns stretched to the last log row, then visit-log formatting and measures. The log's last row is the row above TX SUMMARY, so rows added by hand count. Rows an import adds get the same rules. A PR cell is only replaced when it is blank or still holds a cost-table lookup; a typed amount stays. Tracker tabs from before the Benefits tab are still read until they're matched; finished ones are left as they are, and their benefits are copied to the Benefits tab so it lists every patient. Tabs in an earlier layout (for example the pilot's Freebie and Time columns in T and U) are rebuilt: a fresh copy of New Template gets their entries, benefits, costs and availability, and every copied entry is read back from the new tab. When they all match, the earlier tab is deleted; if anything does not, it stays as "NAME (old)" and the add-in names the cells to check. Match New Template asks before rebuilding. A deleted tab can be recovered from the workbook's version history.
 
 ## Layout
 
 - **Header:** the clinic logo and the workbook's name (for example "San Rafael Pt Tracking - MagV"), with the tracker device under it. **Import list**, **Full screen**, **Settings** (gear) and **Refresh** sit at the top right.
-- **Banners:** the stale appointment list (with the NextGen directions), new patients needing a tracker, tabs left untouched, and tabs needing updates. Each banner can be dismissed for the session or snoozed for 3 hours.
+- **Banners:** the stale appointment list (with the NextGen directions), new patients needing a tracker, tracker tabs left untouched (tabs not named by LASFIR are never mentioned), and tabs that don't match New Template. Each banner can be dismissed for the session or snoozed for 3 hours.
 - **Main menu:**
 
 | Menu | What it holds |
@@ -145,7 +145,7 @@ The add-in rebuilds this sheet in the Patients roster layout for the current wee
 - **Preview:** upload the file and the preview appears with Apply below it.
 - **Device:** each patient's device is decided by where their daily treatments are booked. A Brainsway patient's MT on a provider schedule is ignored on a MagV tracker.
 - **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule uses E2.
-- **Every Expected visit gets a row:** free rows fill in row order, so the log stays in date order. When a pool runs out (no-shows and MT redos use rows), rows are inserted in A:T only, after the visits they follow and never below the last log row, so Excel stretches the PR formulas, header counts and conditional formats over them. Each new row copies a row of the same visit type (fill, borders, validation, height, formulas) with the typed cells blank. The add-in finds a grown log from the range in A10's PR formula, so a tab without that formula (Update tabs adds it) is not grown and the preview says so.
+- **Every Expected visit gets a row:** free rows fill in row order, so the log stays in date order. When a pool runs out (no-shows and MT redos use rows), rows are inserted in A:T only, after the visits they follow and never below the last log row, so Excel stretches the PR formulas, header counts and conditional formats over them. Each new row copies a row of the same visit type (fill, borders, validation, height, formulas) with the typed cells blank. The add-in finds a grown log from the range in A10's PR formula, so a tab without that formula (Match New Template adds it) is not grown and the preview says so.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations (any date) have their date and time cleared so the row is free for another visit, unless the patient is still booked or seen that day. A Kept visit on or after the tab's first dated row that has no row that day gets one, with its date and time, so the pulses can be entered.
 - **Order and Tx #:** after every import the visit log reads top to bottom by date (open rows with no date last), so a follow-up sits between the treatments around it. Only the typed cells move (B, C, E, F, H, J, L to T); the formulas in A, D, G, I and K stay on their rows. C numbers MT, Daily, Taper and MTR rows from 1 down the log, skipping missed visits and follow-ups, so D (D2 minus C) is the treatments left. The preview lists the tabs re-sorted or renumbered.
 - **Formatting follows the dates:** after the writes, every log row with a date in E takes row 10's formatting (fill, font, borders, alignment, number formats), and a row without one takes New Template's blank (gray) row for that position, the last two rows mapping to its last two. Rows the import inserted, re-dated or re-sorted always follow; other rows only when they have no fill of their own, so a hand-colored row is left alone. Cell properties only: the conditional formats (MT, MTR, F/U, missed highlights) and validation stay. The same pass runs once each time the pane opens and from **Settings > Fix visit-log formatting**.
@@ -159,8 +159,8 @@ The add-in rebuilds this sheet in the Patients roster layout for the current wee
 Import list > **Import Sohar benefits** takes the "Benefits (TMS Tracker)" file from the Sohar Eligibility add-in (or its Sohar Results sheet saved as CSV; discovery rows are ignored). Matching and the plan live in `benefits.js`, which has tests in `tests/` (`npm test`).
 
 - **Matching:** by MRN (A4), ignoring punctuation and leading zeros. If a patient has more than one course, the open tab with the highest course number is used. The latest Sohar result per MRN wins.
-- **What it writes:** W4 deductible remaining (N/A when the plan has no deductible), W5 out-of-pocket max remaining, and E6 insurance (payer and plan) only when E6 is blank. Copay and coinsurance are shown for reference; the cost table is not changed.
-- **Blank cells are filled by default.** W4 and W5 are the amounts at the start of the course (column A's PR formula subtracts visits charged since), so a tab that already has a different amount is shown with both values and left unticked. Tick it only if the tracker's number is wrong.
+- **What it writes:** deductible remaining (N/A when the plan has no deductible) and out-of-pocket max remaining on the patient's Benefits row, and E6 insurance (payer and plan) only when E6 is blank. Every verified patient gets **Last updated** = today, even when the amounts already match. Copay and coinsurance are shown for reference; the cost table is not changed.
+- **Blank cells are filled by default.** Deductible and out-of-pocket max remaining are the amounts at the start of the course (column A's PR formula subtracts visits charged since), so a tab that already has a different amount is shown with both values and left unticked. Tick it only if the tracker's number is wrong.
 - **Not imported:** ineligible or errored verifications (the preview says so), and patients with no tracker tab (listed by the last four MRN digits).
 - Nothing changes until **Apply**.
 
