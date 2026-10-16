@@ -139,10 +139,28 @@ const billIdx = r => r.type === "MT" ? 0 : r.type === "Daily" || r.type === "Tap
 
 /* ---------- UI helpers ---------- */
 let toastTimer;
-function toast(msg, err) {
-  if (pop.dlg && pop.calls > 0) toChild({ k: "toast", msg, err: !!err });   // a pop-out asked for this action: show the result there too
-  const t = $("toast"); t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", err ? 9000 : 4500); }
-const fail = e => { console.error(e); toast(e.message || String(e), true); };
+/* sticky: an error that stays until closed, with Copy, so its exact text can be passed on */
+function toast(msg, err, sticky) {
+  if (pop.dlg && pop.calls > 0) toChild({ k: "toast", msg, err: !!err, sticky: !!sticky });   // a pop-out asked for this action: show the result there too
+  const t = $("toast"); t.className = err ? "err" : ""; t.style.display = "block"; clearTimeout(toastTimer);
+  if (!sticky) { t.textContent = msg; toastTimer = setTimeout(() => t.style.display = "none", err ? 9000 : 4500); return; }
+  t.innerHTML = '<div class="tmsg"></div><div class="tact"><button class="sm" data-tcopy>Copy</button><button class="sm" data-tclose>Close</button></div>';
+  const m = t.querySelector(".tmsg"); m.textContent = msg;
+  t.querySelector("[data-tclose]").onclick = () => { t.style.display = "none"; };
+  t.querySelector("[data-tcopy]").onclick = async e => {
+    let ok = false; try { await navigator.clipboard.writeText(msg); ok = true; } catch { /* select it instead */ }
+    if (!ok) { const r = document.createRange(); r.selectNodeContents(m); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+    e.target.textContent = ok ? "Copied" : "Press Ctrl+C";
+  };
+}
+/* failStep names what was being done; Office errors add their code and the call that failed (for example Range.values) */
+let failStep = "";
+const fail = e => {
+  console.error(e);
+  const dbg = e && e.debugInfo, where = dbg && dbg.errorLocation ? ` at ${dbg.errorLocation}` : "";
+  const code = e && e.code && e.code !== e.message ? ` [${e.code}${where}]` : where ? ` [${where.slice(4)}]` : "";
+  toast(`${failStep ? failStep + ": " : ""}${(e && e.message) || String(e)}${code}`, true, true); failStep = "";
+};
 function showModal(html) { $("modalBody").innerHTML = html; $("modal").hidden = false; const f = $("modalBody").querySelector("button"); if (f) f.focus(); }
 function closeModal() { $("modal").hidden = true; $("modalBody").innerHTML = ""; }
 
@@ -1381,9 +1399,10 @@ const MAP_RE = { mMrn: /^mrn$/i, mDate: /appt\s*date|appointment\s*date/i, mTime
 async function onFile(e) {
   const f = e.target.files[0]; if (!f) return;
   try {
+    failStep = "Reading the file";
     const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
     state.file = parseReport(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }), f.name);
-    await buildPlan();
+    failStep = "Building the preview"; await buildPlan(); failStep = "";
   } catch (err) { fail(err); }
 }
 function parseReport(all, name, saved) {
@@ -1723,20 +1742,25 @@ function renderPlan() {
 async function applyPlan() {
   const plan = state.plan, ch = plan.plans.filter(p => p.changed), reflow = new Set(plan.plans.filter(p => p.reflow).map(p => p.name));
   try {
+    failStep = "Adding visit-log rows";
     await growLogs(ch.filter(p => p.ins.length).map(p => ({ tab: p.name, ins: p.ins })));   // rows first: the ops address the grown log
+    failStep = "Writing visits";
     await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
+    failStep = "Putting the log in date order";
     await arrangeLogs(ch.filter(p => p.arrange).map(p => ({ tab: p.name, ...p.arrange })));   // it moves the rows the ops just wrote
+    failStep = "Formatting the visit logs";
     await formatLogs(ch.map(p => ({ tab: p.name, touched: p.touched })));                       // last: formatting follows the dates where they ended up
     const f = state.file;
-    if (!plan.ps && !f.saved) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); await saveList(f); }
+    if (!plan.ps && !f.saved) { const rep = { asOf: f.asOf, asOfMin: f.asOfMin, importedOn: todaySerial() }; state.report = rep; await saveSetting("tms_report", rep); failStep = `Saving the ${LIST_SHEET} tab`; await saveList(f); }
     state.plan = null; $("planBox").hidden = true; $("file").value = ""; state.file = plan.ps ? null : { ...f, saved: true };
     await refresh();
     const sug = state.patients.filter(p => p.d.suggest);
+    failStep = "Updating statuses and measures";
     if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })));
     const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab))) : 0;
     toast(`Updated ${ch.length} tab${ch.length === 1 ? "" : "s"}${sug.length ? `, ${sug.length} status${sug.length > 1 ? "es" : ""}` : ""}${nx ? `, measures re-planned for ${reflow.size}` : ""}.`);
     if (sug.length || reflow.size) await refresh();   // the refresh above is current unless statuses or measures were just written
-    show("sch");
+    failStep = ""; show("sch");
   } catch (e) { fail(e); }
 }
 
@@ -1865,7 +1889,7 @@ function initPopout() {
     } else if (m.k === "ack") {
       const w = rpc.wait.get(m.id); if (!w) return; rpc.wait.delete(m.id);
       if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
-    } else if (m.k === "toast") toast(m.msg, m.err);
+    } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
   }, () => Office.context.ui.messageParent(JSON.stringify({ k: "ready" })));
 }
 /* Full screen: the tracker floats inside the Excel page over the workbook; the menu sits on frosted glass over a blurred page (body.fs).
