@@ -36,7 +36,7 @@ Do this once per clinic workbook. Settings save with the workbook, so everyone u
 2. Check **This clinic (NextGen location)**, for example San Rafael. Visits booked at other locations are marked as another clinic.
 3. Check **Tracker device**. "From the workbook name" works when the name contains MagV or Brainsway; otherwise pick MagVenture or Brainsway.
 4. Leave the warning windows at their defaults unless your clinic wants different ones: auth warning 14 calendar days, protocol warning 2 business days, recent visit window 10 days.
-5. If a banner says tabs need updating, select **Update tabs**. It adds the template's newest columns to every patient tab without touching entries. Tabs in an older layout are rebuilt on a fresh copy and checked cell by cell before the old one is removed; anything that doesn't match is kept as "NAME (old)" for you to review.
+5. If a banner says tabs don't match New Template, select **Match New Template**. Active trackers get New Template's layout, colors by visit type, dropdowns, borders and TX SUMMARY checkbox over every log row, and their benefits move to the **Benefits** tab (one row per MRN, with Last updated). Entries aren't touched. **Settings > Match New Template (all active tabs)** runs it on every active tracker. Tabs in an older layout are rebuilt on a fresh copy and checked cell by cell before the old one is removed; anything that doesn't match is kept as "NAME (old)" for you to review.
 6. On the **Clinic Schedule** tab, enter chair hours and holiday closures (column G) if they are not there yet. The add-in uses them for the chair view and closure warnings.
 
 ## Finding your way around
@@ -105,8 +105,9 @@ After a Sohar verification run, the Sohar Eligibility add-in can fill in each tr
 1. In the Sohar Eligibility workbook, select **Download benefits CSV** (step 5), or **Benefits (TMS Tracker)** in full screen. In Excel on the web the rows land on the **Export** sheet; use File > Export > Download as CSV.
 2. In this panel, select **Import list**, scroll to **Import Sohar benefits**, and choose the file.
 3. Review the preview. Each tab shows the payer, plan, copay and coinsurance, and what will change:
-   - Blank **Deductible remaining** (W4), **Out-of-pocket max remaining** (W5) and **Insurance** (E6) are ticked to fill.
-   - If the tab already has a different amount, it is shown unticked with both numbers. W4 and W5 are the amounts at the start of the course, so only tick it if the tracker's number is wrong.
+   - Blank **Deductible remaining**, **Out-of-pocket max remaining** (both on the Benefits tab) and **Insurance** (E6) are ticked to fill.
+   - If the tracker already has a different amount, it is shown unticked with both numbers. These are the amounts at the start of the course, so only tick it if the tracker's number is wrong.
+   - Applying sets **Last updated** to today on the Benefits tab for every verified patient, even when nothing changed.
    - Inactive or errored verifications are not imported; the preview says to check coverage.
 4. Select **Apply**. Copay and coinsurance are for reference; set the cost table yourself.
 
@@ -157,12 +158,12 @@ The sheet is view only and is rebuilt whenever something changes. Make changes o
 |---|---|
 | No TMS button on the Home tab | Upload the manifest again (Install, steps 2 to 4). Make sure you're in Excel on the web, not the desktop app. |
 | "This doesn't look like the 1 Appt List - ALL TMS report" | Run the memorized report named exactly **1 Appt List - ALL TMS** and upload that export unchanged. |
-| A banner says tabs were left untouched | Its layout doesn't match the template. Use **Update tabs**, or check that A1 says PATIENT: and A3 says MRN:. |
+| A banner says tabs were left untouched | Its layout doesn't match the template. Use **Match New Template**, or check that A1 says PATIENT: and A3 says MRN:. |
 | The schedule doesn't show | Close and reopen it from the card's ⋯ menu or the patient view; it opens over the add-in, not in a separate window. |
 | Numbers look out of date | Select **Refresh** (top right). |
 | Active Patients didn't change | It skips the rewrite when nothing changed. Use **Settings > Rebuild Active Patients sheet**. |
 | The Appt List tab couldn't be read | Import the list again. |
-| A tab was deleted during Update tabs and you need it back | Restore it from the workbook's version history (File > Info > Previous versions). |
+| A tab was deleted during Match New Template and you need it back | Restore it from the workbook's version history (File > Info > Previous versions). |
 
 ## Help
 

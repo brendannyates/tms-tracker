@@ -256,7 +256,7 @@ body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
 
 <div id="setup" class="banner" hidden>
   <span id="setupMsg"></span>
-  <div class="actions" style="margin-top:6px"><button class="pri" id="btnSetup">Update tabs</button></div>
+  <div class="actions" style="margin-top:6px"><button class="pri" id="btnSetup">Match New Template</button></div>
   <span class="bctl"><button class="sm" data-banner="setup" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="setup" data-bact="dismiss">Dismiss</button></span>
 </div>
 
@@ -289,9 +289,9 @@ body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
       <div><label for="cfgProto">Protocol warning (business days)</label><input id="cfgProto" type="number" min="1"></div>
       <div><label for="cfgRecent">Recent visit window (days)</label><input id="cfgRecent" type="number" min="1"></div>
       <div><label for="cfgOpenTab">Clicking a name on today's schedule</label><select id="cfgOpenTab"><option value="on">Also opens their Excel tab</option><option value="off">Side bar only</option></select></div>
-      <div><label for="cfgCutoff">Update tabs: leave out trackers with no visit since</label><input id="cfgCutoff" type="date"><p class="sub" id="cutoffNote"></p></div>
+      <div><label for="cfgCutoff">Updates and Match New Template: leave out trackers with no visit since</label><input id="cfgCutoff" type="date"><p class="sub" id="cutoffNote"></p></div>
     </div>
-    <div class="actions"><button id="btnApRebuild">Rebuild Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button><button id="btnFmt">Fix visit-log formatting</button></div>
+    <div class="actions"><button id="btnApRebuild">Rebuild Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMatch">Match New Template (all active tabs)</button></div>
     <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
   </div>
 </section>
