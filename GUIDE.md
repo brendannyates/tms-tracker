@@ -51,7 +51,7 @@ The menu runs down the left in full screen and across the top in the panel.
 | Courses | Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Courses in the menu counts courses that need attention; it turns red when one needs action now. |
 | Chairs | Each chair's device, coil, last service and today's count, with **Mark unavailable**; the chair hours from Clinic Schedule; the protocol list. |
 | Import | The NextGen appointment list and Sohar benefits. |
-| Settings | Clinic settings and the workbook tools. |
+| Settings | Clinic settings, Appearance (Light, Dark or Match Windows, for this computer) and the workbook tools. **Dark mode** in the menu switches it too. |
 
 **Refresh** re-reads every tab. **Full screen** floats the tracker over the Excel page; **Exit full screen** closes it. Keep the panel open while you use it: full screen saves through the panel.
 
@@ -141,6 +141,7 @@ What the import does:
 - Discontinued tabs are not updated. The preview names any that NextGen still has booked.
 - Patients booked on the other device are left out (a BrainsWay patient doesn't appear on a MagV tracker).
 - Measures are re-planned only after a real disruption: an MTR or F/U moved, or 2 or more misses in a week.
+- PHQ-9 and GAD-7 are due on the MT, MTR, every F/U and the last treatment, and on the 5th treatment after the last measures in between. One that would land within 7 days of a required one is skipped. If they were taken a day late, enter the scores on the day they were taken: the next replan clears the earlier day's x's and counts from there. If they weren't taken at all, the next visit gets them. **Settings > Replan measures and pulse totals** runs it now, and also fixes running pulse totals that restart at 0.
 - The list is kept on the **Appt List** tab, replaced each time you apply. Closing the panel doesn't lose it: the chairs, the new-patient banner and a new tab's dates keep working, and **Preview again** reruns it.
 
 After applying, delete the exported file from your computer. The workbook keeps what it needs.

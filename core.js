@@ -120,5 +120,54 @@
     return s.replace(/^(magv|mag\s?venture|brainsway|bw)\s*(\d+)$/i, (m, a, b) => `${/^b/i.test(a) ? (a.length <= 2 ? "BW" : "BrainsWay") : "MagV"} ${b}`) || String(name || "");
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel };
+  /* ---------- measures placeholders (x in PHQ-9 and GAD-7, P and Q) ----------
+     Required on MT, MTR, F/U and the last treatment. Between them, on the 5th treatment after the last measures (MT and MTR count
+     as treatments, F/U doesn't), unless a required one is 7 days away or less: one collection covers both, so patients aren't asked
+     too often. A placeholder from an earlier day that wasn't collected is cleared. If the next row has scores, they were taken a
+     day late and that row is the new start (it gets the Measures flag); if nothing was collected after it, the next visit takes the
+     measures and the count restarts there. An x already on the next visit stays, so a second run doesn't move it. Only dated, upcoming, unmissed visits get placeholders; scores are never touched, and
+     an x or Measures flag on an upcoming visit the plan doesn't want is removed. Daily, Taper and F/U rows carry the Measures flag
+     in O (when O is free); MT and MTR rows only get the x's. Returns [cell, value] pairs. */
+  const MEAS_EVERY = 5, MEAS_WINDOW = 7;
+  function planMeasures(rows, total, today) {
+    rows = rows.filter(r => r.type || typeof r.tx === "number");
+    const isTx = r => r.type !== "F/U" && !!r.type && !r.miss;
+    const isReq = r => ["MT", "MTR", "F/U"].includes(r.type) || (typeof r.tx === "number" && r.tx === total);
+    const upcoming = r => !r.delivered && !r.miss && (r.date == null || r.date >= today);
+    const flag = r => ["Daily", "Taper", "F/U"].includes(r.type);
+    const xOnly = r => r.measX && !r.measVal;
+    const ops = [], clear = r => { if (/^x$/i.test(r.phq)) ops.push([`P${r.row}`, ""]); if (/^x$/i.test(r.gad)) ops.push([`Q${r.row}`, ""]); if (r.action === "Measures") ops.push([`O${r.row}`, ""]); };
+    let force = false;
+    rows.forEach((r, i) => {
+      if (upcoming(r) || !xOnly(r) || r.date == null || r.date >= today) return;
+      clear(r);
+      const nx = rows[i + 1];
+      if (nx && nx.measVal) { if (flag(nx) && !nx.action) ops.push([`O${nx.row}`, "Measures"]); }
+      else if (!rows.slice(i + 1).some(x => x.measVal)) force = true;
+    });
+    const want = new Set();
+    let n = 0, first = true;
+    rows.forEach((r, i) => {
+      if (r.measVal) { n = 0; return; }
+      const open = upcoming(r) && r.date != null;
+      if (!open) { if (isTx(r)) n++; return; }
+      const next = first; first = false;
+      if (force || isReq(r) || (next && xOnly(r))) { want.add(r.row); force = false; n = 0; return; }
+      if (!isTx(r) || ++n < MEAS_EVERY) return;
+      const later = rows.slice(i + 1), ni = later.findIndex(isReq), nxt = ni >= 0 ? later[ni] : null;
+      const close = nxt && (nxt.date != null ? nxt.date - r.date <= MEAS_WINDOW : later.slice(0, ni).filter(isTx).length < 2);
+      if (!close) { want.add(r.row); n = 0; }
+    });
+    for (const r of rows) {
+      if (!upcoming(r) || r.measVal) continue;
+      if (want.has(r.row)) {
+        if (!r.phq) ops.push([`P${r.row}`, "x"]);
+        if (!r.gad) ops.push([`Q${r.row}`, "x"]);
+        if (flag(r) && !r.action) ops.push([`O${r.row}`, "Measures"]);
+      } else clear(r);
+    }
+    return ops;
+  }
+
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures };
 });

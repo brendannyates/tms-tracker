@@ -137,3 +137,47 @@ test("needs: one line per absence, naming each visit booked in it", () => {
   assert.deepEqual(n.map(x => x.t), ["Booked d102, d105 while away d102 to d105 (vacation)", "Booked d120 while away d120 to d120"]);
   assert.equal(n[0].row, 20);
 });
+
+/* measures: a log row as parseLog reads it; dates are day numbers (Oct 1 = 1, Nov 2 = 33) */
+const lr = (row, o) => ({ row, type: "Daily", tx: null, date: null, delivered: false, miss: false, phq: "", gad: "", action: "", ...o,
+  measX: [o.phq, o.gad].some(x => /^x$/i.test(x || "")), measVal: [o.phq, o.gad].some(x => x && !/^x$/i.test(x)) });
+const applyMeas = (rows, ops) => { const m = new Map(rows.map(r => [r.row, { ...r }])); for (const [a, v] of ops) { const r = m.get(+a.slice(1)), k = { P: "phq", Q: "gad", O: "action" }[a[0]]; r[k] = v; } return [...m.values()].map(r => lr(r.row, r)); };
+const measRows = out => out.filter(r => /^x$/i.test(r.phq) || (r.phq && !/^x$/i.test(r.phq))).map(r => r.date);
+const MX = { phq: "x", gad: "x" }, XM = { ...MX, action: "Measures" };
+/* the second half of a 36-treatment course on Oct 25, as the old planner left it */
+function course() {
+  const d = [[16, 14], [17, 15, "MTR", MX], [18, 16, null, { phq: "9", gad: "5" }], [19, 21], [20, 22], [21, 23, null, XM], [22, 26], [23, 28], [24, 29], [25, 30, null, XM],
+    [null, 33, "F/U", MX], [26, 35, null, XM], [27, 36], [28, 37], [29, 40], [30, 42, null, XM], [31, 43, null, XM], [32, 44], [33, 47], [34, 48, null, XM], [35, 49], [36, 51, null, XM],
+    [null, 54, "F/U", MX], [null, null, "F/U", MX]];
+  return d.map(([tx, date, type, m], i) => lr(10 + i, { tx, date, type: type || "Daily", delivered: date != null && date < 25 && type !== "F/U", ...(m || {}) }));
+}
+
+test("measures: late collection moves the start, an uncollected day rolls to the next visit, then every 5th treatment", () => {
+  const rows = course(), out = applyMeas(rows, T.planMeasures(rows, 36, 25));
+  assert.deepEqual(measRows(out), [16, 26, 33, 42, 51, 54]);   // Oct 16 (taken), Oct 26, Nov 2 F/U, Nov 11, Nov 20 last, Nov 23 F/U
+  const at = d => out.find(r => r.date === d);
+  assert.equal(at(15).phq, "");                                   // the MTR's x's go: they were taken the next day
+  assert.equal(at(16).action, "Measures");                        // and that day carries the flag
+  assert.equal(at(23).phq, "");                                   // Oct 23 wasn't collected
+  assert.equal(at(33).action, "Measures");                        // F/U rows carry the flag too
+  assert.equal(at(49).phq, "");                                   // Nov 18 is 2 days before the last treatment
+  assert.equal(out[out.length - 1].phq, "");                      // an undated row gets none until it has a date
+  assert.equal(at(16).phq, "9");                                  // scores are never touched
+  assert.deepEqual(T.planMeasures(out, 36, 25), []);              // running it again changes nothing
+});
+
+test("measures: overdue ones on the next visit stay there when it runs again", () => {
+  const rows = [lr(10, { tx: 1, date: 1, type: "MT", delivered: true }), lr(11, { tx: 2, date: 4, delivered: true, ...MX }), lr(12, { tx: 3, date: 5, delivered: true }),
+    ...[6, 7, 8, 11, 12, 13, 14].map((d, i) => lr(13 + i, { tx: 4 + i, date: d }))];
+  const once = applyMeas(rows, T.planMeasures(rows, 36, 6));
+  assert.deepEqual(measRows(once), [6, 13]);                     // the next visit, then the 5th treatment after it
+  assert.deepEqual(T.planMeasures(once, 36, 6), []);
+});
+
+test("measures: a regular collection within 7 days of a required one is skipped", () => {
+  const rows = [lr(10, { tx: 1, date: 1, type: "MT", delivered: true, phq: "12", gad: "8" }), ...[2, 3, 4, 5].map((d, i) => lr(11 + i, { tx: i + 2, date: d + 1 })),
+    lr(15, { tx: 6, date: 8 }), lr(16, { tx: 7, date: 9, type: "MTR" }), lr(17, { tx: 8, date: 10 })];
+  assert.deepEqual(measRows(applyMeas(rows, T.planMeasures(rows, 36, 2))), [1, 9]);             // 6th treatment Thursday, MTR Friday: just the MTR
+  const far = rows.map(r => r.row === 16 ? { ...r, date: 20 } : r);
+  assert.deepEqual(measRows(applyMeas(far, T.planMeasures(far, 36, 2))), [1, 8, 20]);          // MTR 12 days later: both
+});

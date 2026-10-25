@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>try { document.documentElement.dataset.theme = localStorage.getItem("tms_theme") || "light"; } catch { document.documentElement.dataset.theme = "light"; }</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TMS Tracker</title>
@@ -21,9 +22,12 @@
   --scrim:rgba(19,23,22,.24);
   --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
 }
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#131716;--surface:#1B2220;--surface-2:#252D2A;--surface-3:#182019;--ink:#ECEFED;--muted:#9BA59F;--faint:#5C6763;--accent:#6DC4A6;--accent-ink:#0E2A22;--accent-soft:#1D3A31;--warn:#E9B150;--warn-soft:#3A2D13;--danger:#F19189;--danger-ink:#3A0F0C;--danger-soft:#43211E;--scrim:rgba(0,0,0,.45);--shadow:0 0 0 1px rgba(255,255,255,.05),0 12px 32px -14px rgba(0,0,0,.6)}}
+/* light unless this computer picks Dark or Match Windows in Settings (data-theme on <html>, set before the page paints) */
+:root[data-theme="dark"]{color-scheme:dark;--bg:#2B312F;--surface:#353C39;--surface-2:#454D4A;--surface-3:#313835;--ink:#EEF1EF;--muted:#B0BAB4;--faint:#7A8580;--accent:#80D1B4;--accent-ink:#0F2C24;--accent-soft:#33504A;--warn:#EEC06C;--warn-soft:#4C3D21;--danger:#F5A39C;--danger-ink:#3A0F0C;--danger-soft:#583431;--scrim:rgba(0,0,0,.32);--shadow:0 0 0 1px rgba(255,255,255,.07),0 12px 32px -14px rgba(0,0,0,.4)}
+@media (prefers-color-scheme:dark){:root[data-theme="system"]{color-scheme:dark;--bg:#2B312F;--surface:#353C39;--surface-2:#454D4A;--surface-3:#313835;--ink:#EEF1EF;--muted:#B0BAB4;--faint:#7A8580;--accent:#80D1B4;--accent-ink:#0F2C24;--accent-soft:#33504A;--warn:#EEC06C;--warn-soft:#4C3D21;--danger:#F5A39C;--danger-ink:#3A0F0C;--danger-soft:#583431;--scrim:rgba(0,0,0,.32);--shadow:0 0 0 1px rgba(255,255,255,.07),0 12px 32px -14px rgba(0,0,0,.4)}}
 :root{--lamp:#FFD38A;--lamp-edge:#C98A2B;--glow:#FFC56B;--glow-a:.75}
-@media (prefers-color-scheme:dark){:root{--lamp-edge:#E9B150;--glow:#FFB547;--glow-a:.6}}
+:root[data-theme="dark"]{--lamp-edge:#EEC06C;--glow:#FFB547;--glow-a:.6}
+@media (prefers-color-scheme:dark){:root[data-theme="system"]{--lamp-edge:#EEC06C;--glow:#FFB547;--glow-a:.6}}
 
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink)}
@@ -89,9 +93,9 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .crw:hover{background:var(--surface-3)}
 .crw[data-state="soon"]{background:var(--warn-soft);box-shadow:inset 4px 0 0 var(--warn)}
 .crw[data-state="late"]{background:var(--danger-soft);box-shadow:inset 4px 0 0 var(--danger)}
-.crw[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
-.crw[data-state="soon"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--warn),0 0 0 2px var(--ink)}
-.crw[data-state="late"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--danger),0 0 0 2px var(--ink)}
+.crw[aria-pressed="true"]{box-shadow:0 0 0 2px var(--accent)}
+.crw[data-state="soon"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--warn),0 0 0 2px var(--accent)}
+.crw[data-state="late"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--danger),0 0 0 2px var(--accent)}
 .crw b{display:block;font-weight:600;line-height:1.2}
 .crw small{display:block;font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .crw .who{min-width:0}
@@ -119,11 +123,11 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .seg{display:inline-flex;align-items:center;gap:2px;padding:4px;background:var(--surface);border-radius:12px;box-shadow:var(--shadow);flex-wrap:wrap}
 .seg button{min-height:36px;padding:0 12px;border-radius:9px;font-size:13.5px;font-weight:500;color:var(--muted);white-space:nowrap;transition:background .2s}
 .seg button:hover{background:var(--surface-3)}
-.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .seg .sep{width:1px;height:20px;background:var(--surface-2);margin:0 4px}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .chip{min-height:36px;padding:0 14px;border-radius:18px;background:var(--surface);box-shadow:var(--shadow);font-size:13.5px;font-weight:500;display:inline-flex;align-items:center;gap:8px}
-.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.chip[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .chip .n{color:var(--muted);font-weight:400}
 .chip[aria-pressed="true"] .n{color:inherit;opacity:.7}
 .nav{display:flex;align-items:center;gap:10px;margin:-6px 0 16px;flex-wrap:wrap}
@@ -140,7 +144,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .drow .st{font-size:13.5px;color:var(--muted);white-space:nowrap;text-align:right}
 .drow.past{color:var(--muted)}
 .drow.past .p{font-weight:500;color:var(--muted)}
-.drow[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
+.drow[aria-pressed="true"]{box-shadow:0 0 0 2px var(--accent)}
 .drow[data-state="track"]{background:var(--surface-3)}
 .drow[data-state="soon"]{background:var(--warn-soft);box-shadow:inset 4px 0 0 var(--warn)}
 .drow[data-state="late"]{background:var(--danger-soft);box-shadow:inset 4px 0 0 var(--danger)}
@@ -157,7 +161,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .row + .row{box-shadow:0 -1px 0 var(--surface-2)}
 .rowmain{flex:1;min-width:0;display:grid;grid-template-columns:72px 52px 96px minmax(0,1fr);align-items:center;gap:12px;min-height:48px;padding:6px 8px;margin:0 -8px;border-radius:10px;transition:background .2s}
 .rowmain:not(.static):hover{background:var(--surface-3)}
-.rowmain[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
+.rowmain[aria-pressed="true"]{box-shadow:0 0 0 2px var(--accent)}
 .rowmain .p{font-weight:600}
 .rowmain .w{color:var(--muted)}
 .rowmain > span{white-space:nowrap}
@@ -270,7 +274,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .nowline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--ink)}
 .wkgrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
 .wd{padding:16px 18px}
-.wd.today{box-shadow:var(--shadow),0 0 0 2px var(--ink)}
+.wd.today{box-shadow:var(--shadow),0 0 0 2px var(--accent)}
 .wd .h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .wd .h span{font-size:12.5px;color:var(--muted)}
 .wd .big{font-size:20px;font-weight:600;margin-top:8px;line-height:1.1}
@@ -397,6 +401,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
     <div class="spacer"></div>
     <button class="item" id="refresh" title="Re-read every patient tab">Refresh</button>
     <button class="item" id="btnFull">Full screen</button>
+    <button class="item" id="btnTheme" aria-pressed="false">Dark mode</button>
     <div class="conn" id="conn"><span class="cdot"></span><span>Connected to the workbook</span></div>
   </nav>
 
@@ -463,7 +468,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
     </section>
 
     <section id="v-settings" aria-label="Settings" hidden>
-      <header class="top"><div><h1>Settings</h1><p class="sub">Saved in this workbook for everyone. The view on Today (Clinic or one chair) is saved on this computer only.</p></div></header>
+      <header class="top"><div><h1>Settings</h1><p class="sub">Saved in this workbook for everyone, except Appearance and the view on Today (Clinic or one chair), which stay on this computer.</p></div></header>
       <div class="card form" id="settingsBox">
         <h2>Clinic</h2>
         <div class="row2">
@@ -478,8 +483,14 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
         <p class="hint" id="cutoffNote"></p>
       </div>
       <div class="card form">
+        <h2>This computer</h2>
+        <div class="row2">
+          <label class="fld" for="cfgTheme"><span>Appearance</span><select id="cfgTheme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">Match Windows</option></select></label>
+        </div>
+      </div>
+      <div class="card form">
         <h2>Workbook tools</h2>
-        <div class="actions"><button id="btnMatch">Match New Template (all active tabs)</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMeas">Place measure placeholders</button><button id="btnApRebuild">Rebuild Active Patients sheet</button></div>
+        <div class="actions"><button id="btnMatch">Match New Template (all active tabs)</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMeas">Replan measures and pulse totals</button><button id="btnApRebuild">Rebuild Active Patients sheet</button></div>
         <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
       </div>
     </section>
