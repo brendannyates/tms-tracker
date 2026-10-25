@@ -95,7 +95,8 @@
     });
     d.overdue.forEach(r => add("pulses", `No pulses for ${f(r.date)}`, ["Enter pulses", "pastpulses"], { row: r.row }));
     d.noTech.forEach(r => add("tech", `No technician on ${f(r.date)}`, ["Add technician", "pasttech"], { row: r.row }));
-    if (d.measDue.length) add("measures", `PHQ-9 and GAD-7 not collected ${f(d.measDue[0].date)}${d.measDue.length > 1 ? ` and ${d.measDue.length - 1} more` : ""}`, ["Enter scores", "pastmeas"], { row: d.measDue[0].row });
+    /* earlier days' measures can't be collected now: one reminder to look in NextGen, only while the course is active */
+    if (A && d.measDue.length) add("measures", "Check NextGen for PHQ-9 and GAD-7", ["Enter scores", "pastmeas"], { row: d.measDue.reduce((a, b) => b.date > a.date ? b : a).row });
     if (A) d.protoFlags.forEach(t => add("protocol", t, ["Update protocol", "proto"]));
     /* one line per absence, naming every visit booked inside it */
     if (A) [...new Set(d.awayConflicts.map(c => c.why))].forEach(why => { const cs = d.awayConflicts.filter(c => c.why === why); add("away", `Booked ${cs.map(c => f(c.r.date)).join(", ")} while ${why}`, ["Edit availability", "avail"], { row: cs[0].r.row }); });

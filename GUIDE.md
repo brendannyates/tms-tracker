@@ -48,7 +48,7 @@ The menu runs down the left in full screen and across the top in the panel.
 |---|---|
 | Today | The chair board, who is still to come, and the visit card for whoever you select. **View** switches between **Clinic** (every chair) and one chair's day; your pick is remembered on your computer. |
 | Schedule | **Day by chair**: one weekday's visits in columns by chair, plus the provider's MT, MT redo and follow-up visits, with a line at the current time. **Earlier** and **Later** move between weekdays. **Week**: Monday to Friday with "X of Y" treated or booked, the reasons for each day, and each day's visits (select one to open its row). On a day other than today, the appointment list check for that day is under the grid. |
-| Courses | Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Courses in the menu counts courses that need attention; it turns red when one needs action now. |
+| Courses | A course is marked Complete on its own once every approved treatment is done (36 of 36, 15 of 15). Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Courses in the menu counts courses that need attention; it turns red when one needs action now. |
 | Chairs | Each chair's device, coil, last service and today's count, with **Mark unavailable**; the chair hours from Clinic Schedule; the protocol list. |
 | Import | The NextGen appointment list and Sohar benefits. |
 | Settings | Clinic settings, Appearance (Light, Dark or Match Windows, for this computer) and the workbook tools. **Dark mode** in the menu switches it too. |
@@ -106,9 +106,9 @@ Select a course for its card. The big button resolves the top need; **Also needs
 |---|---|
 | Auth ending, expired, or more treatments booked than authorized | **Add extension**: adds daily visits to D2 (15 by default) and can move the auth end. |
 | BIDF info needed today, projected cost over the BIDF estimate, out-of-pocket max likely met | **Enter benefits** / **Review benefits**: deductible and out-of-pocket max (an amount or N/A), BIDF estimate, and cost by code. |
-| Freebie decision, or Exempt in NextGen | **Decide freebie**: Use freebie or Waived. |
+| Freebie decision, or Exempt in NextGen | **Decide freebie**: Use freebie or Waived. Asked for misses in the last 10 days only. |
 | No pulses, or no technician, on a past visit | **Enter pulses** (or **It was missed**) / **Add technician**. |
-| PHQ-9 and GAD-7 not collected | **Enter scores**, or move them to the next visit. |
+| Check NextGen for PHQ-9 and GAD-7 | One line for any earlier visit whose measures weren't entered, on active courses only. If NextGen has them, **Enter scores**; if not, the next replan moves them to the next visit. |
 | Protocol update due | **Update protocol**. |
 | Booked while away | **Edit availability**: weekly hours and dates away. |
 | Status suggested, cancelled in NextGen, no visit in 10+ days | **Set to [status]** / **Update status** / **Pause or discontinue**. |

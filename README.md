@@ -162,6 +162,9 @@ The rule is `planMeasures` in core.js, with tests.
 - **Skipped:** an in-between collection when a required one is 7 days away or less (by the dates in E). One collection covers both, so patients aren't asked too often.
 - **Taken a day late:** x's on an earlier day with scores on the next row means the scores came a day late. The x's are cleared and the row with the scores is where the count starts again (it gets the Measures flag).
 - **Not collected:** x's on an earlier day with no scores after them are cleared, and the next visit takes the measures instead. The count restarts there.
+- **On Courses:** earlier measures that weren't entered show as one need, **Check NextGen for PHQ-9 and GAD-7**, on active courses only.
+
+**Status:** when the treatments done reach D2 (36 of 36, 15 of 15), refresh writes Complete in D7. Paused and Discontinued are left alone. Freebie decisions are asked for misses in the last 10 days.
 - **Upcoming visits** with a date get the plan: x's added where it wants them and removed where it doesn't. Rows with no date get none until an import dates them.
 - **Flag:** Daily, Taper and F/U rows with measures also get Measures in O (when O is empty). MT and MTR rows get the x's only.
 - **Never touched:** scores.

@@ -181,3 +181,10 @@ test("measures: a regular collection within 7 days of a required one is skipped"
   const far = rows.map(r => r.row === 16 ? { ...r, date: 20 } : r);
   assert.deepEqual(measRows(applyMeas(far, T.planMeasures(far, 36, 2))), [1, 8, 20]);          // MTR 12 days later: both
 });
+
+test("needs: earlier measures are one Check NextGen line, and none once the course is over", () => {
+  const meas = [{ row: 12, date: 90 }, { row: 15, date: 95 }];
+  const on = T.needs(P({ d: { measDue: meas } }), X({})).filter(y => y.k === "measures");
+  assert.deepEqual(on.map(y => [y.t, y.act[1], y.row]), [["Check NextGen for PHQ-9 and GAD-7", "pastmeas", 15]]);
+  assert.equal(T.needs(P({ status: "Complete", d: { active: false, measDue: meas } }), X({})).some(y => y.k === "measures"), false);
+});

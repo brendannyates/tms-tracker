@@ -39,6 +39,7 @@ const BILL = [
 ];
 const TAB_RE = /^([A-Z]{1,6})(?: (\d+))?$/;
 const ACTIVE = ["Pending Start", "In Progress", "Tapering"];
+const FREEBIE_DAYS = 10;   // a miss's freebie decision is asked for this many days
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
@@ -306,6 +307,12 @@ async function refresh() {
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
     if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
+    /* every approved treatment done (36 of 36, 15 of 15): the course is Complete. Paused and Discontinued tabs are left alone. */
+    const fin = state.patients.filter(p => p.d.suggest === "Complete");
+    if (fin.length) try {
+      await applyOps(fin.map(p => ({ tab: p.tab, a: "D7", v: [["Complete"]], quiet: true }))); fin.forEach(p => { p.status = "Complete"; p.d = derive(p); });
+      toast(`${fin.map(p => p.tab).join(", ")} marked Complete: every treatment is done.`);
+    } catch (e) { console.error(e); }
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
     syncActiveSheet();
@@ -345,7 +352,7 @@ function derive(p) {
   const txDone = tx.length, lastTx = tx.length ? Math.max(...tx.map(r => r.date ?? 0)) : null;
   const overdue = rows.filter(r => r.date != null && r.date < today && !r.delivered && !r.miss && !r.alt && r.type !== "F/U");
   const noTech = tx.filter(r => !r.tech && r.date != null);
-  const decisions = rows.filter(r => r.miss && !r.freebie);
+  const decisions = rows.filter(r => r.miss && !r.freebie && r.date != null && today - r.date < FREEBIE_DAYS);   // older ones are past deciding
   const used = rows.filter(r => r.freebie === "Used").length, waived = rows.filter(r => r.freebie === "Waived").length;
   const left = p.freebiesLeft != null ? Math.max(0, p.freebiesLeft) : Math.max(0, 3 - used);
   const fu = rows.filter(r => r.type === "F/U");
@@ -363,7 +370,7 @@ function derive(p) {
   const quit = allCx && seenAt != null && seenAt < today - rec;   // every appointment cancelled and last seen over 10 days ago
   let suggest = null;
   if (!["Paused", "Discontinued"].includes(status)) {
-    if (status !== "Complete" && txDone >= total && (lastTx == null || lastTx < today - rec)) suggest = "Complete";
+    if (status !== "Complete" && txDone >= total) suggest = "Complete";   // refresh writes it (autoComplete)
     else if (status !== "Complete" && quit) suggest = "Discontinued";
     else if (status !== "Complete" && txDone >= 1 && (status === "Pending Start" || status === "")) suggest = "In Progress";
     else if (status === "" && txDone === 0 && futureMT) suggest = "Pending Start";
