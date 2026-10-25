@@ -39,6 +39,7 @@ const BILL = [
 ];
 const TAB_RE = /^([A-Z]{1,6})(?: (\d+))?$/;
 const ACTIVE = ["Pending Start", "In Progress", "Tapering"];
+const FREEBIE_DAYS = 10;   // a miss's freebie decision is asked for this many days
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
@@ -306,6 +307,12 @@ async function refresh() {
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
     if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
+    /* every approved treatment done (36 of 36, 15 of 15): the course is Complete. Paused and Discontinued tabs are left alone. */
+    const fin = state.patients.filter(p => p.d.suggest === "Complete");
+    if (fin.length) try {
+      await applyOps(fin.map(p => ({ tab: p.tab, a: "D7", v: [["Complete"]], quiet: true }))); fin.forEach(p => { p.status = "Complete"; p.d = derive(p); });
+      toast(`${fin.map(p => p.tab).join(", ")} marked Complete: every treatment is done.`);
+    } catch (e) { console.error(e); }
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
     syncActiveSheet();
@@ -345,7 +352,7 @@ function derive(p) {
   const txDone = tx.length, lastTx = tx.length ? Math.max(...tx.map(r => r.date ?? 0)) : null;
   const overdue = rows.filter(r => r.date != null && r.date < today && !r.delivered && !r.miss && !r.alt && r.type !== "F/U");
   const noTech = tx.filter(r => !r.tech && r.date != null);
-  const decisions = rows.filter(r => r.miss && !r.freebie);
+  const decisions = rows.filter(r => r.miss && !r.freebie && r.date != null && today - r.date < FREEBIE_DAYS);   // older ones are past deciding
   const used = rows.filter(r => r.freebie === "Used").length, waived = rows.filter(r => r.freebie === "Waived").length;
   const left = p.freebiesLeft != null ? Math.max(0, p.freebiesLeft) : Math.max(0, 3 - used);
   const fu = rows.filter(r => r.type === "F/U");
@@ -363,7 +370,7 @@ function derive(p) {
   const quit = allCx && seenAt != null && seenAt < today - rec;   // every appointment cancelled and last seen over 10 days ago
   let suggest = null;
   if (!["Paused", "Discontinued"].includes(status)) {
-    if (status !== "Complete" && txDone >= total && (lastTx == null || lastTx < today - rec)) suggest = "Complete";
+    if (status !== "Complete" && txDone >= total) suggest = "Complete";   // refresh writes it (autoComplete)
     else if (status !== "Complete" && quit) suggest = "Discontinued";
     else if (status !== "Complete" && txDone >= 1 && (status === "Pending Start" || status === "")) suggest = "In Progress";
     else if (status === "" && txDone === 0 && futureMT) suggest = "Pending Start";
@@ -1833,43 +1840,43 @@ function draftInput(el) {
   return true;
 }
 
-/* ---------- measures placeholders (x in PHQ-9 and GAD-7) ----------
-   Always on MT, MTR, F/U and the last treatment. Between them, every 5 treatments when the gap is 8 or more,
-   and at least every 7 calendar days when visits are sparse (tapering), but never within 2 days or 2 visits before a milestone.
-   Only blank cells on undelivered, non-missed rows are filled. Existing x's and scores never move. As on New Template, a Daily
-   (or Taper) row with measures also carries the Measures action flag in O; MT, MTR and F/U rows only get the x's. */
-function planMeasures(p) {
-  const total = p.txApproved || 36, rows = p.rows.filter(r => r.type || typeof r.tx === "number");
-  const isMs = r => STD_VISIT.includes(r.type) || (typeof r.tx === "number" && r.tx === total);
-  const hasMeas = r => r.measX || r.measVal;
-  const target = new Set(rows.filter(isMs).map(r => r.row)), cadence = new Set();
-  let lastIdx = -1, lastDate = null;
-  rows.forEach((r, i) => {
-    if (isMs(r) || hasMeas(r)) { lastIdx = i; if (r.date != null) lastDate = r.date; return; }
-    const ni = rows.findIndex((x, j) => j > i && isMs(x)), nxt = ni >= 0 ? rows[ni] : null;
-    const since = i - lastIdx, toNext = ni >= 0 ? ni - i : Infinity, gap = since + toNext - 1;
-    const byCount = gap >= 8 && since >= 5 && toNext > 2;
-    const byDays = lastDate != null && r.date != null && r.date - lastDate >= 7 && !(nxt && nxt.date != null && nxt.date - r.date <= 2);
-    if (byCount || byDays) { cadence.add(r.row); lastIdx = i; if (r.date != null) lastDate = r.date; }
-  });
-  const ops = [];
-  for (const r of p.rows) {
-    if (r.delivered || r.miss) continue;
-    const want = target.has(r.row) || cadence.has(r.row), daily = r.type === "Daily" || r.type === "Taper";
-    if (want && !r.phq) ops.push([`P${r.row}`, "x"]);
-    if (want && !r.gad) ops.push([`Q${r.row}`, "x"]);
-    if (daily && (want || r.measX) && !r.action) ops.push([`O${r.row}`, "Measures"]);
-  }
-  return ops;
-}
-async function placeMeasures(patients) {
-  const plans = patients.map(p => ({ tab: p.tab, ops: planMeasures(p) })).filter(x => x.ops.length);
+/* ---------- measures placeholders: the rule is TmsCore.planMeasures (core.js) ---------- */
+const planMeasures = p => TmsCore.planMeasures(p.rows, p.txApproved || 36, todaySerial());
+async function placeMeasures(patients, totalsDone) {
+  if (!totalsDone) await fixTotals(patients.map(p => p.tab));
+  const plans = patients.map(p => ({ p, ops: planMeasures(p) })).filter(x => x.ops.length);
   if (!plans.length) return 0;
-  await applyOps(plans.flatMap(x => x.ops.map(([a, v]) => ({ tab: x.tab, a, v: [[v]] }))));
-  return plans.reduce((n, x) => n + x.ops.filter(o => o[0][0] !== "O").length, 0);
+  const rowsOf = x => [...new Set(x.ops.map(([a]) => +a.slice(1)))].map(n => x.p.rows.find(r => r.row === n)).filter(Boolean);
+  await applyOps(plans.flatMap(x => x.ops.map(([a, v]) => ({ tab: x.p.tab, a, v: [[v]] }))), plans.flatMap(x => rowsOf(x).map(r => ({ tab: x.p.tab, ...at(r) }))));
+  return plans.length;
+}
+/* the running pulse totals (G, I, K: this row's pulses plus the total above, as on New Template). A row without the formula, such
+   as an F/U row typed in by hand, breaks the chain and every total below it restarts from 0, so any empty G, I or K in the log gets
+   it back. Cells with a value or a formula of their own are left alone. Returns the number of cells filled. */
+const TOTALS = [["F", "G"], ["H", "I"], ["J", "K"]];
+async function fixTotals(tabs) {
+  if (!tabs.length) return 0;
+  if (POPOUT) return callPane("fixTotals", [tabs]);
+  let n = 0;
+  await Excel.run(async ctx => {
+    for (const tab of tabs) {
+      const ws = ctx.workbook.worksheets.getItem(tab), end = await tabEnd(ctx, ws), r = ws.getRange(`G${LOG_FIRST}:K${end}`);
+      r.load("formulas"); await ctx.sync();
+      r.formulas.forEach((v, i) => TOTALS.forEach(([p, t]) => {
+        const c = t.charCodeAt(0) - 71, row = LOG_FIRST + i;
+        if (v[c] === "" || v[c] == null) { ws.getRange(`${t}${row}`).formulas = [[`=${p}${row} + INDEX(${t}:${t}, ROW()-1)`]]; n++; }
+      }));
+    }
+    await ctx.sync();
+  });
+  return n;
 }
 async function placeMeasuresClick() {
-  try { const n = await placeMeasures(state.patients.filter(p => p.d.active)); toast(n ? `Placed ${n} measure placeholder${n > 1 ? "s" : ""}.` : "Measure placeholders are already in place."); await refresh(); } catch (e) { fail(e); }
+  try {
+    const P = state.patients.filter(p => p.d.active), t = await fixTotals(P.map(p => p.tab)), n = await placeMeasures(P, true);
+    const parts = [n ? `measures replanned on ${n} tab${n > 1 ? "s" : ""}` : "", t ? `${t} pulse total${t > 1 ? "s" : ""} put back` : ""].filter(Boolean).join(", ");
+    toast(parts ? parts[0].toUpperCase() + parts.slice(1) + "." : "Measures and pulse totals are already in place."); await refresh();
+  } catch (e) { fail(e); }
 }
 /* ---------- Match New Template: New Template owns the layout. Each active tracker gets its header formats, Freebie Count in N6
    (auth assessment in N7), the PR formula in column A, its benefits moved to the Benefits tab, a TX SUMMARY row with its
@@ -2617,7 +2624,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g) => applyOps(ops, g), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v),
+  saveSetting: (k, v) => saveSetting(k, v), fixTotals: t => fixTotals(t),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -2694,6 +2701,18 @@ function openCourse(tab) {
   state.ptTab = tab; const p = state.patients.find(x => x.tab === tab), fl = state.fl || floor(), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   if (p && !f[2](p, courseNeeds(p, fl))) state.cfilter = onSched(p) ? (p.d.active ? "active" : FILTERS.find(x => x[2](p, []))?.[0] || "active") : "disc";
   show("courses");
+}
+/* appearance is per computer (localStorage), like the Today view; the pane and full screen share it */
+const themeOf = () => document.documentElement.dataset.theme || "light";
+function syncTheme() {
+  const t = themeOf(), dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches), b = $("btnTheme"), c = $("cfgTheme");
+  if (b) b.setAttribute("aria-pressed", String(dark));
+  if (c) c.value = t;
+}
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("tms_theme", t); } catch { /* this session only */ }
+  syncTheme();
 }
 const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
@@ -2818,6 +2837,11 @@ Office.onReady(info => {
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
   $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = () => setupClick(false); $("btnMeas").onclick = placeMeasuresClick;
+  $("btnTheme").onclick = () => setTheme($("btnTheme").getAttribute("aria-pressed") === "true" ? "light" : "dark");
+  $("cfgTheme").onchange = e => setTheme(e.target.value);
+  window.addEventListener("storage", e => { if (e.key === "tms_theme") { document.documentElement.dataset.theme = e.newValue || "light"; syncTheme(); } });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
+  syncTheme();
   $("btnMatch").onclick = () => setupClick(true);
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
