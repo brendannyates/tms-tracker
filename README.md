@@ -102,7 +102,7 @@ Chair cards (resource name, device, coil, today's count, last service) with **Ma
 
 ### Settings
 
-Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Place measure placeholders**, **Rebuild Active Patients sheet**).
+Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, Appearance (Light, Dark or Match Windows; saved on this computer, also in the rail as Dark mode), the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Replan measures and pulse totals**, **Rebuild Active Patients sheet**).
 
 ### Full screen
 
@@ -155,12 +155,20 @@ Import list > **Import Sohar benefits** takes the "Benefits (TMS Tracker)" file 
 
 ## Measures placeholders
 
-- **Always:** MT, MTR, every F/U, and the last treatment.
-- **In between:**
-  - Every 5 treatments, when the gap between milestones is 8 or more.
-  - At least every 7 calendar days when visits are sparse, as in tapering.
-- **Never placed:** within 2 days or 2 visits before a milestone.
-- **Existing entries:** placeholders only fill blank cells. Scores and existing x's never move.
+The rule is `planMeasures` in core.js, with tests.
+
+- **Required:** MT, MTR, every F/U, and the last treatment.
+- **In between:** the 5th treatment after the last measures. MT and MTR count as treatments (there's a treatment at both), F/U doesn't.
+- **Skipped:** an in-between collection when a required one is 7 days away or less (by the dates in E). One collection covers both, so patients aren't asked too often.
+- **Taken a day late:** x's on an earlier day with scores on the next row means the scores came a day late. The x's are cleared and the row with the scores is where the count starts again (it gets the Measures flag).
+- **Not collected:** x's on an earlier day with no scores after them are cleared, and the next visit takes the measures instead. The count restarts there.
+- **On Courses:** earlier measures that weren't entered show as one need, **Check NextGen for PHQ-9 and GAD-7**, on active courses only.
+
+**Status:** when the treatments done reach D2 (36 of 36, 15 of 15), refresh writes Complete in D7. Paused and Discontinued are left alone. Freebie decisions are asked for misses in the last 10 days.
+- **Upcoming visits** with a date get the plan: x's added where it wants them and removed where it doesn't. Rows with no date get none until an import dates them.
+- **Flag:** Daily, Taper and F/U rows with measures also get Measures in O (when O is empty). MT and MTR rows get the x's only.
+- **Never touched:** scores.
+- **Pulse totals:** the same pass (Settings > **Replan measures and pulse totals**, and after imports) puts New Template's running-total formula (`=F10 + INDEX(G:G, ROW()-1)`, likewise I and K) back on any log row where G, I or K is empty. Without it on one row, such as a hand-typed F/U, every total below restarts at 0.
 
 ## Schedule printout
 
