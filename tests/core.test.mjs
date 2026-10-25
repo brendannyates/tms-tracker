@@ -58,6 +58,8 @@ test("moves: NextGen's chair for the next move follows the tick", () => {
   assert.equal(T.ngForMove(null, "MagV1"), "MagV1");
   assert.equal(T.ngForMove({ chair: "MagV3", ng: "MagV1", tick: false }, "MagV1"), "MagV1");
   assert.equal(T.ngForMove({ chair: "MagV3", ng: "MagV1", tick: true }, "MagV1"), "MagV3");
+  assert.equal(T.ngForMove({ chair: "MagV3", ng: "MagV1", tick: false, at: 640 }, "MagV3", 700), "MagV3", "a list run after the move confirmed it");
+  assert.equal(T.ngForMove({ chair: "MagV3", ng: "MagV1", tick: false, at: 640 }, "MagV3", 600), "MagV1", "an older list doesn't");
   // ticked at MagV3, then moved back to MagV1: NextGen has MagV3 now, and the morning's list (MagV1) predates the move
   const back = { chair: "MagV1", ng: T.ngForMove({ chair: "MagV3", ng: "MagV1", tick: true }, "MagV1"), tick: false, at: 700 };
   assert.equal(back.ng, "MagV3");
@@ -98,6 +100,7 @@ test("needs: moves, chairless visits and exempt misses", () => {
   const p = P({ d: { decisions: [{ row: 14, date: 98, note: "No-show; NextGen: Exempt, confirm" }] } });
   const n = T.needs(p, X({ moved: [{ key: "k1", chairLabel: "MagV 3" }], noChair: [{ key: "k2", timeLabel: "11:30" }] }));
   assert.deepEqual(n.map(x => x.t), ["Moved to MagV 3, not yet in NextGen", "No chair for 11:30", "Exempt in NextGen on d98: freebie or waived?"]);
+  assert.equal(T.needs(p, X({ moved: [{ key: "k0", chairLabel: "MagV 2", dayLabel: "Oct 20" }] }))[0].t, "Moved to MagV 2 on Oct 20, not yet in NextGen");
   assert.equal(n[0].key, "k1"); assert.deepEqual(n[0].act, ["Mark moved in NextGen", "ngdone"]);
 });
 
@@ -115,7 +118,7 @@ test("needs: 3 missed in a row is red with Call to reschedule", () => {
 
 test("needs: MT today without a schedule given", () => {
   const n = T.needs(P({ status: "Pending Start" }), X({ mtToday: true, schedGiven: false }));
-  assert.deepEqual(n.map(x => x.k), ["sched", "start"]);
+  assert.deepEqual(n.map(x => x.k), ["sched", "start"]); assert.equal(n[0].v, "all");
   assert.deepEqual(T.needs(P({}), X({ mtToday: true, schedGiven: true })).map(x => x.k), ["start"]);
 });
 

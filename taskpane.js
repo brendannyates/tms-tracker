@@ -66,7 +66,7 @@ const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", openTab: "on", cutoff: CUTOFF_DEFAULT },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
-  view: "today", weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
+  view: "today", ptAll: false, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
   dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
 };
 try { state.chair = localStorage.getItem("tms_chair") || "all"; } catch { /* storage unavailable */ }
@@ -477,7 +477,7 @@ const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient"
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const LONG_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const LONG_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const clock = m => m == null ? "" : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+const clock = m => { if (m == null) return ""; m = Math.round(m); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
 const fmtMon = s => { if (typeof s !== "number") return ""; const d = serialToDate(s); return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`; };
 const fmtDay = s => `${DAYS[dow(s)]} ${fmtMon(s)}`;
 const fmtLong = s => { const d = serialToDate(s); return `${LONG_DAYS[d.getUTCDay()]}, ${LONG_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`; };
@@ -537,27 +537,48 @@ function sessApply(entries, put) {
       continue;
     }
     let r = S.rows.get(e.key);
-    if (!r) { r = { row: S.next++, date: e.date, tab: e.tab, visit: e.visit, chair: "", ng: "", tick: false, at: null, checkin: null, start: null, end: null }; S.rows.set(e.key, r); if (put) { put(r.row, 0, e.date); put(r.row, 1, e.tab); put(r.row, 2, e.visit); } }
+    if (!r) { r = { row: S.next++, date: e.date, tab: e.tab, visit: e.visit, chair: "", ng: "", tick: false, at: null, checkin: null, start: null, end: null }; S.rows.set(e.key, r); }
+    if (put) { put(r.row, 0, r.date); put(r.row, 1, r.tab); put(r.row, 2, r.visit); }
     for (const [k, v] of Object.entries(e.set)) { r[k] = v; if (put) put(r.row, SESS_COLS[k], TIME_KEYS.includes(k) ? (v == null ? "" : v / 1440) : k === "tick" ? !!v : v ?? ""); }
   }
 }
-async function writeSess(entries) {
-  if (!entries.length) return;
-  if (POPOUT) { await callPane("writeSess", [entries]); sessApply(entries); return; }
-  await Excel.run(async ctx => {
-    const ws = await sessSheet(ctx);
-    if (state.sess.next + entries.length > SESS_LAST || state.sess.cnext > CH_LAST) await compactSess(ctx, ws);
-    sessApply(entries, (row, col, v) => { ws.getRangeByIndexes(row - 1, col, 1, 1).values = [[v]]; });
-    await ctx.sync();
-  });
+/* Several people can have the workbook open, so every write reads the sheet again first and adds rows after whatever is there
+   now. After a failed save the copy in memory is read back from the sheet. Returns the sheet as the pane now has it. */
+const sessSnap = () => state.sess && { ...state.sess, rows: [...state.sess.rows], chairs: [...state.sess.chairs] };
+const setSessSnap = o => { state.sess = o ? { ...o, rows: new Map(o.rows), chairs: new Map(o.chairs) } : null; };
+async function readSessNow(ctx) {
+  const ws = ctx.workbook.worksheets.getItemOrNullObject(SESS_SHEET); await ctx.sync();
+  if (ws.isNullObject) { readSess(null, null); return null; }
+  const a = ws.getRange(`A${SESS_FIRST}:J${SESS_LAST}`), c = ws.getRange(`L${CH_FIRST}:P${CH_LAST}`); a.load("values"); c.load("values"); await ctx.sync();
+  readSess(a.values, c.values); return ws;
 }
-/* keeps the last SESS_KEEP days, rewritten from row 2 */
+async function writeSess(entries) {
+  if (!entries.length) return null;
+  if (POPOUT) { setSessSnap(await callPane("writeSess", [entries])); return null; }
+  try {
+    await Excel.run(async ctx => {
+      await sessSheet(ctx); const ws = await readSessNow(ctx);
+      const newChairs = new Set(entries.filter(e => e.chairId && !state.sess.chairs.has(e.chairId)).map(e => e.chairId)).size;
+      if (state.sess.cnext + newChairs - 1 > CH_LAST) throw new Error(`The ${SESS_SHEET} sheet has room for ${CH_LAST - CH_FIRST + 1} chairs.`);
+      if (state.sess.next + entries.length > SESS_LAST) await compactSess(ctx, ws);
+      sessApply(entries, (row, col, v) => { ws.getRangeByIndexes(row - 1, col, 1, 1).values = [[v]]; });
+      await ctx.sync();
+    });
+  } catch (e) { try { await Excel.run(readSessNow); } catch { /* keep the error that matters */ } throw e; }
+  return sessSnap();
+}
+/* the board's 30-second tick picks up other people's check-ins and moves */
+async function pullSess() {
+  if (POPOUT) { setSessSnap(await callPane("sessSnap", [])); return; }
+  await Excel.run(readSessNow);
+}
+/* keeps the last SESS_KEEP days, rewritten from row 2; the copy in memory follows once the sheet has it */
 async function compactSess(ctx, ws) {
   const S = state.sess, keep = [...S.rows.values()].filter(r => r.date >= todaySerial() - SESS_KEEP).sort((a, b) => a.date - b.date || a.row - b.row);
   ws.getRange(`A${SESS_FIRST}:J${SESS_LAST}`).clear("Contents");
   if (keep.length) ws.getRange(`A${SESS_FIRST}:J${SESS_FIRST + keep.length - 1}`).values = keep.map(r => [r.date, r.tab, r.visit, r.chair, r.ng, !!r.tick, ...TIME_KEYS.map(k => r[k] == null ? "" : r[k] / 1440)]);
+  await ctx.sync();
   S.rows = new Map(keep.map((r, i) => [TmsCore.sessKey(r.date, r.tab, r.visit), { ...r, row: SESS_FIRST + i }])); S.next = SESS_FIRST + keep.length;
-  if (S.cnext > CH_LAST) throw new Error(`The ${SESS_SHEET} sheet has room for ${CH_LAST - CH_FIRST + 1} chairs.`);
 }
 const sessOf = v => ({ key: v.key, date: v.date, tab: v.tab, visit: v.visit });
 async function sessWrite(v, set, msg) {
@@ -596,7 +617,8 @@ const findVisit = k => (state.fl || (state.fl = floor())).visits.find(v => v.key
 function courseNeeds(p, fl) {
   const vs = fl.visits.filter(v => v.tab === p.tab), mt = vs.filter(v => v.type === "MT" && !v.miss);
   return TmsCore.needs(p, { today: fl.t, fmtDate: fmtMon, recentDays: state.cfg.recentDays, exemptTag: EXEMPT_TAG, unclassTag: UNCLASS_TAG,
-    moved: vs.filter(v => v.moved).map(v => ({ key: v.key, chairLabel: chairLbl(v.chair) })),
+    moved: vs.filter(v => v.moved).map(v => ({ key: v.key, chairLabel: chairLbl(v.chair) })).concat(state.sess ? [...state.sess.rows].filter(([, r]) => r.tab === p.tab && r.date < fl.t && TmsCore.moveState(r, "", null).moved)
+      .map(([key, r]) => ({ key, chairLabel: chairLbl(r.chair), dayLabel: fmtMon(r.date) })) : []),
     noChair: vs.filter(v => v.chairVisit && !v.chair && ["booked", "waiting"].includes(ph(v))).map(v => ({ key: v.key, timeLabel: clock(v.time) || "today" })),
     mtToday: mt.length > 0, schedGiven: p.ben.lastSched != null && mt.length > 0 && p.ben.lastSched >= fl.t });
 }
@@ -681,6 +703,7 @@ function rowAction(v) {
   return "";
 }
 function viewToday(fl) {
+  if (state.chair !== "all" && todayMode(fl) === "clinic") { state.chair = "all"; try { localStorage.setItem("tms_chair", "all"); } catch { /* this session only */ } }
   const mode = todayMode(fl), states = fl.avail.map(c => ({ c, s: TmsCore.chairState(c.id, fl.visits, fl.now) }));
   if (!state.sel || (state.sel.k && !findVisit(state.sel.k)) || (state.sel.chair && !fl.avail.some(c => c.id === state.sel.chair))) {
     const order = { late: 0, soon: 1, track: 2, open: 3 }, top = states.slice().sort((a, b) => order[a.s.state] - order[b.s.state])[0];
@@ -828,7 +851,8 @@ function viewSchedule(fl) {
       const v = variances(day, true), lines = Object.entries(v.groups).filter(([, a]) => a.length), hrs = hoursOf(day);
       return `<div class="card wd${day === fl.t ? " today" : ""}"><div class="h"><h2>${fmtDay(day)}</h2><span>${day === fl.t ? "Today" : ""}</span></div>
         <div class="big">${v.actual} of ${v.expected} <small>${day < fl.t ? "treated" : "booked"}</small></div>${hrs && hrs.closed ? `<p class="flag" style="margin:6px 0 0">${esc(hrs.txt)}</p>` : ""}
-        <ul>${lines.map(([k, a]) => `<li><span class="${k === "Missed" || k === "Away" ? "flag" : "muted"}">${esc(k)}:</span> ${a.map(([p]) => esc(p.tab)).join(", ")}</li>`).join("") || '<li class="muted">No variances</li>'}</ul></div>`;
+        <ul>${lines.map(([k, a]) => `<li><span class="${k === "Missed" || k === "Away" ? "flag" : "muted"}">${esc(k)}:</span> ${a.map(([p]) => esc(p.tab)).join(", ")}</li>`).join("") || '<li class="muted">No variances</li>'}</ul>
+        <ul class="vlist">${dayVisits(day)}</ul></div>`;
     }).join("");
     return head("Schedule", `Week of ${fmtMon(start)} (Sunday to Saturday). Treatments booked or done against everyone in treatment.`, true) + seg + nav + `<div class="wkgrid">${days}</div>
       <div class="actions" style="margin-top:20px"><button class="btn ghost" data-act="schedSheet">Write this week to the Chair Schedule sheet</button></div>`;
@@ -860,7 +884,14 @@ function viewSchedule(fl) {
   if (sl0(day, ent)) notes.push(`<p class="flag">Outside chair hours: ${sl0(day, ent)}</p>`);
   if (ent.noTime.length) notes.push(`<p class="flag">No time on the tab: ${ent.noTime.map(x => esc(x.p.tab)).join(", ")}. Import the appointment list to fill times.</p>`);
   return head("Schedule", isToday ? "Select a visit to open it on Today. Hours come from the Clinic Schedule sheet." : "Select a visit to open its row on the tab.", true) + seg + nav
-    + `<div class="card sched"><div class="sgrid" style="grid-template-columns:52px repeat(${used.length},minmax(110px,1fr))">${grid}</div>${notes.join("")}</div>`;
+    + `<div class="card sched"><div class="sgrid" style="grid-template-columns:52px repeat(${used.length},minmax(110px,1fr))">${grid}</div>${notes.join("")}</div>`
+    + (isToday ? "" : `<div style="margin-top:16px">${listCheckCard(day)}</div>`);
+}
+/* a day's visits for the Week card: time, patient, and anything but a plain daily treatment */
+function dayVisits(day) {
+  return state.patients.filter(onSched).flatMap(p => p.rows.filter(r => r.date === day && inChair(p, r)).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 1e4) - (b.r.time ?? 1e4) || a.p.tab.localeCompare(b.p.tab))
+    .map(({ p, r }) => { const marks = [r.type && r.type !== "Daily" ? r.type + (r.tele ? " tele" : "") : "", r.miss ? "missed" : "", r.alt ? "other clinic" : "", r.delivered ? "done" : "", p.d.awayConflicts.some(c => c.r.row === r.row) ? "away" : "", state.closures.has(day) && !r.delivered && !r.miss ? "clinic closed" : ""].filter(Boolean);
+      return `<li><button class="vrow" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="muted">${clock(r.time) || "–"}</span> <b>${esc(p.tab)}</b>${marks.length ? ` <span class="${/missed|away|closed/.test(marks.join()) ? "flag" : "muted"}">${esc(marks.join(", "))}</span>` : ""}</button></li>`; }).join("");
 }
 function sl0(day, ent) { const h = state.clinic?.days[dow(day)]; if (!h || h.open == null || h.close == null) return ""; return ent.chair.filter(e => e.start < h.open || e.end > h.close).map(e => `${esc(e.p.tab)} ${clock(e.start)}`).join(", "); }
 
@@ -916,7 +947,14 @@ function courseHtml(fl, N) {
     <div class="section"><div class="h"><h2>Treatments</h2><span>${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</span></div>${strip(p, tv.some(v => v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}</div>
     <div class="section"><div class="h"><h2>Measures</h2><span>Lower is better</span></div>${scores(p, tv.some(v => v.r.measX && !v.r.measVal))}</div>
     <div class="section"><div class="h"><h2>Details</h2></div>${facts(p, false)}</div>
-    <div class="section"><div class="h"><h2>Upcoming</h2><span>${d.sched.length} booked</span></div>${up.length ? up.map(r => `<div class="row"><button class="rowmain" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="p">${fmtMon(r.date)}</span><span class="w">${DAYS[dow(r.date)]}</span><span>${clock(r.time) || "no time"}</span><span class="f muted">${esc(apptTypeName(r))}${r.measX ? ", measures" : ""}</span></button></div>`).join("") : '<p class="body">Nothing booked.</p>'}</div>`;
+    <div class="section"><div class="h"><h2>Upcoming</h2><span>${d.sched.length} booked</span></div>${up.length ? up.map(r => `<div class="row"><button class="rowmain" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="p">${fmtMon(r.date)}</span><span class="w">${DAYS[dow(r.date)]}</span><span>${clock(r.time) || "no time"}</span><span class="f muted">${esc(apptTypeName(r))}${r.measX ? ", measures" : ""}</span></button></div>`).join("") : '<p class="body">Nothing booked.</p>'}</div>
+    <div class="section"><div class="h"><h2>Every visit</h2><button class="btn ghost sm" data-act="ptAll">${state.ptAll ? "Hide" : "Show all visits and scores"}</button></div>${state.ptAll ? allVisits(p) : ""}</div>`;
+}
+
+/* the whole visit log with pulses and scores, as the earlier patient view had it */
+function allVisits(p) {
+  const t = todaySerial(), all = p.rows.filter(r => r.date != null).sort(cmp);
+  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Pulses L / R / O</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Status</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${esc(r.type)}${r.tele ? " tele" : ""}</td><td>${r.pulses.map(x => x ?? "").join(" / ")}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${r.miss ? "Missed" : r.delivered ? "Done" : r.alt ? "Other clinic" : r.date < t ? "Not entered" : "Booked"}</td></tr>`).join("")}</table>`;
 }
 
 /* ---------- Chairs: devices, chair hours and protocols ---------- */
@@ -1111,9 +1149,11 @@ function pulseFields(p) {
 const readPulses = () => SITES.map((s, i) => { const x = mval(`mPul${i}`); return x === "" ? "" : +x; });
 /* the next visit that collects measures, as the old Measures needed box chose: an MT, MT redo or F/U within 7 days, else the next visit */
 function measDest(p, r) {
-  const up = p.rows.filter(x => x.date != null && r.date != null && x.date > r.date && !x.delivered && !x.miss).sort(cmp);
+  const up = measUp(p, r);
   return up.find(x => STD_VISIT.includes(x.type) && x.date - r.date <= 7) || up[0] || null;
 }
+const measUp = (p, r) => p.rows.filter(x => x.date != null && r.date != null && x.date > Math.max(r.date, todaySerial() - 1) && !x.delivered && !x.miss).sort(cmp);
+const measPick = (p, r, dest) => `<select id="mMeasTo" aria-label="Move the measures to">${measUp(p, r).slice(0, 20).map(x => `<option value="${x.row}"${x === dest ? " selected" : ""}>${fmtDay(x.date)}, ${esc(apptTypeName(x))}</option>`).join("")}</select>`;
 
 function mEnd(v) {
   const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r);
@@ -1124,7 +1164,7 @@ function mEnd(v) {
     <div class="qrow"><span>Any pain or discomfort during treatment?</span><select id="mPain"><option${dr.a.pain === "Yes" ? "" : " selected"}>No</option><option${dr.a.pain === "Yes" ? " selected" : ""}>Yes</option></select><input id="mPainD" class="sp" placeholder="What and where (needed if yes)" value="${esc(dr.d.pain || "")}"${dr.a.pain === "Yes" ? "" : " hidden"}></div>
     <div class="qrow"><span>Involuntary muscle movements?</span><select id="mMus">${["Yes (normal)", "No"].map(o => `<option${dr.a.mus === o ? " selected" : ""}>${o}</option>`).join("")}</select></div>
     ${v.r.measX ? `<h3>PHQ-9 and GAD-7 due today</h3><div class="g2">${fld("PHQ-9 (0 to 27)", '<input type="number" min="0" max="27" id="mPhq">')}${fld("GAD-7 (0 to 21)", '<input type="number" min="0" max="21" id="mGad">')}</div>
-      ${dest ? `<label class="check"><input type="checkbox" id="mMeasMove"> Not collected today: move them to ${fmtDay(dest.date)}</label>` : ""}` : ""}
+      ${dest ? `<label class="check"><input type="checkbox" id="mMeasMove"> Not collected today: move them to</label>${measPick(p, v.r, dest)}` : ""}` : ""}
     <p class="body">Next visit: ${nx ? `${fmtLong(nx.date)}, ${clock(nx.time) || "no time"}` : "none booked. Book it in NextGen."}</p>
     ${mfoot("End session", "doEnd")}`, true);
 }
@@ -1138,7 +1178,7 @@ async function doEnd() {
   if (v.r.measX) {
     const mv = $("mMeasMove") && $("mMeasMove").checked, P = mval("mPhq"), Q = mval("mGad");
     if (!mv && !(isInt(P, 0, 27) && isInt(Q, 0, 21))) return merr("Enter PHQ-9 (0 to 27) and GAD-7 (0 to 21), or tick Not collected today.");
-    meas = mv ? { move: measDest(v.p, v.r) } : { P: +P, Q: +Q };
+    meas = mv ? { move: v.p.rows.find(x => x.row === +mval("mMeasTo")) } : { P: +P, Q: +Q };
   }
   const dr = draftOf(v.p, v.r); dr.a.pain = pain; dr.d.pain = painD; dr.a.mus = mval("mMus"); if (!dr.initials) dr.initials = state.initials || initialsOf(tech);
   closeModal();
@@ -1189,7 +1229,7 @@ async function recordMiss(tab, row, kind, fb) {
   const note = withFreebie((r.note ? r.note + "; " : "") + `${kind} ${fmtDate(r.date ?? todaySerial())} (marked in add-in)`, fb), left = p.d.left;
   const pairs = [[`M${row}`, "x"], [`S${row}`, note]]; if (fb === "Used") pairs.push([p.fbCell, Math.max(0, left - 1)]);
   try {
-    await writeCells(tab, pairs); if (fb === "Used") p.freebiesLeft = Math.max(0, left - 1);
+    await writeCells(tab, pairs, at(r)); if (fb === "Used") p.freebiesLeft = Math.max(0, left - 1);
     patchRow(tab, row, { miss: true, note, freebie: fb || "" });
     const n = TmsCore.missStreak(p.rows, todaySerial());
     toast(n >= 3 ? `${tab}: ${n} missed in a row. Call to reschedule is on Courses.` : fb === "Used" && left - 1 <= 1 ? `${kind} recorded. ${tab} has ${Math.max(0, left - 1)} freebie${left - 1 === 1 ? "" : "s"} left.` : `${kind} recorded for ${tab}.`);
@@ -1216,7 +1256,7 @@ function mMove(v) {
 }
 async function doMove() {
   const v = findVisit(state.mctx.k), id = radio("chair"); if (!v) return closeModal(); if (!id) return merr("Choose a chair.");
-  const ng = TmsCore.ngForMove(v.s, v.rc);
+  const rep0 = state.report, ng = TmsCore.ngForMove(v.s, v.rc, rep0 && rep0.asOf === todaySerial() ? rep0.asOfMin : null);
   closeModal();
   if (!await sessWrite(v, { chair: id, ng, tick: false, at: nowMin() })) return;
   state.sel = { k: v.key };
@@ -1227,8 +1267,8 @@ async function doMove() {
     <div class="mfoot"><button class="btn primary" data-mclose>Done</button></div>`);
 }
 async function setNgTick(k, on) {
-  const v = findVisit(k); if (!v || !v.s) return;
-  await sessWrite(v, { tick: on }, on ? `Noted: ${v.tab} moved in NextGen.` : "Unticked. Courses will remind you.");
+  const s = state.sess && state.sess.rows.get(k); if (!s) return;
+  await sessWrite({ key: k, date: s.date, tab: s.tab, visit: s.visit }, { tick: on }, on ? `Noted: ${s.tab} moved in NextGen.` : "Unticked. Courses will remind you.");
 }
 function mNote(v) {
   const p = v.p, r = v.r, dr = draftOf(p, r), bl = baselineOf(p), sel = (dk, opts, val) => `<select data-dk="${dk}">${opts.map(o => `<option${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
@@ -1279,7 +1319,8 @@ function mPastMeas(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return; const dest = measDest(p, r); state.mctx = { t: tab, row, dest: dest && dest.row };
   showModal(`<h2 id="mtitle">PHQ-9 and GAD-7 for ${fmtDay(r.date)}: ${esc(tab)}</h2><p class="sub">Still marked x on the tab.</p>
     <div class="g2">${fld("PHQ-9 (0 to 27)", '<input type="number" min="0" max="27" id="mPhq">')}${fld("GAD-7 (0 to 21)", '<input type="number" min="0" max="21" id="mGad">')}</div>
-    ${mfoot("Save scores", "doPastMeas", dest ? `<button class="btn ghost" data-act="doMoveMeas">Move to ${fmtDay(dest.date)}</button>` : "")}`);
+    ${dest ? `<h3>Not collected?</h3>${fld("Move them to", measPick(p, r, dest))}` : ""}
+    ${mfoot("Save scores", "doPastMeas", dest ? '<button class="btn ghost" data-act="doMoveMeas">Move the measures</button>' : "")}`);
 }
 function mBen(tab) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
@@ -1352,7 +1393,7 @@ async function undoEnd(v) {
   if (!c || c.off) return toast(`${chairLbl(v.chair)} is unavailable, so this session can't be reopened.`, true);
   if (fl.visits.some(x => x !== v && x.chair === v.chair && x.start != null && x.start >= (v.start ?? 0))) return toast(`${chairLbl(v.chair)} has had a session since. Correct this one on the tab.`, true);
   try {
-    await writeCells(v.tab, [[`F${v.row}`, ""], [`H${v.row}`, ""], [`J${v.row}`, ""], [`B${v.row}`, ""]]);
+    await writeCells(v.tab, [[`F${v.row}`, ""], [`H${v.row}`, ""], [`J${v.row}`, ""], [`B${v.row}`, ""]], at(v.r));
     patchRow(v.tab, v.row, { delivered: false, pulses: [null, null, null], tech: "" }); state.copied.delete(v.key);
     await sessWrite(v, { end: null }, "Undone. The session is running again.");
   } catch (e) { fail(e); }
@@ -1362,7 +1403,7 @@ async function logCall(tab, outcome, note) {
   const r = p.rows.filter(x => x.miss && x.date != null).sort(cmp).pop(); if (!r) return toast("No missed visit on the tab to note the call on.", true);
   const line = `Called ${fmtDate(todaySerial())}: ${outcome}${note ? ` (${note})` : ""}`;
   try {
-    await writeCells(tab, [[`S${r.row}`, (r.note ? r.note + "; " : "") + line]]); patchRow(tab, r.row, { note: (r.note ? r.note + "; " : "") + line });
+    await writeCells(tab, [[`S${r.row}`, (r.note ? r.note + "; " : "") + line]], at(r)); patchRow(tab, r.row, { note: (r.note ? r.note + "; " : "") + line });
     if (outcome === "Wants to pause") await setStatus(tab, "Paused"); else toast(`Call noted on ${tab}, ${fmtMon(r.date)}.`);
   } catch (e) { fail(e); }
 }
@@ -1500,8 +1541,8 @@ async function writeBen(ctx, entries) {
 const benTarget = tab => state.patients.find(p => p.tab === tab && p.layout === 3);
 /* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true }. Benefits keys (W4, X12 ...)
    on a current-layout tab go to that patient's Benefits row; { tab, a: BEN_STAMP } only stamps Last updated. */
-async function applyOps(ops) {
-  if (POPOUT) return callPane("applyOps", [ops]);
+async function applyOps(ops, guard) {
+  if (POPOUT) return callPane("applyOps", [ops, guard]);
   const ben = [], cells = [];
   for (const o of ops) {
     const p = isBenKey(o.a) && benTarget(o.tab);
@@ -1509,6 +1550,10 @@ async function applyOps(ops) {
     else if (o.a !== BEN_STAMP) cells.push(o);
   }
   await Excel.run(async ctx => {
+    const g = (guard || []).filter(x => x.date != null).map(x => ({ ...x, r: ctx.workbook.worksheets.getItem(x.tab).getRange(`E${x.row}`) }));
+    if (g.length) { g.forEach(x => x.r.load("values")); await ctx.sync(); }
+    const moved = g.find(x => Math.floor(Number(x.r.values[0][0]) || 0) !== x.date);
+    if (moved) throw new Error(`${moved.tab}: the visit on row ${moved.row} has moved on the tab (an import may have re-sorted it). Nothing was saved. Select Refresh and try again.`);
     for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; }
     await writeBen(ctx, ben);
     await ctx.sync();
@@ -1624,7 +1669,9 @@ async function formatLogsClick() {
     toast(n ? `Reformatted ${n} visit-log row${n === 1 ? "" : "s"}. Rows with their own highlight were left as they are.` : "Visit-log formatting already follows the dates.");
   } catch (e) { fail(e); }
 }
-const writeCells = (tab, pairs) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })));
+/* guard: the log row and the date it should still hold, checked before anything is written */
+const writeCells = (tab, pairs, guard) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })), guard ? [{ tab, ...guard }] : null);
+const at = r => ({ row: r.row, date: r.date });
 function patchRow(tab, row, f) { const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return; Object.assign(r, f); p.d = derive(p); renderDash(); }
 const findPR = (tab, row) => { const p = state.patients.find(x => x.tab === tab); return [p, p && p.rows.find(x => x.row === row)]; };
 
@@ -1634,7 +1681,7 @@ async function setFreebie(tab, row, v) {
   const [p, r] = findPR(tab, row); if (!r) return;
   const note = withFreebie(r.note, v), n7 = Math.max(0, p.d.left + (r.freebie === "Used" ? 1 : 0) - (v === "Used" ? 1 : 0));
   try {
-    await writeCells(tab, [[`S${row}`, note], [p.fbCell, n7]]); closeModal(); p.freebiesLeft = n7; patchRow(tab, row, { freebie: v, note });
+    await writeCells(tab, [[`S${row}`, note], [p.fbCell, n7]], at(r)); closeModal(); p.freebiesLeft = n7; patchRow(tab, row, { freebie: v, note });
     const left = p.d.left;
     toast(v === "Used" && left <= 1 ? (left === 1 ? `Freebie used. ${tab} has 1 left.` : `Freebie used. ${tab} has none left.`) : v === "Used" ? "Freebie used." : "Marked waived.", v === "Used" && left === 0);
   } catch (e) { fail(e); }
@@ -1643,7 +1690,7 @@ async function undoMiss(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return;
   const note = withFreebie(r.note.split("; ").filter(x => !/\(marked in add-in\)$/.test(x)).join("; "), "");
   const pairs = [[`M${row}`, ""], [`S${row}`, note]]; if (r.freebie === "Used") pairs.push([p.fbCell, p.d.left + 1]);
-  try { await writeCells(tab, pairs); if (r.freebie === "Used") p.freebiesLeft = p.d.left + 1; patchRow(tab, row, { miss: false, freebie: "", note }); toast("Missed visit undone."); } catch (e) { fail(e); }
+  try { await writeCells(tab, pairs, at(r)); if (r.freebie === "Used") p.freebiesLeft = p.d.left + 1; patchRow(tab, row, { miss: false, freebie: "", note }); toast("Missed visit undone."); } catch (e) { fail(e); }
 }
 /* pulses delivered = treatment complete (F, H, J). Treating technician goes in B. Returns whether it saved. */
 async function markPulses(tab, row, { vals, tech }) {
@@ -1652,7 +1699,7 @@ async function markPulses(tab, row, { vals, tech }) {
   if (!tech) { toast("Enter the treating technician.", true); return false; }
   const pairs = [["F", vals[0]], ["H", vals[1]], ["J", vals[2]]].filter(([, v]) => v !== "" && v > 0).map(([c, v]) => [`${c}${row}`, v]);
   pairs.push([`B${row}`, tech]); state.techName = tech;
-  try { await writeCells(tab, pairs); patchRow(tab, row, { delivered: true, tech, pulses: [vals[0] || null, vals[1] || null, vals[2] || null] }); return true; } catch (e) { fail(e); return false; }
+  try { await writeCells(tab, pairs, at(r)); patchRow(tab, row, { delivered: true, tech, pulses: [vals[0] || null, vals[1] || null, vals[2] || null] }); return true; } catch (e) { fail(e); return false; }
 }
 /* PHQ-9 in P, GAD-7 in Q */
 async function saveMeasures(tab, row, vals) {
@@ -1661,7 +1708,7 @@ async function saveMeasures(tab, row, vals) {
   if (vals.Q != null && (vals.Q < 0 || vals.Q > 21)) { toast("GAD-7 must be 0 to 21.", true); return false; }
   const pairs = Object.entries(vals).filter(([, n]) => n != null).map(([c, n]) => [`${c}${row}`, n]); if (!pairs.length) { toast("Enter a score first.", true); return false; }
   try {
-    await writeCells(tab, pairs);
+    await writeCells(tab, pairs, at(r));
     const phq = vals.P != null ? String(vals.P) : r.phq, gad = vals.Q != null ? String(vals.Q) : r.gad;
     patchRow(tab, row, { phq, gad, measX: phq.toLowerCase() === "x" || gad.toLowerCase() === "x", measVal: true }); toast("Measures saved."); return true;
   } catch (e) { fail(e); return false; }
@@ -1674,7 +1721,7 @@ async function moveMeasures(tab, row, destRow) {
   const pairs = [[`S${row}`, note]];
   if (r.phq.toLowerCase() === "x") pairs.push([`P${row}`, ""]); if (r.gad.toLowerCase() === "x") pairs.push([`Q${row}`, ""]);
   if (!dest.phq) pairs.push([`P${dest.row}`, "x"]); if (!dest.gad) pairs.push([`Q${dest.row}`, "x"]);
-  try { await writeCells(tab, pairs); toast(`Measures moved to ${fmtMon(dest.date)}.`); await refresh(); return true; } catch (e) { fail(e); return false; }
+  try { await writeCells(tab, pairs, at(r)); toast(`Measures moved to ${fmtMon(dest.date)}.`); await refresh(); return true; } catch (e) { fail(e); return false; }
 }
 /* MT details ("MT %: 55", "Hotspot: ...") replace the earlier ones in the MT row's Notes */
 async function saveMT(tab, row, parts) {
@@ -1682,7 +1729,7 @@ async function saveMT(tab, row, parts) {
   if (!parts.length) { toast("Enter at least one MT detail.", true); return false; }
   const keep = r.note.split("; ").filter(x => !/^(hotspot|mt %|amps|baseline sleep|baseline caffeine):/i.test(x));
   const note = [...keep.filter(Boolean), ...parts].join("; ");
-  try { await writeCells(tab, [[`S${row}`, note]]); patchRow(tab, row, { note }); toast("MT details saved to Notes."); return true; } catch (e) { fail(e); return false; }
+  try { await writeCells(tab, [[`S${row}`, note]], at(r)); patchRow(tab, row, { note }); toast("MT details saved to Notes."); return true; } catch (e) { fail(e); return false; }
 }
 /* protocol rows 2-4: name from the Protocols sheet fills J:M (N calculates), site label in O. picks: [{ name, site }] for rows 1-3 */
 async function saveProtocol(tab, picks) {
@@ -2539,14 +2586,14 @@ function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m))
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
-    sess: state.sess && { ...state.sess, rows: [...state.sess.rows], chairs: [...state.sess.chairs] } });
+    sess: sessSnap() });
   const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
   for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
 }
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk,
     pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
-    sess: o.sess ? { ...o.sess, rows: new Map(o.sess.rows), chairs: new Map(o.sess.chairs) } : null });
+    sess: null }); setSessSnap(o.sess);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -2559,9 +2606,9 @@ function callPane(fn, args) {
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
-  refresh: () => refresh(), applyOps: ops => applyOps(ops), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
+  refresh: () => refresh(), applyOps: (ops, g) => applyOps(ops, g), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), writeSess: e => writeSess(e)
+  saveSetting: (k, v) => saveSetting(k, v), writeSess: e => writeSess(e), sessSnap: async () => { await Excel.run(readSessNow); return sessSnap(); }
 };
 async function onPopMessage(arg) {
   let m; try { m = JSON.parse(arg.message); } catch { return; }
@@ -2670,10 +2717,10 @@ Office.onReady(info => {
   setInterval(() => {
     const a = document.activeElement;
     if (document.hidden || !$("modal").hidden || (a && a.matches && a.matches("input,select,textarea")) || !["today", "schedule"].includes(state.view)) return;
-    focusWant = focusKey(a); renderDash(); refocus();
+    focusWant = focusKey(a); pullSess().catch(e => console.error(e)).then(() => { renderDash(); refocus(); });
   }, 30000);
   document.addEventListener("click", e => {
-    const ctl = e.target.closest("button,input,select,[data-k],[data-course]"); if (ctl) focusWant = focusKey(ctl);
+    const ctl = e.target.closest("button,input,select"); if (ctl) focusWant = focusKey(ctl);
     onClick(e);
     if (ctl) refocus();
   });
@@ -2684,12 +2731,13 @@ Office.onReady(info => {
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);
     const pq = el.closest("[data-prq]"); if (pq) { $("prFrom").value = serialToInput(todaySerial()); $("prTo").value = serialToInput(+pq.dataset.prq); document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", String(b === pq))); return prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); }
     const ap = el.closest("[data-apact]"); if (ap) { document.querySelectorAll("[data-apr]").forEach(i => { state.apRanges[+i.dataset.apr][i.dataset.k] = i.value; }); if (ap.dataset.apact === "add") state.apRanges.push({}); else state.apRanges.splice(+ap.dataset.v, 1); renderApRanges(); return; }
-    const x = el.closest("[data-act],[data-view],[data-mode],[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt]"); if (!x) return;
+    const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt]"); if (!x) return;
     const d = x.dataset;
     if (d.act) return act(d.act, x, e);
     if (d.view) { if (d.view === "courses" && state.view === "add") resetAddPatient(); return show(d.view); }
     if (d.mode) { state.chair = d.mode; state.sel = null; try { localStorage.setItem("tms_chair", d.mode); } catch { /* this session only */ } return renderDash(); }
-    if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (d.go) return show("today"); return renderDash(); }
+    /* selecting a visit also opens its tab at that row, unless Settings turns it off */
+    if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") openTabName(v.tab, v.row); if (d.go) return show("today"); return renderDash(); }
     if (d.chair) { state.sel = { chair: d.chair }; return renderDash(); }
     if (d.course) { state.ptTab = d.course; return renderDash(); }
     if (d.filter) { state.cfilter = d.filter; return renderDash(); }
@@ -2707,11 +2755,11 @@ Office.onReady(info => {
       mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(state.dash === "week" ? 7 * state.weekOffset : state.schedOffset), addPt: () => { resetAddPatient(); show("add"); },
       /* today's visits */
       checkin: needV(checkIn), start: needV(startSession), end: needV(mEnd), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),
-      fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: needV(x => setNgTick(x.key, true)),
+      fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: () => setNgTick(k, true),
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openTabName(t, row), course: () => openCourse(t),
       /* Courses */
       status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProto(t), avail: () => mAvail(t),
-      pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
+      ptAll: () => { state.ptAll = !state.ptAll; renderDash(); }, pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
       /* Chairs */
       chairOff: () => mChairOff(v), chairEdit: () => mChairEdit(v),
       chairOn: async () => { try { await writeSess([{ chairId: v, set: { off: false } }]); renderDash(); toast(`${chairLbl(v)} is available again.`); } catch (err) { fail(err); } },
@@ -2723,9 +2771,9 @@ Office.onReady(info => {
       doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return merr("Pick a valid date range."); closeModal(); openSchedule(t, f, to); },
       doPastPulses: () => { const vals = readPulses(), tech = mval("mTech"); if (!vals.some(n => n !== "" && n > 0)) return merr("Enter the pulses delivered."); if (!tech) return merr("Enter the treating technician."); closeModal(); markPulses(m.t, m.row, { vals, tech }).then(ok => ok && toast("Pulses saved.")); },
       pastMissed: () => { const [p, r] = findPR(m.t, m.row); if (!r) return closeModal(); mMiss({ p, r, tab: m.t, row: m.row, time: r.time, key: null }); },
-      doPastTech: async () => { const tech = mval("mTech"); if (!tech) return merr("Enter the treating technician."); closeModal(); try { await writeCells(m.t, [[`B${m.row}`, tech]]); state.techName = tech; patchRow(m.t, m.row, { tech }); toast("Technician saved."); } catch (err) { fail(err); } },
+      doPastTech: async () => { const tech = mval("mTech"); if (!tech) return merr("Enter the treating technician."); closeModal(); try { const [, r0] = findPR(m.t, m.row); await writeCells(m.t, [[`B${m.row}`, tech]], r0 && at(r0)); state.techName = tech; patchRow(m.t, m.row, { tech }); toast("Technician saved."); } catch (err) { fail(err); } },
       doPastMeas: () => { const P = mval("mPhq"), Q = mval("mGad"); if (!(isInt(P, 0, 27) && isInt(Q, 0, 21))) return merr("Enter PHQ-9 (0 to 27) and GAD-7 (0 to 21)."); closeModal(); saveMeasures(m.t, m.row, { P: +P, Q: +Q }); },
-      doMoveMeas: () => { closeModal(); moveMeasures(m.t, m.row, m.dest); },
+      doMoveMeas: () => { const to = +mval("mMeasTo") || m.dest; closeModal(); moveMeasures(m.t, m.row, to); },
       doBen: () => { const data = Object.fromEntries([...$("modalBody").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value])); if (!benOk(data)) return merr("Use amounts like 25 or 25.00. Only the deductible and out-of-pocket max can be N/A."); closeModal(); saveBenefits(m.t, data); },
       doExt: () => { const n = mval("mExtN"); if (!isInt(n, 1, 99)) return merr("Add 1 or more visits."); const exp = inputToSerial(mval("mExtD")); if (exp != null && exp <= todaySerial()) return merr("Choose an end date after today, or leave it blank."); closeModal(); addExtension(m.t, { n: +n, exp }); },
       doProto: () => { const pe = $("modalBody").querySelector(".pe"), picks = [1, 2, 3].map(n => ({ name: pe.querySelector(`select[data-pname="${n}"]`).value, site: pe.querySelector(`select[data-psite="${n}"]`).value })); closeModal(); saveProtocol(m.t, picks); },
@@ -2734,7 +2782,7 @@ Office.onReady(info => {
       avDel: () => { readAvailEditor($("modalBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); mAvail(m.t, true); },
       doStatus: () => { const st = radio("st"); if (!st) return merr("Choose a status."); closeModal(); setStatus(m.t, st); },
       doCall: () => { const out = radio("out"), note = mval("mCallNote"); closeModal(); logCall(m.t, out, note); },
-      doChairOff: async () => { const id = m.chair; closeModal(); try { await writeSess([{ chairId: id, set: { off: true } }]); if (state.chair === id) state.chair = "all"; renderDash(); toast(`${chairLbl(id)} marked unavailable.`); } catch (err) { fail(err); } },
+      doChairOff: async () => { const id = m.chair; closeModal(); try { await writeSess([{ chairId: id, set: { off: true } }]); renderDash(); toast(`${chairLbl(id)} marked unavailable.`); } catch (err) { fail(err); } },
       doChairEdit: async () => { const id = m.chair, svc = inputToSerial(mval("mSvc")), set = { device: mval("mDev"), coil: mval("mCoil"), service: svc }; if (svc != null && svc > todaySerial()) return merr("Choose today or an earlier date."); closeModal(); try { await writeSess([{ chairId: id, set }]); renderDash(); toast(`${chairLbl(id)} saved.`); } catch (err) { fail(err); } }
     };
     if (acts[a]) { e.preventDefault(); acts[a](); }

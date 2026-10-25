@@ -56,9 +56,10 @@
     const back = s.chair === (s.ng || ""), listed = !!rc && s.chair === rc && listAt != null && s.at != null && listAt > s.at;
     return { moved: !s.tick && !back && !listed, settled: (!!s.tick || listed) && !back, chair: s.chair, from: s.ng || "" };
   }
-  /* what to write as NextGen's chair when a visit moves again: after a tick, NextGen has the chair it was moved to */
-  function ngForMove(s, rc) {
-    if (s && s.chair) return s.tick ? s.chair : (s.ng || "");
+  /* what to write as NextGen's chair when a visit moves again: once the last move was ticked, or a list run after it showed it,
+     NextGen has the chair it was moved to */
+  function ngForMove(s, rc, listAt) {
+    if (s && s.chair) return moveState(s, rc, listAt).settled ? s.chair : (s.ng || "");
     return rc || "";
   }
 
@@ -83,7 +84,7 @@
     const streak = missStreak(p.rows, x.today);
     if (streak >= 3) add("missed", `Missed ${streak} in a row`, ["Call to reschedule", "call"], { bad: true });
     if (A) d.authFlags.forEach(t => add("auth", t, /^Auth starts|MT redo/.test(t) ? ["Open tab", "opentab"] : ["Add extension", "ext"], { bad: /expired|past auth|authorized \(D2\)/i.test(t) }));
-    (x.moved || []).forEach(v => add("ng", `Moved to ${v.chairLabel}, not yet in NextGen`, ["Mark moved in NextGen", "ngdone"], { key: v.key }));
+    (x.moved || []).forEach(v => add("ng", `Moved to ${v.chairLabel}${v.dayLabel ? ` on ${v.dayLabel}` : ""}, not yet in NextGen`, ["Mark moved in NextGen", "ngdone"], { key: v.key }));
     (x.noChair || []).forEach(v => add("nochair", `No chair for ${v.timeLabel}`, ["Choose a chair", "move"], { key: v.key }));
     if (A && d.bidfToday) add("bidf", "BIDF info needed today", ["Enter benefits", "ben"]);
     if (d.suggest) add("status", `Status: ${p.status || "blank"} to ${d.suggest}`, [`Set to ${d.suggest}`, "status"], { v: d.suggest });
@@ -100,7 +101,7 @@
     if (A) [...new Set(d.awayConflicts.map(c => c.why))].forEach(why => { const cs = d.awayConflicts.filter(c => c.why === why); add("away", `Booked ${cs.map(c => f(c.r.date)).join(", ")} while ${why}`, ["Edit availability", "avail"], { row: cs[0].r.row }); });
     d.closedConflicts.forEach(c => add("closed", `Booked ${f(c.r.date)} on a closure (${c.why})`, ["Open tab", "opentab"], { row: c.r.row }));
     if (A && d.sameDay.length) add("sameday", `More than one visit on ${d.sameDay.map(f).join(", ")}`, ["Open tab", "opentab"]);
-    if (A && x.mtToday && !x.schedGiven) add("sched", "Course schedule not given", ["Print course schedule", "print"]);
+    if (A && x.mtToday && !x.schedGiven) add("sched", "Course schedule not given", ["Print course schedule", "print"], { v: "all" });
     if (A) d.benFlags.forEach(t => add("cost", t, ["Review benefits", "ben"]));
     if (x.mtToday) add("start", "Starts today", null, { quiet: true });
     if (/^tapering$/i.test(p.status)) add("taper", "Tapering", null, { quiet: true });
