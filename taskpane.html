@@ -6,366 +6,532 @@
 <title>TMS Tracker</title>
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-:root{--ink:#1c2a33;--mute:#5f6f7a;--line:#dde3e8;--bg:#fff;--wash:#f3f6f8;--acc:#0f6e6e;--acc-w:#e2f1f1;--red:#b3261e;--red-w:#fbe9e7;--amb:#8a5a00;--amb-w:#fdf1d8;
-  --mt:#66FFFF;--mt-w:#dcffff;--mtr:#92D050;--mtr-w:#e6f3d6;--fu:#FF99CC;--fu-w:#ffe6f1;--alt:#FF9900;--alt-w:#ffeccc}
+/* MHS tracker design tokens (shared with ESK Tracker). Every colour comes from these variables, so dark mode follows. */
+:root{
+  color-scheme:light;
+  --bg:#F3F4F1; --surface:#FFFFFF; --surface-2:#E9EBE6; --surface-3:#F7F8F5;
+  --ink:#1B211F; --muted:#66706B; --faint:#A3ABA6;
+  --accent:#1E6B59; --accent-ink:#FFFFFF; --accent-soft:#DDEDE6;
+  --warn:#8F5400; --warn-soft:#FAE9CF;
+  --danger:#B3261E; --danger-ink:#FFFFFF; --danger-soft:#F9DCD9;
+  --shadow:0 1px 2px rgba(16,24,20,.05),0 12px 32px -14px rgba(16,24,20,.14);
+  --scrim:rgba(19,23,22,.24);
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#131716;--surface:#1B2220;--surface-2:#252D2A;--surface-3:#182019;--ink:#ECEFED;--muted:#9BA59F;--faint:#5C6763;--accent:#6DC4A6;--accent-ink:#0E2A22;--accent-soft:#1D3A31;--warn:#E9B150;--warn-soft:#3A2D13;--danger:#F19189;--danger-ink:#3A0F0C;--danger-soft:#43211E;--scrim:rgba(0,0,0,.45);--shadow:0 0 0 1px rgba(255,255,255,.05),0 12px 32px -14px rgba(0,0,0,.6)}}
+:root{--lamp:#FFD38A;--lamp-edge:#C98A2B;--glow:#FFC56B;--glow-a:.75}
+@media (prefers-color-scheme:dark){:root{--lamp-edge:#E9B150;--glow:#FFB547;--glow-a:.6}}
+
 *{box-sizing:border-box}
-body{margin:0;font:13px/1.45 "Segoe UI",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
-header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line)}
-h1{font-size:15px;margin:0;font-weight:650}
-h2{font-size:13px;margin:0 0 6px;font-weight:650}
-h3{font-size:14px;margin:0 0 4px}
-button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:4px 9px;border-radius:4px}
-button:hover{background:var(--wash)}
-button:disabled{opacity:.5;cursor:default}
-button:focus-visible,input:focus-visible,select:focus-visible,[data-tab]:focus-visible,[data-pt]:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
-button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
-button.pri:hover{background:#0b5858}
-button.sm{padding:1px 8px;font-size:12px;margin:3px 4px 0 0}
-.tabs,.seg{display:flex;border-bottom:1px solid var(--line)}
-.tabs button,.seg button{flex:1 0 auto;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 6px;background:none}
-.tabs button.on,.seg button.on{border-bottom-color:var(--acc);color:var(--acc);font-weight:650}
-.seg{background:var(--wash);overflow-x:auto}
-.seg button{font-size:12px;padding:6px 8px}
-section{padding:12px}
-.banner{margin:10px 12px 0;padding:8px 10px;border-radius:4px;background:var(--amb-w);color:var(--amb);font-size:12.5px}
-.banner.red{background:var(--red-w);color:var(--red)}
-.banner details{margin-top:6px;color:var(--ink)}
-.banner summary{cursor:pointer;font-weight:600}
-.banner ol{margin:6px 0 0 18px;padding:0}
-.banner img{vertical-align:middle;border:1px solid var(--line)}
-.bctl{display:flex;gap:4px;justify-content:flex-end;margin-top:4px}
-.bctl button{background:transparent;border-color:currentColor;color:inherit}
-.group{margin-bottom:14px}
-.group h2 .n{color:var(--mute);font-weight:400;margin-left:4px}
-.item{padding:6px 8px;border-left:3px solid var(--line);margin-bottom:4px;background:var(--wash);border-radius:0 4px 4px 0}
-.item[data-tab]{cursor:pointer}
-.item[data-tab]:hover{background:var(--acc-w)}
-.item.red{border-left-color:var(--red)}.item.amb{border-left-color:#c98a00}.item.grn{border-left-color:var(--acc)}
-.sub{color:var(--mute);font-size:12px}
-.none{color:var(--mute);font-style:italic;font-size:12.5px}
-.chip{display:inline-block;padding:0 6px;border-radius:9px;font-size:11px;background:var(--wash);border:1px solid var(--line)}
-.chip.red{background:var(--red-w);color:var(--red);border-color:#f0c4be}
-.chip.amb{background:var(--amb-w);color:var(--amb);border-color:#ecd49b}
-.chip.c-mt{background:var(--mt-w);border-color:var(--mt)}.chip.c-mtr{background:var(--mtr-w);border-color:var(--mtr)}.chip.c-fu{background:var(--fu-w);border-color:var(--fu)}.chip.c-alt{background:var(--alt-w);border-color:var(--alt)}
-/* visit cards: colored by event type, matching the tab's row highlight */
-.card{border:1px solid var(--line);border-left:5px solid #c9d2d9;border-radius:6px;padding:8px 10px;margin-bottom:8px;background:#fff}
-.card.c-mt{background:var(--mt-w);border-color:#9ef0f0;border-left-color:var(--mt)}
-.card.c-mtr{background:var(--mtr-w);border-color:#c3e4a0;border-left-color:var(--mtr)}
-.card.c-fu{background:var(--fu-w);border-color:#ffc6e0;border-left-color:var(--fu)}
-.card.c-alt{background:var(--alt-w);border-color:#ffd18a;border-left-color:var(--alt)}
-.ch{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.cact{margin-left:auto}
-.lnk{cursor:pointer;color:var(--acc);text-decoration:underline;font-weight:650}
-.mline{margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.inl{display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:600;font-size:12px}
-.inl select{width:auto}
-.cl{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px}
-.ck{display:flex;gap:6px;align-items:center;font-weight:400;margin:0;font-size:12.5px}
-.ck.off{color:var(--mute)}
-.meas{margin-top:6px}
-.mbtn{background:var(--amb-w);border-color:#e3b94f;color:var(--amb);font-weight:650}
-details.nt{margin-top:6px;border:1px solid var(--line);border-radius:4px;padding:4px 8px;background:rgba(255,255,255,.7)}
-details.nt summary{cursor:pointer;font-weight:600;font-size:12.5px}
-details.nt label{margin-top:6px}
-details.nt .nq{display:grid;grid-template-columns:1fr 110px;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
-details.nt .nq input{grid-column:1/3}
-details.nt textarea{width:100%;font:inherit;font-size:12px;padding:5px 6px;border:1px solid #b9c4cc;border-radius:4px}
-details.nt .ntext{font-family:Consolas,"Courier New",monospace;font-size:11.5px;background:#fff}
-.bl{font-size:11.5px;color:var(--mute);background:var(--wash);border-radius:4px;padding:4px 6px;margin:2px 0 6px}
-details.group>summary.gs,details.var>summary{cursor:pointer;font-weight:650;margin-bottom:6px}
-.var{border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:var(--wash)}
-.vg{margin:4px 0;font-size:12.5px}
-.vg .n{color:var(--mute)}
-.day{margin-bottom:10px}
-.day h2{display:flex;justify-content:space-between;padding-bottom:3px;border-bottom:1px solid var(--line)}
-.day.today h2{color:var(--acc)}
-.wk{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:10px}
-.slot{display:grid;grid-template-columns:64px 1fr;gap:6px;border-bottom:1px solid var(--line);padding:3px 0;min-height:24px}
-.slot .t{color:var(--mute);font-size:12px}
-.slot.bad{background:var(--red-w)}
-.slot.closed{background:var(--wash);color:var(--mute)}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
-th{color:var(--mute);font-weight:600}
-td.num,th.num{text-align:right}
-tr[data-pt],tr[data-tab]{cursor:pointer}tr[data-pt]:hover{background:var(--acc-w)}
-.tscroll{overflow-x:auto;margin:0 -12px;padding:0 12px}
-table.pts{min-width:620px}
-td.dc{text-align:center;font-weight:600}
-td.dc.x{color:var(--red)}td.dc.c-mt{background:var(--mt-w)}td.dc.c-mtr{background:var(--mtr-w)}td.dc.c-fu{background:var(--fu-w)}td.dc.c-alt{background:var(--alt-w)}
-.pth{font-size:16px;margin:4px 0 8px}
-.facts{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:10px}
-.fct{display:flex;flex-direction:column;font-size:12px}
-.fct span{color:var(--mute);font-size:11.5px}
-.pe .g2p{display:grid;grid-template-columns:70px 1fr 80px;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
-label{display:block;margin:8px 0 2px;font-weight:600;font-size:12px}
-input,select{width:100%;font:inherit;padding:5px 6px;border:1px solid #b9c4cc;border-radius:4px;background:#fff}
-input[type=checkbox],input[type=radio]{width:auto;margin:0}
-.chk{display:flex;align-items:flex-start;gap:6px;font-weight:400;margin-top:8px}
-.row2,.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
-.g3w{display:grid;grid-template-columns:40px 1fr 1fr;gap:4px;align-items:center;font-size:12px;margin-bottom:3px}
-table.cost{table-layout:fixed}
-table.cost th:nth-child(1){width:48px}table.cost th:nth-child(3),table.cost th:nth-child(4){width:30%}
-table.cost td{padding:3px 4px}
-table.cost input{width:100%;min-width:0;text-align:right;padding:3px 5px}
-details.ben .g3{margin-bottom:8px}
-body:not(.wide) details.ben .g3{grid-template-columns:1fr 1fr}
-body:not(.wide) details.ben .g3 label:last-child{grid-column:1/3}
-header{gap:8px;flex-wrap:wrap}
-header .brand{flex:1 1 190px}
-.hact{flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
-body:not(.wide) .hact button{padding:3px 7px}
-.item.bidf{margin:2px 0 6px}
-#schedOverlay{position:fixed;inset:0;z-index:40;background:#fff}
-#schedFrame{width:100%;height:100%;border:0}
-/* pop-out window: more room, so content gets a comfortable max width */
-body.popout #popNote{display:none!important}
-body.popout section{max-width:1280px;margin:0 auto}
-.g3w.hdr{color:var(--mute);font-size:11px}
-.g4r{display:grid;grid-template-columns:1fr 1fr 1.2fr 28px;gap:4px;align-items:center;margin-bottom:3px}
-.row3{display:grid;grid-template-columns:76px 1fr 1fr;gap:6px;align-items:end;margin-bottom:4px}
-.row3 span{font-size:12px;padding-bottom:6px}
-.hint{color:var(--mute);font-size:12px;margin-top:3px}
-.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
-#toast{position:fixed;left:12px;right:12px;bottom:12px;padding:8px 10px;border-radius:4px;background:var(--ink);color:#fff;display:none;z-index:30}
-#toast.err{background:var(--red)}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink)}
+body{font:15px/1.45 var(--font);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+button:disabled{cursor:not-allowed;opacity:.5}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+[hidden]{display:none!important}
+
+/* frame: rail and page */
+.app{display:grid;grid-template-columns:224px 1fr;height:100vh;overflow:hidden}
+.rail{display:flex;flex-direction:column;gap:2px;padding:20px 14px 18px;background:var(--surface);box-shadow:var(--shadow);z-index:1;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:0 8px 16px;min-width:0}
+.brand img{height:28px;width:auto;flex:none}
+.brand span{display:flex;flex-direction:column;min-width:0;line-height:1.25}
+.brand b{font-size:14px;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.brand small{font-size:12.5px;color:var(--muted)}
+.item{display:flex;justify-content:space-between;align-items:center;width:100%;min-height:44px;padding:10px 12px;border-radius:10px;font-size:15px;transition:background .2s}
+.item:hover{background:var(--surface-3)}
+.item[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.count{min-width:22px;height:22px;padding:0 7px;border-radius:11px;background:var(--warn-soft);color:var(--warn);font-size:12.5px;font-weight:600;display:grid;place-items:center}
+.count.bad{background:var(--danger-soft);color:var(--danger)}
+.count:empty{display:none}
+.gap{height:18px;flex:none}.spacer{flex:1}
+.conn{display:flex;align-items:center;gap:8px;padding:10px 12px 0;font-size:12.5px;color:var(--muted)}
+.cdot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+.page{overflow:auto;padding:28px 32px 32px}
+.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:20px}
+h1{margin:0;font-size:28px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+h2{margin:0;font-size:15px;font-weight:600}
+h3{margin:18px 0 0;font-size:15px;font-weight:600}
+.sub{margin:8px 0 0;color:var(--muted)}
+.sub strong{color:var(--danger);font-weight:600}
+.clock{text-align:right;line-height:1.15;flex:none}
+.clock .t{font-size:22px;font-weight:600}
+.clock .d{font-size:13px;color:var(--muted);margin-top:3px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:24px;align-items:start}
+.card{background:var(--surface);border-radius:16px;box-shadow:var(--shadow)}
+.stack > * + *{margin-top:16px}
+.muted{color:var(--muted)}
+.flag{color:var(--warn);font-weight:500}
+.bad{color:var(--danger);font-weight:600}
+.body{margin:14px 0 0;color:var(--muted)}
+.empty{padding:14px;color:var(--muted);margin:0}
+.hint{color:var(--muted);font-size:13.5px;margin:8px 0 0}
+
+/* banners above every view */
+.banner{margin:0 0 16px;padding:14px 16px;border-radius:12px;background:var(--warn-soft);font-size:14px}
+.banner > b{font-weight:600}
+.banner details{margin-top:8px}
+.banner summary{cursor:pointer;font-weight:500;color:var(--accent)}
+.banner ol{margin:8px 0 0 18px;padding:0}
+.banner img{vertical-align:middle}
+.bctl{display:flex;gap:4px;justify-content:flex-end;margin-top:6px}
+.nrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px}
+.nrow + .nrow{box-shadow:0 -1px 0 rgba(0,0,0,.06)}
+
+/* chair board */
+.board{padding:8px}
+.crw{display:grid;grid-template-columns:30px 112px minmax(0,1fr) 110px 132px;gap:14px;align-items:center;width:100%;min-height:68px;padding:10px 14px;border-radius:12px;background:var(--surface);transition:background .2s,box-shadow .2s}
+.crw + .crw{margin-top:4px}
+.crw:hover{background:var(--surface-3)}
+.crw[data-state="soon"]{background:var(--warn-soft);box-shadow:inset 4px 0 0 var(--warn)}
+.crw[data-state="late"]{background:var(--danger-soft);box-shadow:inset 4px 0 0 var(--danger)}
+.crw[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
+.crw[data-state="soon"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--warn),0 0 0 2px var(--ink)}
+.crw[data-state="late"][aria-pressed="true"]{box-shadow:inset 4px 0 0 var(--danger),0 0 0 2px var(--ink)}
+.crw b{display:block;font-weight:600;line-height:1.2}
+.crw small{display:block;font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crw .who{min-width:0}
+.crw .who.open b{color:var(--muted);font-weight:500}
+.crw .st{font-size:13.5px;color:var(--muted);text-align:right;white-space:nowrap}
+.crw[data-state="soon"] .st{color:var(--warn);font-weight:600}
+.crw[data-state="late"] .st{color:var(--danger);font-weight:600}
+.sbar{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.sbar i{display:block;height:100%;background:var(--accent);opacity:.55}
+.crw[data-state="soon"] .sbar{background:rgba(143,84,0,.15)}
+.crw[data-state="soon"] .sbar i{background:var(--warn);opacity:.7}
+.lan{width:26px;height:26px;display:block}
+.lantern .body{fill:var(--surface);stroke:var(--muted);stroke-width:1.5}
+.lantern .lens{fill:var(--surface-2)}
+.lantern .touch{fill:var(--muted)}
+.lantern.on .body{stroke:var(--lamp-edge)}
+.lantern.on .lens{fill:var(--lamp)}
+.lantern.on .touch{fill:var(--lamp-edge)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none;display:inline-block}
+[data-state="track"] .dot{background:var(--muted)}
+
+/* view switch, filter chips */
+.viewbar{display:flex;align-items:center;gap:12px;margin:-4px 0 18px;flex-wrap:wrap}
+.viewbar .lbl{font-size:13px;color:var(--muted)}
+.seg{display:inline-flex;align-items:center;gap:2px;padding:4px;background:var(--surface);border-radius:12px;box-shadow:var(--shadow);flex-wrap:wrap}
+.seg button{min-height:36px;padding:0 12px;border-radius:9px;font-size:13.5px;font-weight:500;color:var(--muted);white-space:nowrap;transition:background .2s}
+.seg button:hover{background:var(--surface-3)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.seg .sep{width:1px;height:20px;background:var(--surface-2);margin:0 4px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.chip{min-height:36px;padding:0 14px;border-radius:18px;background:var(--surface);box-shadow:var(--shadow);font-size:13.5px;font-weight:500;display:inline-flex;align-items:center;gap:8px}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.chip .n{color:var(--muted);font-weight:400}
+.chip[aria-pressed="true"] .n{color:inherit;opacity:.7}
+.nav{display:flex;align-items:center;gap:10px;margin:-6px 0 16px;flex-wrap:wrap}
+
+/* chair day */
+.day{padding:18px 22px 12px}
+.day .h,.list .h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}
+.day .h span,.list .h span{font-size:13px;color:var(--muted)}
+.drow{display:grid;grid-template-columns:30px 52px 76px minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;min-height:52px;padding:8px 10px;border-radius:10px}
+.drow + .drow{box-shadow:0 -1px 0 var(--surface-2)}
+.drow:hover{background:var(--surface-3)}
+.drow .w{color:var(--muted)}
+.drow .p{font-weight:600}
+.drow .st{font-size:13.5px;color:var(--muted);white-space:nowrap;text-align:right}
+.drow.past{color:var(--muted)}
+.drow.past .p{font-weight:500;color:var(--muted)}
+.drow[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
+.drow[data-state="track"]{background:var(--surface-3)}
+.drow[data-state="soon"]{background:var(--warn-soft);box-shadow:inset 4px 0 0 var(--warn)}
+.drow[data-state="late"]{background:var(--danger-soft);box-shadow:inset 4px 0 0 var(--danger)}
+.drow[data-state="soon"] .st{color:var(--warn);font-weight:600}
+.drow[data-state="late"] .st{color:var(--danger);font-weight:600}
+.drow[data-state] + .drow,.drow + .drow[data-state]{box-shadow:none}
+.tick{width:20px;height:20px;border-radius:50%;background:var(--accent);opacity:.6;color:var(--accent-ink);display:grid;place-items:center;font-size:11px;font-weight:600}
+.ring{width:20px;height:20px;border-radius:50%;border:2px solid var(--faint)}
+.xmark{width:20px;height:20px;border-radius:50%;background:var(--surface-2);color:var(--muted);display:grid;place-items:center;font-size:11px;font-weight:600}
+
+/* lists */
+.list{padding:18px 22px 10px}
+.row{display:flex;align-items:center;gap:8px}
+.row + .row{box-shadow:0 -1px 0 var(--surface-2)}
+.rowmain{flex:1;min-width:0;display:grid;grid-template-columns:72px 52px 96px minmax(0,1fr);align-items:center;gap:12px;min-height:48px;padding:6px 8px;margin:0 -8px;border-radius:10px;transition:background .2s}
+.rowmain:not(.static):hover{background:var(--surface-3)}
+.rowmain[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink)}
+.rowmain .p{font-weight:600}
+.rowmain .w{color:var(--muted)}
+.rowmain > span{white-space:nowrap}
+.rowmain .f{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.needline{flex:1;min-height:44px;display:flex;align-items:center;font-size:14px}
+
+/* detail card */
+.detail{padding:22px 24px 24px}
+.dh{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.name{font-size:26px;font-weight:600;letter-spacing:-.015em;line-height:1.1}
+.name .loc{font-size:16px;font-weight:500;color:var(--muted);margin-left:6px;letter-spacing:0}
+.meta{margin-top:6px;font-size:13.5px;color:var(--muted)}
+.lead{margin:16px 0 0;font-size:15px;font-weight:600}
+.lead.late{color:var(--danger)}.lead.soon{color:var(--warn)}.lead.ready{color:var(--accent)}
+.tl{position:relative;height:46px;margin:14px 0 6px}
+.tl .bar{position:absolute;left:0;right:0;top:10px;height:6px;border-radius:3px;background:var(--surface-2)}
+.tl .fill{position:absolute;left:0;top:10px;height:6px;border-radius:3px;background:var(--accent);opacity:.55}
+.tl .mark{position:absolute;top:7px;width:12px;height:12px;border-radius:50%;background:var(--surface);border:2px solid var(--faint);transform:translateX(-50%)}
+.tl .mark.done{background:var(--accent);border-color:var(--accent)}
+.tl .now{position:absolute;top:3px;width:2px;height:20px;background:var(--ink);transform:translateX(-50%)}
+.tl .lbl{position:absolute;top:26px;font-size:11.5px;color:var(--muted);transform:translateX(-50%)}
+.tl .lbl.start{transform:none}.tl .lbl.end{transform:translateX(-100%)}
+.steps{list-style:none;margin:6px 0 0;padding:0}
+.step{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:start;padding:9px 0}
+.step + .step{box-shadow:0 -1px 0 var(--surface-2)}
+.step .k{width:20px;height:20px;border-radius:50%;border:2px solid var(--faint);margin-top:1px;display:grid;place-items:center;font-size:11px;font-weight:600;color:var(--accent-ink)}
+.step.done .k{background:var(--accent);border-color:var(--accent)}
+.step.late .k{background:var(--danger);border-color:var(--danger)}
+.step.soon .k{background:var(--warn);border-color:var(--warn)}
+.step.now .k{border-color:var(--accent);border-width:3px}
+.step .t{font-weight:500;font-size:14.5px}
+.step .m{display:block;font-size:12.5px;color:var(--muted);margin-top:1px}
+.step.late .m{color:var(--danger)}.step.soon .m{color:var(--warn)}
+.step .w{font-size:12.5px;color:var(--muted);padding-top:2px}
+.step.next .t{color:var(--muted);font-weight:400}
+.notice{margin-top:14px;padding:10px 14px 4px;border-radius:12px;background:var(--warn-soft)}
+.notice p{margin:0;font-size:13.5px}
+.notice.ok{background:var(--surface-3)}
+.notice.ok p{color:var(--muted)}
+.check{display:flex;align-items:center;gap:10px;min-height:44px;font-weight:500;cursor:pointer;color:var(--ink);font-size:14.5px}
+.check input{width:20px;height:20px;margin:0;accent-color:var(--accent);flex:none}
+.payline{display:flex;justify-content:space-between;gap:12px;margin-top:12px;font-size:13.5px}
+.payline span:first-child{color:var(--muted)}
+.section{margin-top:20px;padding-top:16px;box-shadow:0 -1px 0 var(--surface-2)}
+.section .h{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.section .h span{font-size:13px;color:var(--muted)}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:10px 0 0;font-size:13.5px}
+.facts dt{color:var(--muted)}.facts dd{margin:0;overflow-wrap:anywhere}
+.facts dd.flag{color:var(--warn);font-weight:600}
+.facts dd.bad{color:var(--danger);font-weight:600}
+.strip,.stripk{display:grid;gap:3px}
+.strip{margin-top:12px}
+.strip .c{height:14px;border-radius:3px;background:var(--surface-2)}
+.strip .c.done{background:var(--accent);opacity:.6}
+.strip .c.today{background:var(--accent);box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--accent)}
+.stripk{margin-top:5px;font-size:11px;color:var(--muted)}
+.stripk span{white-space:nowrap}
+.phq{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:13.5px}
+.phq b{display:block;font-size:20px;font-weight:600;line-height:1.1}
+.phq .due b{color:var(--warn)}
+.phq small{color:var(--muted)}
+.phq .lbl{align-self:center;min-width:52px;color:var(--muted)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 16px;border-radius:12px;font-weight:600;font-size:15px;transition:background .2s,filter .2s;text-align:center}
+.btn.primary{width:100%;min-height:48px;margin-top:18px;background:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.ghost{color:var(--accent);padding:0 12px}
+.btn.ghost:hover{background:var(--accent-soft)}
+.btn.mute{color:var(--muted)}
+.btn.mute:hover{background:var(--surface-3)}
+.btn.sm{min-height:36px;font-size:13.5px;font-weight:500;padding:0 10px;white-space:nowrap;flex:none}
+.actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
+
+/* courses */
+.courses{padding:6px 8px}
+.crow,.chead{display:grid;grid-template-columns:88px minmax(120px,1fr) minmax(130px,.9fr) 1.4fr;gap:16px;align-items:center}
+.crow{width:100%;min-height:52px;padding:12px 14px;border-radius:12px;transition:background .2s}
+.crow:hover{background:var(--surface-3)}
+.crow[aria-pressed="true"]{background:var(--accent-soft)}
+.crow + .crow{box-shadow:0 -1px 0 var(--surface-2)}
+.crow .p{font-weight:600}
+.crow .p small{display:block;font-weight:400;font-size:12.5px;color:var(--muted)}
+.crow .proto{font-size:13.5px;color:var(--muted);overflow-wrap:anywhere}
+.prog{display:flex;align-items:center;gap:10px;font-size:13.5px}
+.pbar{flex:1;height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--accent);opacity:.6}
+.flags{font-size:13.5px;color:var(--muted)}
+.flags .f{color:var(--warn);font-weight:500}
+.flags .f.bad{color:var(--danger);font-weight:600}
+.chead{padding:10px 14px 4px;font-size:12.5px;color:var(--muted)}
+
+/* schedule */
+.sched{padding:18px 20px 20px;overflow-x:auto}
+.sched > p{margin:12px 0 0}
+.sgrid{display:grid;min-width:640px}
+.sgrid .ch{padding:0 8px 10px;font-weight:600;font-size:13.5px}
+.sgrid .ch small{display:block;font-weight:400;color:var(--muted);font-size:12px}
+.times{position:relative}
+.times span{position:absolute;right:10px;transform:translateY(-50%);font-size:12px;color:var(--muted)}
+.lane{position:relative;margin:0 4px;border-radius:10px;background:var(--surface-3)}
+.lane .hr{position:absolute;left:0;right:0;height:1px;background:var(--surface-2)}
+.blk{position:absolute;z-index:1;left:4px;right:4px;border-radius:8px;padding:4px 8px;font-size:12.5px;line-height:1.25;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--surface-2);overflow:hidden;text-align:left}
+.blk b{font-weight:600}
+.blk.past{background:transparent;box-shadow:inset 0 0 0 1px var(--surface-2);color:var(--muted)}
+.blk.track{box-shadow:inset 0 0 0 2px var(--faint)}
+.blk.soon{background:var(--warn-soft);box-shadow:inset 0 0 0 2px var(--warn)}
+.blk.late{background:var(--danger-soft);box-shadow:inset 0 0 0 2px var(--danger)}
+.nowline{position:absolute;left:0;right:0;height:2px;background:var(--ink);z-index:0}
+.nowline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--ink)}
+.wkgrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
+.wd{padding:16px 18px}
+.wd.today{box-shadow:var(--shadow),0 0 0 2px var(--ink)}
+.wd .h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.wd .h span{font-size:12.5px;color:var(--muted)}
+.wd .big{font-size:20px;font-weight:600;margin-top:8px;line-height:1.1}
+.wd .big small{font-size:13px;font-weight:400;color:var(--muted)}
+.wd ul{list-style:none;margin:10px 0 0;padding:0;font-size:13px}
+.wd li{padding:5px 0}
+.wd li + li{box-shadow:0 -1px 0 var(--surface-2)}
+
+/* chairs */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.chair{padding:18px 20px 16px}
+.chair.off{opacity:.75}
+.chair .hd{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.chair .nm{font-size:18px;font-weight:600}
+.state{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;font-weight:500;color:var(--muted)}
+
+/* tables, forms (dialogs, Import, Settings, Add patient) */
+.tbl,table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:12px}
+.tbl th,table th{font-weight:500;color:var(--muted);text-align:left;padding:6px 8px 6px 0;font-size:12.5px}
+.tbl td,table td{padding:8px 8px 8px 0;vertical-align:top}
+.tbl tr + tr td,table tr + tr td{box-shadow:0 -1px 0 var(--surface-2)}
+.num{text-align:right}
+.tbl.cost td{padding:4px 6px 4px 0}
+.fld{display:grid;gap:6px;margin-top:14px}
+.fld > span,label{font-size:13.5px;color:var(--muted)}
+label{display:block}
+input:not([type=checkbox]):not([type=radio]):not([type=file]),select,textarea{font:inherit;font-size:15px;color:var(--ink);background:var(--surface-3);border:0;border-radius:10px;min-height:44px;padding:8px 12px;box-shadow:inset 0 0 0 1.5px var(--surface-2);width:100%}
+textarea{min-height:0;resize:vertical;line-height:1.45}
+.ntext{font-family:Consolas,"Courier New",monospace;font-size:13px}
+input[type=file]{font:inherit;font-size:14px;margin-top:8px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.g2,.row2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:0 12px}
+.opts{display:grid;gap:8px;margin-top:10px}
+.opt{display:flex;gap:12px;align-items:center;min-height:52px;padding:8px 14px;border-radius:12px;box-shadow:inset 0 0 0 1.5px var(--surface-2);cursor:pointer;color:var(--ink);font-size:15px}
+.opt input{width:18px;height:18px;margin:0;accent-color:var(--accent);flex:none}
+.opt small{display:block;font-size:12.5px;color:var(--muted)}
+.opt:has(input:checked){box-shadow:inset 0 0 0 2px var(--accent);background:var(--accent-soft)}
+.opt:has(input:disabled){opacity:.55;cursor:not-allowed}
+.warnline{color:var(--warn);font-weight:500}
+.qrow{display:grid;grid-template-columns:1fr 150px;gap:8px 12px;align-items:center;padding:6px 0;font-size:14px}
+.qrow + .qrow{box-shadow:0 -1px 0 var(--surface-2)}
+.qrow .sp{grid-column:1/-1}
+.err{color:var(--danger);font-size:13.5px;font-weight:500;margin:12px 0 0}
+.err:empty{display:none}
+.mfoot{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:22px}
+.mfoot .btn.primary{width:auto;margin-top:0;padding:0 20px}
+#modal{position:fixed;inset:0;background:var(--scrim);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:grid;place-items:center;padding:20px;z-index:20}
+.modal{width:min(540px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--surface);border-radius:16px;box-shadow:var(--shadow);padding:22px 24px 20px}
+.modal.wide{width:min(760px,100%)}
+.modal h2{font-size:20px;letter-spacing:-.01em}
+.modal .sub{margin-top:6px}
+.pe .g2p{display:grid;grid-template-columns:90px 1fr 120px;gap:8px;align-items:center;margin-top:10px;font-size:14px;color:var(--muted)}
+.avail .sub{margin-top:14px;font-size:13.5px}
+.g3w{display:grid;grid-template-columns:52px 1fr 1fr;gap:8px;align-items:center;margin-top:8px;font-size:14px}
+.g3w.hdr{font-size:12.5px;color:var(--muted)}
+.g4r{display:grid;grid-template-columns:1fr 1fr 1fr 1.2fr 36px;gap:8px;align-items:center;margin-top:8px}
+.row3{display:grid;grid-template-columns:90px 1fr 1fr;gap:8px;align-items:end;margin-top:8px}
+.row3 span{font-size:13px;color:var(--muted);padding-bottom:10px}
+.none{color:var(--muted);font-size:14px;margin-top:8px}
+.chk{display:flex;align-items:flex-start;gap:10px;margin-top:10px;color:var(--ink);font-size:14px}
+.chk input{margin-top:3px;accent-color:var(--accent)}
+/* buttons inside the forms that came from the earlier layout (Import, Settings, Add patient, the banners) */
+:where(.banner,#v-imp,#v-settings,#v-add,.modal) button:not(.btn):not(.chip):not(.opt){display:inline-flex;align-items:center;min-height:40px;padding:0 14px;border-radius:12px;color:var(--accent);font-weight:600;font-size:14px;box-shadow:inset 0 0 0 1.5px var(--surface-2);margin:4px 6px 0 0}
+:where(.banner,#v-imp,#v-settings,#v-add,.modal) button:not(.btn):not(.chip):hover{background:var(--accent-soft)}
+:where(#v-imp,#v-settings,#v-add) button.pri{background:var(--accent);color:var(--accent-ink);box-shadow:none;min-height:48px;padding:0 22px}
+:where(.banner,#v-imp,#v-settings,#v-add,.modal) button.sm{min-height:36px;font-size:13.5px;font-weight:500;padding:0 10px}
+.form{padding:22px 24px 24px;max-width:860px}
+.form + .form{margin-top:20px}
+.form h2{font-size:18px}
+:where(#v-imp,.modal) .item{display:block;padding:10px 12px;margin-top:8px;border-radius:10px;background:var(--surface-3);font-size:14px;min-height:0;width:auto}
+:where(#v-imp,.modal) .item.red,:where(#v-imp,.modal) .item.amb{background:var(--warn-soft)}
+.chip.amb{background:var(--warn-soft);color:var(--warn);box-shadow:none;min-height:0;padding:0 8px}
+
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:13.5px;max-width:min(520px,calc(100vw - 24px));display:none;z-index:30}
+#toast.err{background:var(--danger);color:var(--danger-ink)}
 #toast .tmsg{user-select:text;white-space:pre-wrap;word-break:break-word}
 #toast .tact{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
-#modal{position:fixed;inset:0;background:rgba(28,42,51,.45);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
-#modalBody{background:#fff;border-radius:8px;padding:14px 16px;max-width:360px;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.25)}
-.brand{display:flex;align-items:center;gap:10px;min-width:0}
-.brand img{height:30px;width:auto;flex:none}
-.brand .tt{display:flex;flex-direction:column;min-width:0;line-height:1.2}
-.brand b{font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.hact{display:flex;gap:6px;flex:none}
-#refresh,#btnSettings{font-size:15px;padding:3px 9px}
-#btnSettings.on{background:var(--acc);border-color:var(--acc);color:#fff}
-.tabs button{flex:1}
-.toggle{display:inline-flex;border:1px solid var(--acc);border-radius:6px;overflow:hidden}
-.toggle button{border:0;border-radius:0;padding:5px 16px;background:#fff;color:var(--acc);font-weight:600}
-.toggle button+button{border-left:1px solid var(--acc)}
-.toggle button.on{background:var(--acc);color:#fff}
-details.att{border:1px solid var(--line);border-radius:6px;background:var(--wash);padding:6px 10px;margin-bottom:12px}
-details.att>summary{cursor:pointer;font-size:13px}
-.att .cnt{display:inline-block;min-width:20px;padding:0 6px;border-radius:9px;background:var(--red);color:#fff;font-size:11px;text-align:center}
-.att .group h2{font-size:12px}
-.fchips{display:flex;flex-wrap:wrap;gap:4px}
-[data-act=addPt]{white-space:nowrap;flex:none}
-.fchips button.on{background:var(--acc);border-color:var(--acc);color:#fff}
-.fchips button.on .n{color:#fff}
-body.wide .sch-layout{display:grid;grid-template-columns:minmax(220px,32%) 1fr;gap:14px;align-items:start}
-body.wide details.att{position:sticky;top:6px;max-height:calc(100vh - 12px);overflow:auto;margin:0}
-/* visit card: time first, then patient and MRN; secondary actions in the ⋯ menu */
-.card{padding:0;overflow:visible}
-.chead{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:start;padding:10px 10px 6px}
-.ctime{font-size:20px;font-weight:700;line-height:1;letter-spacing:-.3px;padding-top:2px}
-.ctime span{display:block;font-size:11px;font-weight:600;color:var(--mute);margin-top:2px;letter-spacing:.3px}
-.cname{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:14px}
-.cbody{padding:0 10px 10px 84px}
-.pay{display:flex;align-items:center;gap:12px;font-size:12.5px;margin-bottom:2px}
-.done{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
-.chip.ok{background:var(--acc-w);border-color:#9fd0d0;color:var(--acc)}
-details.kebab{position:relative}
-details.kebab>summary{list-style:none;cursor:pointer;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:18px;color:var(--mute)}
-details.kebab>summary::-webkit-details-marker{display:none}
-details.kebab>summary:hover,details.kebab[open]>summary{background:rgba(0,0,0,.06);color:var(--ink)}
-details.kebab .menu{position:absolute;right:0;top:30px;z-index:5;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.14);padding:4px;min-width:170px;display:flex;flex-direction:column}
-details.kebab .menu button{border:0;background:none;text-align:left;margin:0;padding:6px 10px;font-size:12.5px}
-details.kebab .menu button:hover{background:var(--wash)}
-body:not(.wide) .cbody{padding-left:10px}
-body:not(.wide) .chead{grid-template-columns:62px 1fr auto;gap:8px}
-body:not(.wide) .ctime{font-size:18px}
-.tglwrap{display:flex;justify-content:center}
-/* Attention collapses sideways into a rail when it sits on the left */
-body.wide details.att>summary{list-style:none;display:flex;align-items:center;gap:6px}
-body.wide details.att>summary::-webkit-details-marker{display:none}
-body.wide .attTog{margin-left:auto}
-body.wide .attTog::before{content:"\2039";font-size:18px;color:var(--mute)}
-body.wide.attc .sch-layout{grid-template-columns:40px 1fr}
-body.wide.attc #attBody{display:none}
-body.wide.attc details.att{padding:8px 0}
-body.wide.attc details.att>summary{writing-mode:vertical-rl;transform:rotate(180deg);justify-content:flex-end;width:100%;align-items:center}
-body.wide.attc .attTog{margin:0 0 6px}
-body.wide.attc .attTog::before{content:"\203A"}
-/* pop-ups blur what is behind them: the modal, the schedule printout, and the ⋯ menus (over #menuShade) */
-#modal{backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
-#schedOverlay{background:rgba(28,42,51,.28);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
-#schedFrame{border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
-#menuShade{position:fixed;inset:0;z-index:25;background:rgba(28,42,51,.12);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
-details.kebab[open]{z-index:26}
-/* full screen (the pane in browser full screen, or the in-page window over Excel): the menu floats on frosted glass and the
-   page blurs as it scrolls under it; the schedule printout floats over a blurred page too */
-body.fs{background:linear-gradient(160deg,#e9f1f2 0%,#f6f8f9 45%,#eef2f6 100%) fixed;min-height:100vh}
-body.fs #chrome{position:sticky;top:12px;z-index:15;max-width:1280px;margin:12px auto 0;border:1px solid rgba(255,255,255,.7);border-radius:14px;
-  background:rgba(255,255,255,.58);backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 12px 34px rgba(28,42,51,.16)}
-body.fs #chrome header{border-bottom:0;padding:10px 16px 4px}
-body.fs #chrome .tabs{border-bottom:0;padding:0 10px}
-body.fs .banner,body.fs section{max-width:1280px;margin-left:auto;margin-right:auto}
-body.fs .banner{margin-top:12px;border-radius:10px}
-body.fs section{background:rgba(255,255,255,.82);border-radius:12px;margin-top:12px;margin-bottom:24px;box-shadow:0 2px 10px rgba(28,42,51,.06)}
-body.fs.wide details.att{top:calc(var(--chrome-h,110px) + 18px);max-height:calc(100vh - var(--chrome-h,110px) - 30px)}
-body.fs #btnFull{background:var(--acc);border-color:var(--acc);color:#fff}
-[hidden]{display:none!important}
+#toast .tact button{min-height:32px;padding:0 10px;border-radius:8px;box-shadow:inset 0 0 0 1px currentColor}
+#schedOverlay{position:fixed;inset:0;z-index:40;background:var(--scrim);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
+#schedFrame{width:100%;height:100%;border:0;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
+
+@media (max-width:1180px){.cols{grid-template-columns:1fr}.wkgrid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}}
+/* the task pane: the rail becomes a top bar */
+@media (max-width:760px){
+  .app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .rail{flex-direction:row;align-items:center;overflow-x:auto;padding:8px 10px;gap:4px}
+  .brand{display:none}
+  .item{width:auto;white-space:nowrap;padding:8px 10px;gap:8px}
+  .gap,.spacer,.conn{display:none}
+  .page{padding:18px 14px 24px}
+  .top{flex-wrap:wrap}
+  .crw{grid-template-columns:26px 62px minmax(0,1fr);gap:4px 10px}
+  .crw small.coil,.crw .sbar,.crw .ph{display:none}
+  .crw .st{grid-column:2/-1;text-align:left}
+  .crow,.chead{grid-template-columns:80px 1fr}
+  .chead span:nth-child(n+3),.crow .proto,.crow .prog{display:none}
+  .rowmain{grid-template-columns:64px auto minmax(0,1fr)}
+  .rowmain .f{grid-column:1/-1}
+  .drow{grid-template-columns:24px 44px 64px minmax(0,1fr)}
+  .drow .st{grid-column:2/-1;text-align:left}
+  .g3,.g2,.row2{grid-template-columns:1fr}
+  .g4r{grid-template-columns:1fr 1fr}
+  .detail,.form{padding:18px 16px 20px}
+}
 </style>
 </head>
 <body>
-<div id="chrome">
-<header>
-  <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><div class="tt"><b id="wbTitle">TMS Tracker</b><span id="devTag" class="sub"></span></div></div>
-  <div class="hact"><button id="btnImport" class="pri">Import list</button><button id="btnFull" title="Full screen" aria-label="Full screen">&#x26F6;</button><button id="btnSettings" title="Settings" aria-label="Settings">&#9881;</button><button id="refresh" title="Re-read every patient tab" aria-label="Refresh">&#8635;</button></div>
-</header>
-<nav class="tabs" id="mainTabs">
-  <button data-view="sch" class="on">Schedule</button>
-  <button data-view="pts">Patients</button>
-  <button data-view="clinic">Clinic</button>
-</nav>
-</div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><radialGradient id="glow"><stop offset="0" stop-color="var(--glow)" stop-opacity="var(--glow-a)"/><stop offset="1" stop-color="var(--glow)" stop-opacity="0"/></radialGradient></defs></svg>
+<div class="app" id="app">
+  <nav class="rail" aria-label="Areas">
+    <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><span><b id="wbTitle">TMS Tracker</b><small id="devTag"></small></span></div>
+    <button class="item" data-view="today" aria-current="page">Today</button>
+    <button class="item" data-view="schedule">Schedule</button>
+    <button class="item" data-view="courses">Courses <span class="count" id="ccount"></span></button>
+    <div class="gap"></div>
+    <button class="item" data-view="chairs">Chairs</button>
+    <button class="item" data-view="imp">Import</button>
+    <button class="item" data-view="settings">Settings</button>
+    <div class="spacer"></div>
+    <button class="item" id="refresh" title="Re-read every patient tab">Refresh</button>
+    <button class="item" id="btnFull">Full screen</button>
+    <div class="conn" id="conn"><span class="cdot"></span><span>Connected to the workbook</span></div>
+  </nav>
 
-<div id="popNote" class="banner" hidden>
-  <b>The tracker is open full screen over Excel.</b> Keep this pane open: full screen reads and saves through it.
-  <div class="actions" style="margin-top:6px"><button class="sm" id="popClose">Close full screen</button></div>
-</div>
-
-<div id="reportBanner" class="banner red" hidden>
-  <b id="reportMsg"></b>
-  <details>
-    <summary>How to run the report</summary>
-    <ol>
-      <li>Navigate to NextGen PM.</li>
-      <li>Locate the "Reports" menu option on the top-left.</li>
-      <li>Click "Memorized".</li>
-      <li>Change the Report Type drop-down to "Appointment Reports" and select "1 Appt List - ALL TMS".</li>
-      <li>Select "OK" to run the report.</li>
-      <li>Export the report by clicking the x symbol beside the bar graph icon <img src="assets/export-icon.png" alt="Export icon: spreadsheet x next to a bar graph" height="16">.</li>
-      <li>Copy the file from your NextGen File Explorer and upload it on the Import page here.</li>
-    </ol>
-  </details>
-  <span class="bctl"><button class="sm" data-banner="reportBanner" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="reportBanner" data-bact="dismiss">Dismiss</button></span>
-</div>
-
-<div id="newPtBanner" class="banner red" hidden>
-  <b>New patients in NextGen need a tracker (<span id="newPtCount"></span>)</b>
-  <div id="newPtList" style="color:var(--ink);margin-top:6px"></div>
-  <span class="bctl"><button class="sm" data-banner="newPtBanner" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="newPtBanner" data-bact="dismiss">Dismiss</button></span>
-</div>
-
-<div id="skipNote" class="banner" hidden>
-  <span id="skipText"></span>
-  <span class="bctl"><button class="sm" data-banner="skipNote" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="skipNote" data-bact="dismiss">Dismiss</button></span>
-</div>
-
-<div id="setup" class="banner" hidden>
-  <span id="setupMsg"></span>
-  <div class="actions" style="margin-top:6px"><button class="pri" id="btnSetup">Match New Template</button></div>
-  <span class="bctl"><button class="sm" data-banner="setup" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="setup" data-bact="dismiss">Dismiss</button></span>
-</div>
-
-
-<section id="v-sch">
-  <div class="sch-layout">
-    <details class="att" id="attWrap" open><summary><b>Attention</b> <span class="cnt" id="attCount">0</span><span class="attTog" aria-hidden="true"></span></summary><div id="attBody"></div></details>
-    <div>
-      <div class="tglwrap"><div class="toggle" id="schToggle" role="group" aria-label="Schedule range"><button data-sv="today" class="on" aria-pressed="true">Day</button><button data-sv="week" aria-pressed="false">Week</button></div></div>
-      <div id="schBody" style="margin-top:10px"></div>
+  <main class="page" id="page">
+    <div id="popNote" class="banner" hidden>
+      <b>The tracker is open full screen over Excel.</b> Keep this pane open: full screen reads and saves through it.
+      <div class="actions"><button class="btn ghost sm" id="popClose">Close full screen</button></div>
     </div>
-  </div>
-</section>
-
-<section id="v-pts" hidden><div id="ptsBody"></div></section>
-
-<section id="v-clinic" hidden>
-  <div class="toggle" id="clinicTabs" role="group" aria-label="Clinic"><button data-cv="chair" class="on" aria-pressed="true">Chair</button><button data-cv="proto" aria-pressed="false">Protocols</button></div>
-  <div id="clinicBody" style="margin-top:10px"></div>
-</section>
-
-<section id="v-settings" hidden>
-  <div class="wk"><button id="setBack">&#8249; Back</button></div>
-  <h2>Settings</h2>
-  <div id="settingsBox">
-    <div class="row2">
-      <div><label for="cfgLoc">This clinic (NextGen location)</label><input id="cfgLoc"></div>
-      <div><label for="cfgDevice">Tracker device</label><select id="cfgDevice"><option value="auto">From the workbook name</option><option value="MagV">MagVenture</option><option value="Brainsway">Brainsway</option></select></div>
-      <div><label for="cfgAuth">Auth warning (calendar days)</label><input id="cfgAuth" type="number" min="1"></div>
-      <div><label for="cfgProto">Protocol warning (business days)</label><input id="cfgProto" type="number" min="1"></div>
-      <div><label for="cfgRecent">Recent visit window (days)</label><input id="cfgRecent" type="number" min="1"></div>
-      <div><label for="cfgOpenTab">Clicking a name on today's schedule</label><select id="cfgOpenTab"><option value="on">Also opens their Excel tab</option><option value="off">Side bar only</option></select></div>
-      <div><label for="cfgCutoff">Updates and Match New Template: leave out trackers with no visit since</label><input id="cfgCutoff" type="date"><p class="sub" id="cutoffNote"></p></div>
+    <div id="reportBanner" class="banner" hidden>
+      <b id="reportMsg"></b>
+      <details>
+        <summary>How to run the report</summary>
+        <ol>
+          <li>Navigate to NextGen PM.</li>
+          <li>Locate the "Reports" menu option on the top-left.</li>
+          <li>Click "Memorized".</li>
+          <li>Change the Report Type drop-down to "Appointment Reports" and select "1 Appt List - ALL TMS".</li>
+          <li>Select "OK" to run the report.</li>
+          <li>Export the report by clicking the x symbol beside the bar graph icon <img src="assets/export-icon.png" alt="Export icon: spreadsheet x next to a bar graph" height="16">.</li>
+          <li>Copy the file from your NextGen File Explorer and upload it on Import here.</li>
+        </ol>
+      </details>
+      <span class="bctl"><button class="btn mute sm" data-banner="reportBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="reportBanner" data-bact="dismiss">Dismiss</button></span>
     </div>
-    <div class="actions"><button id="btnApRebuild">Rebuild Active Patients sheet</button><button id="btnMeas">Place measure placeholders</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMatch">Match New Template (all active tabs)</button></div>
-    <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
-  </div>
-</section>
+    <div id="newPtBanner" class="banner" hidden>
+      <b>New patients in NextGen need a tracker (<span id="newPtCount"></span>)</b>
+      <div id="newPtList" style="margin-top:6px"></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="newPtBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="newPtBanner" data-bact="dismiss">Dismiss</button></span>
+    </div>
+    <div id="skipNote" class="banner" hidden>
+      <span id="skipText"></span>
+      <span class="bctl"><button class="btn mute sm" data-banner="skipNote" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="skipNote" data-bact="dismiss">Dismiss</button></span>
+    </div>
+    <div id="setup" class="banner" hidden>
+      <span id="setupMsg"></span>
+      <div class="actions"><button class="btn ghost sm" id="btnSetup">Match New Template</button></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="setup" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="setup" data-bact="dismiss">Dismiss</button></span>
+    </div>
 
-<section id="v-imp" hidden>
-  <h2>Import appointment list</h2>
-  <div class="hint">Upload the "1 Appt List - ALL TMS" export. The preview appears right away; nothing changes until you apply it.</div>
-  <label>Report type</label>
-  <label class="chk"><input type="radio" name="rtype" value="all" checked> ALL TMS for this clinic</label>
-  <label class="chk"><input type="radio" name="rtype" value="ps"> Patient-specific (one external patient, all locations)</label>
-  <label for="file">Appointment list</label>
-  <input type="file" id="file" accept=".csv,.xlsx,.xls">
-  <div id="savedList" class="hint" style="margin-top:8px" hidden><span id="savedListMsg"></span> <button data-act="previewSaved">Preview again</button></div>
-  <div id="planBox" hidden><div id="planBody" style="margin-top:12px"></div></div>
+    <section id="v-today" aria-label="Today"></section>
+    <section id="v-schedule" aria-label="Schedule" hidden></section>
+    <section id="v-courses" aria-label="Courses" hidden></section>
+    <section id="v-chairs" aria-label="Chairs" hidden></section>
 
-  <h2 style="margin-top:22px">Import Sohar benefits</h2>
-  <div class="hint">Upload the "Final tracker file (TMS + ESK)" from the Sohar Eligibility add-in (the older "Benefits (TMS Tracker)" file works too). Patients booked only for ESK are left out. Tabs are matched by MRN. Blank deductible, out-of-pocket and insurance cells are filled; a tab that already has a different amount is shown unticked, because W4 and W5 hold the amounts at the start of the course. Nothing changes until you apply.</div>
-  <label for="benFile">Sohar benefits file</label>
-  <input type="file" id="benFile" accept=".csv,.xlsx">
-  <div id="benPlan" style="margin-top:12px" hidden></div>
-</section>
+    <section id="v-imp" aria-label="Import" hidden>
+      <header class="top"><div><h1>Import</h1><p class="sub">Bring in the NextGen appointment list and Sohar benefits. Nothing changes until you apply the preview.</p></div></header>
+      <div class="card form">
+        <h2>NextGen appointment list</h2>
+        <p class="hint">Upload the "1 Appt List - ALL TMS" export. The preview appears right away.</p>
+        <label class="chk"><input type="radio" name="rtype" value="all" checked> ALL TMS for this clinic</label>
+        <label class="chk"><input type="radio" name="rtype" value="ps"> Patient-specific (one external patient, all locations)</label>
+        <label for="file" class="fld"><span>Appointment list</span></label>
+        <input type="file" id="file" accept=".csv,.xlsx,.xls">
+        <div id="savedList" class="hint" hidden><span id="savedListMsg"></span> <button class="btn ghost sm" data-act="previewSaved">Preview again</button></div>
+        <div id="planBox" hidden><div id="planBody" style="margin-top:12px"></div></div>
+      </div>
+      <div class="card form">
+        <h2>Sohar benefits</h2>
+        <p class="hint">Upload the "Final tracker file (TMS + ESK)" from the Sohar Eligibility add-in (the older "Benefits (TMS Tracker)" file works too). Patients booked only for ESK are left out. Tabs are matched by MRN. Blank deductible, out-of-pocket and insurance cells are filled; a tab that already has a different amount is shown unticked, because W4 and W5 hold the amounts at the start of the course.</p>
+        <label for="benFile" class="fld"><span>Sohar benefits file</span></label>
+        <input type="file" id="benFile" accept=".csv,.xlsx">
+        <div id="benPlan" style="margin-top:12px" hidden></div>
+      </div>
+    </section>
 
-<section id="v-add" hidden>
-  <div class="wk"><button id="apBack">&#8249; Patients</button></div>
-  <h2>Add patient</h2>
-  <div class="hint" id="apNote"></div>
-  <div class="hint">Copies New Template and names the tab by LASFIR (SMIJAN, then SMIJAN 2 for a later course). Names are not saved. The protocol is chosen at the MT.</div>
-  <div class="row2">
-    <div><label for="apLast">Last name</label><input id="apLast" autocomplete="off"></div>
-    <div><label for="apFirst">First name</label><input id="apFirst" autocomplete="off"></div>
-    <div><label for="apCode">LASFIR</label><input id="apCode" maxlength="6" placeholder="From the names, or type it"></div>
-    <div><label for="apCourse">Course #</label><input id="apCourse" type="number" min="1" value="1"></div>
-    <div><label for="apMrn">MRN</label><input id="apMrn" autocomplete="off"></div>
-    <div><label for="apDob">DOB</label><input id="apDob" type="date"></div>
-    <div><label for="apHome">Home clinic</label><input id="apHome" value="SRL" autocomplete="off"></div>
-    <div><label for="apMd">MD required on-site</label><select id="apMd"><option value=""></option><option>Yes</option><option>No</option></select></div>
-  </div>
-  <h2 style="margin-top:14px">Authorization</h2>
-  <div class="row2">
-    <div><label for="apIns">Insurance</label><input id="apIns" autocomplete="off"></div>
-    <div><label for="apAssess">Auth assessment</label><input id="apAssess" autocomplete="off"></div>
-    <div><label for="apAuthStart">Auth start</label><input id="apAuthStart" type="date"></div>
-    <div><label for="apAuthExp">Auth expires</label><input id="apAuthExp" type="date"></div>
-    <div><label for="apTxs"># of TXs (D2)</label><input id="apTxs" type="number" min="1" value="36"></div>
-    <div><label for="apRedos"># of MT redos (D4)</label><input id="apRedos" type="number" min="0" value="0"></div>
-    <div><label for="apMtr">MTR approved</label><select id="apMtr"><option value=""></option><option>Yes</option><option>No</option></select></div>
-  </div>
-  <div class="hint">A standard course is 36 treatments: the MT (90867), an MT redo (90869) when authorized, and the rest daily (90868).</div>
-  <h2 style="margin-top:14px">Benefits <span class="sub" style="font-weight:400">(BIDF)</span></h2>
-  <div class="row2">
-    <div><label for="apDed">Deductible remaining</label><input id="apDed" autocomplete="off" placeholder="$ or N/A"></div>
-    <div><label for="apOop">Out-of-pocket max remaining</label><input id="apOop" autocomplete="off" placeholder="$ or N/A"></div>
-    <div><label for="apBidf">BIDF estimated course cost</label><input id="apBidf" type="number" min="0" step="0.01"></div>
-  </div>
-  <div class="row3" style="margin:10px 0 2px"><span class="sub">Cost by code</span><span class="sub">PR</span><span class="sub">Before ded.</span></div>
-  <div id="apBill"></div>
-  <div class="hint">PR is the patient's cost per visit. Fill Before ded. only when a deductible applies; visits charge that amount until the deductible is used up.</div>
-  <h2 style="margin-top:14px">Availability <span class="sub" style="font-weight:400">(can also wait until the MT)</span></h2>
-  <div class="row3"><span></span><span class="sub">Earliest start</span><span class="sub">Latest start</span></div>
-  <div id="apWeek"></div>
-  <label>Dates away (vacation, work, other)</label>
-  <div id="apRanges"></div>
-  <button class="sm" data-apact="add">Add another</button>
-  <div class="hint" id="apTab"></div>
-  <div class="actions"><button class="pri" id="btnAdd">Create tab</button></div>
-</section>
+    <section id="v-settings" aria-label="Settings" hidden>
+      <header class="top"><div><h1>Settings</h1><p class="sub">Saved in this workbook for everyone. The view on Today (Clinic or one chair) is saved on this computer only.</p></div></header>
+      <div class="card form" id="settingsBox">
+        <h2>Clinic</h2>
+        <div class="row2">
+          <label class="fld" for="cfgLoc"><span>This clinic (NextGen location)</span><input id="cfgLoc"></label>
+          <label class="fld" for="cfgDevice"><span>Tracker device</span><select id="cfgDevice"><option value="auto">From the workbook name</option><option value="MagV">MagVenture</option><option value="Brainsway">BrainsWay</option></select></label>
+          <label class="fld" for="cfgAuth"><span>Auth warning (calendar days)</span><input id="cfgAuth" type="number" min="1"></label>
+          <label class="fld" for="cfgProto"><span>Protocol warning (business days)</span><input id="cfgProto" type="number" min="1"></label>
+          <label class="fld" for="cfgRecent"><span>Recent visit window (days)</span><input id="cfgRecent" type="number" min="1"></label>
+          <label class="fld" for="cfgOpenTab"><span>Open tab on a visit</span><select id="cfgOpenTab"><option value="on">Goes to the visit's row</option><option value="off">Goes to the tab only</option></select></label>
+          <label class="fld" for="cfgCutoff"><span>Updates and Match New Template leave out trackers with no visit since</span><input id="cfgCutoff" type="date"></label>
+        </div>
+        <p class="hint" id="cutoffNote"></p>
+      </div>
+      <div class="card form">
+        <h2>Workbook tools</h2>
+        <div class="actions"><button id="btnMatch">Match New Template (all active tabs)</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMeas">Place measure placeholders</button><button id="btnApRebuild">Rebuild Active Patients sheet</button></div>
+        <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
+      </div>
+    </section>
 
-<div id="modal" hidden><div id="modalBody" role="dialog" aria-modal="true"></div></div>
-<div id="menuShade" hidden></div>
+    <section id="v-add" aria-label="Add patient" hidden>
+      <header class="top"><div><h1>Add patient</h1><p class="sub">Copies New Template and names the tab by LASFIR (SMIJAN, then SMIJAN 2 for a later course). Names are not saved. The protocol is chosen at the MT.</p></div><button class="btn ghost" id="apBack">Back to Courses</button></header>
+      <div class="card form">
+        <p class="hint" id="apNote"></p>
+        <div class="row2">
+          <label class="fld" for="apLast"><span>Last name</span><input id="apLast" autocomplete="off"></label>
+          <label class="fld" for="apFirst"><span>First name</span><input id="apFirst" autocomplete="off"></label>
+          <label class="fld" for="apCode"><span>LASFIR</span><input id="apCode" maxlength="6" placeholder="From the names, or type it"></label>
+          <label class="fld" for="apCourse"><span>Course #</span><input id="apCourse" type="number" min="1" value="1"></label>
+          <label class="fld" for="apMrn"><span>MRN</span><input id="apMrn" autocomplete="off"></label>
+          <label class="fld" for="apDob"><span>DOB</span><input id="apDob" type="date"></label>
+          <label class="fld" for="apHome"><span>Home clinic</span><input id="apHome" value="SRL" autocomplete="off"></label>
+          <label class="fld" for="apMd"><span>MD required on-site</span><select id="apMd"><option value=""></option><option>Yes</option><option>No</option></select></label>
+        </div>
+        <h3>Authorization</h3>
+        <div class="row2">
+          <label class="fld" for="apIns"><span>Insurance</span><input id="apIns" autocomplete="off"></label>
+          <label class="fld" for="apAssess"><span>Auth assessment</span><input id="apAssess" autocomplete="off"></label>
+          <label class="fld" for="apAuthStart"><span>Auth start</span><input id="apAuthStart" type="date"></label>
+          <label class="fld" for="apAuthExp"><span>Auth expires</span><input id="apAuthExp" type="date"></label>
+          <label class="fld" for="apTxs"><span># of TXs (D2)</span><input id="apTxs" type="number" min="1" value="36"></label>
+          <label class="fld" for="apRedos"><span># of MT redos (D4)</span><input id="apRedos" type="number" min="0" value="0"></label>
+          <label class="fld" for="apMtr"><span>MTR approved</span><select id="apMtr"><option value=""></option><option>Yes</option><option>No</option></select></label>
+        </div>
+        <p class="hint">A standard course is 36 treatments: the MT (90867), an MT redo (90869) when authorized, and the rest daily (90868).</p>
+        <h3>Benefits (BIDF)</h3>
+        <div class="row2">
+          <label class="fld" for="apDed"><span>Deductible remaining</span><input id="apDed" autocomplete="off" placeholder="$ or N/A"></label>
+          <label class="fld" for="apOop"><span>Out-of-pocket max remaining</span><input id="apOop" autocomplete="off" placeholder="$ or N/A"></label>
+          <label class="fld" for="apBidf"><span>BIDF estimated course cost</span><input id="apBidf" type="number" min="0" step="0.01"></label>
+        </div>
+        <div class="row3" style="margin-top:14px"><span>Cost by code</span><span>PR</span><span>Before ded.</span></div>
+        <div id="apBill"></div>
+        <p class="hint">PR is the patient's cost per visit. Fill Before ded. only when a deductible applies; visits charge that amount until the deductible is used up.</p>
+        <h3>Availability <span class="muted" style="font-weight:400">(can also wait until the MT)</span></h3>
+        <div class="row3"><span></span><span>Earliest start</span><span>Latest start</span></div>
+        <div id="apWeek"></div>
+        <label class="fld"><span>Dates away (vacation, work, other)</span></label>
+        <div id="apRanges"></div>
+        <button class="sm" data-apact="add">Add another</button>
+        <p class="hint" id="apTab"></p>
+        <div class="actions"><button class="pri" id="btnAdd">Create tab</button></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal" hidden><div id="modalBody" class="modal" role="dialog" aria-modal="true"></div></div>
 <div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule"></iframe></div>
 <div id="toast" role="status"></div>
 <script src="benefits.js"></script>
+<script src="core.js"></script>
 <script src="taskpane.js"></script>
 </body>
 </html>
