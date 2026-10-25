@@ -85,7 +85,7 @@ const chairClash = occ => { const m = new Map(); occ.forEach(e => { const k = ch
    task pane (which stays open) to do every read and write, and the pane sends back a snapshot of what it read. */
 const POPOUT = /[?&]popout=1\b/.test(location.search);
 const pop = { dlg: null, calls: 0 };                                   // task pane side
-const rpc = { id: 0, wait: new Map(), parts: [], snapWait: [] };       // pop-out side
+const rpc = { id: 0, wait: new Map(), bufs: {}, snapWait: [] };       // pop-out side
 const $ = id => document.getElementById(id);
 const colLetter = i => { let s = ""; for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };   // 0-based column index to letters (A, Z, AA)
 const colIndex = l => l.split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;   // letters back to a 0-based index
@@ -552,9 +552,14 @@ async function readSessNow(ctx) {
   const a = ws.getRange(`A${SESS_FIRST}:J${SESS_LAST}`), c = ws.getRange(`L${CH_FIRST}:P${CH_LAST}`); a.load("values"); c.load("values"); await ctx.sync();
   readSess(a.values, c.values); return ws;
 }
+let sessBusy = 0;
 async function writeSess(entries) {
-  if (!entries.length) return null;
-  if (POPOUT) { setSessSnap(await callPane("writeSess", [entries])); return null; }
+  if (!entries.length) return;
+  sessBusy++;
+  try { if (POPOUT) await callPane("writeSess", [entries]); else await writeSessPane(entries); } finally { sessBusy--; }
+}
+/* the pane's write; in full screen the pane then sends the table to the window in chunks (sendSess) before it answers */
+async function writeSessPane(entries) {
   try {
     await Excel.run(async ctx => {
       await sessSheet(ctx); const ws = await readSessNow(ctx);
@@ -565,11 +570,11 @@ async function writeSess(entries) {
       await ctx.sync();
     });
   } catch (e) { try { await Excel.run(readSessNow); } catch { /* keep the error that matters */ } throw e; }
-  return sessSnap();
 }
-/* the board's 30-second tick picks up other people's check-ins and moves */
+/* the board's 30-second tick picks up other people's check-ins and moves, unless a save is still going */
 async function pullSess() {
-  if (POPOUT) { setSessSnap(await callPane("sessSnap", [])); return; }
+  if (sessBusy) return;
+  if (POPOUT) return callPane("sessSnap", []);
   await Excel.run(readSessNow);
 }
 /* keeps the last SESS_KEEP days, rewritten from row 2; the copy in memory follows once the sheet has it */
@@ -954,7 +959,7 @@ function courseHtml(fl, N) {
 /* the whole visit log with pulses and scores, as the earlier patient view had it */
 function allVisits(p) {
   const t = todaySerial(), all = p.rows.filter(r => r.date != null).sort(cmp);
-  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Pulses L / R / O</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Status</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${esc(r.type)}${r.tele ? " tele" : ""}</td><td>${r.pulses.map(x => x ?? "").join(" / ")}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${r.miss ? "Missed" : r.delivered ? "Done" : r.alt ? "Other clinic" : r.date < t ? "Not entered" : "Booked"}</td></tr>`).join("")}</table>`;
+  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Pulses L / R / O</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Status</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${esc(r.type)}${r.tele ? " tele" : ""}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${r.miss ? "Missed" : r.delivered ? "Done" : r.alt ? "Other clinic" : r.date < t ? "Not entered" : "Booked"}</td></tr>`).join("")}</table>`;
 }
 
 /* ---------- Chairs: devices, chair hours and protocols ---------- */
@@ -1550,9 +1555,9 @@ async function applyOps(ops, guard) {
     else if (o.a !== BEN_STAMP) cells.push(o);
   }
   await Excel.run(async ctx => {
-    const g = (guard || []).filter(x => x.date != null).map(x => ({ ...x, r: ctx.workbook.worksheets.getItem(x.tab).getRange(`E${x.row}`) }));
+    const g = (guard || []).filter(x => x.date != null).map(x => ({ ...x, r: ctx.workbook.worksheets.getItem(x.tab).getRange(`E${x.row}:L${x.row}`) }));   // E date, L type
     if (g.length) { g.forEach(x => x.r.load("values")); await ctx.sync(); }
-    const moved = g.find(x => Math.floor(Number(x.r.values[0][0]) || 0) !== x.date);
+    const moved = g.find(x => Math.floor(Number(x.r.values[0][0]) || 0) !== x.date || (x.type != null && String(x.r.values[0][7] ?? "").trim() !== x.type));
     if (moved) throw new Error(`${moved.tab}: the visit on row ${moved.row} has moved on the tab (an import may have re-sorted it). Nothing was saved. Select Refresh and try again.`);
     for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; }
     await writeBen(ctx, ben);
@@ -1670,8 +1675,8 @@ async function formatLogsClick() {
   } catch (e) { fail(e); }
 }
 /* guard: the log row and the date it should still hold, checked before anything is written */
-const writeCells = (tab, pairs, guard) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })), guard ? [{ tab, ...guard }] : null);
-const at = r => ({ row: r.row, date: r.date });
+const writeCells = (tab, pairs, guard) => applyOps(pairs.map(([a, v]) => ({ tab, a, v: [[v]] })), guard ? [].concat(guard).map(x => ({ tab, ...x })) : null);
+const at = r => ({ row: r.row, date: r.date, type: r.type });
 function patchRow(tab, row, f) { const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return; Object.assign(r, f); p.d = derive(p); renderDash(); }
 const findPR = (tab, row) => { const p = state.patients.find(x => x.tab === tab); return [p, p && p.rows.find(x => x.row === row)]; };
 
@@ -1721,7 +1726,7 @@ async function moveMeasures(tab, row, destRow) {
   const pairs = [[`S${row}`, note]];
   if (r.phq.toLowerCase() === "x") pairs.push([`P${row}`, ""]); if (r.gad.toLowerCase() === "x") pairs.push([`Q${row}`, ""]);
   if (!dest.phq) pairs.push([`P${dest.row}`, "x"]); if (!dest.gad) pairs.push([`Q${dest.row}`, "x"]);
-  try { await writeCells(tab, pairs, at(r)); toast(`Measures moved to ${fmtMon(dest.date)}.`); await refresh(); return true; } catch (e) { fail(e); return false; }
+  try { await writeCells(tab, pairs, [at(r), at(dest)]); toast(`Measures moved to ${fmtMon(dest.date)}.`); await refresh(); return true; } catch (e) { fail(e); return false; }
 }
 /* MT details ("MT %: 55", "Hotspot: ...") replace the earlier ones in the MT row's Notes */
 async function saveMT(tab, row, parts) {
@@ -2587,9 +2592,11 @@ function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     sess: sessSnap() });
-  const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now();
-  for (let i = 0; i < n; i++) toChild({ k: "snap", seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) });
+  sendParts("snap", s);
 }
+/* dialog messages are size-limited, so anything big goes in CHUNK-sized parts the window puts back together */
+function sendParts(k, s) { const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now() + Math.random(); for (let i = 0; i < n; i++) toChild({ k, seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) }); }
+const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk,
     pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
@@ -2598,17 +2605,21 @@ function applySnap(o) {
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
 }
+const CALL_MS = 180000;
 function callPane(fn, args) {
   return new Promise((res, rej) => {
-    const id = ++rpc.id; rpc.wait.set(id, { res, rej });
-    try { Office.context.ui.messageParent(JSON.stringify({ k: "call", id, fn, args })); } catch (e) { rpc.wait.delete(id); rej(e); }
+    const id = ++rpc.id, gone = setTimeout(() => { if (rpc.wait.delete(id)) rej(new Error("Full screen lost touch with the task pane. Keep the pane open, then check the tab before trying again.")); }, CALL_MS);
+    rpc.wait.set(id, { res: v => { clearTimeout(gone); res(v); }, rej: e => { clearTimeout(gone); rej(e); } });
+    try { Office.context.ui.messageParent(JSON.stringify({ k: "call", id, fn, args })); } catch (e) { clearTimeout(gone); rpc.wait.delete(id); rej(e); }
   });
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g) => applyOps(ops, g), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), writeSess: e => writeSess(e), sessSnap: async () => { await Excel.run(readSessNow); return sessSnap(); }
+  saveSetting: (k, v) => saveSetting(k, v),
+  writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
+  sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
 async function onPopMessage(arg) {
   let m; try { m = JSON.parse(arg.message); } catch { return; }
@@ -2633,19 +2644,21 @@ function openPopout() {
   });
 }
 function closePopout() { if (pop.dlg) { try { pop.dlg.close(); } catch { /* already closed */ } pop.dlg = null; } $("popNote").hidden = true; }
-function initPopout() {
-  document.body.classList.add("popout");
-  Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, a => {
+/* the window side: snapshot and Sessions parts, answers to its calls, and toasts from the pane */
+function onPaneMessage(a) {
     let m; try { m = JSON.parse(a.message); } catch { return; }
-    if (m.k === "snap") {
-      if (!rpc.parts.length || rpc.parts.seq !== m.seq) { rpc.parts = Array(m.n); rpc.parts.seq = m.seq; }
-      rpc.parts[m.i] = m.part;
-      if (rpc.parts.filter(x => x != null).length === m.n) { const s = rpc.parts.join(""); rpc.parts = []; applySnap(JSON.parse(s)); }
+    if (m.k === "snap" || m.k === "sess") {
+      const b = rpc.bufs[m.k] && rpc.bufs[m.k].seq === m.seq ? rpc.bufs[m.k] : (rpc.bufs[m.k] = { seq: m.seq, parts: Array(m.n) });
+      b.parts[m.i] = m.part;
+      if (b.parts.filter(x => x != null).length === m.n) { const o = JSON.parse(b.parts.join("")); delete rpc.bufs[m.k]; if (m.k === "snap") applySnap(o); else { setSessSnap(o); renderDash(); } }
     } else if (m.k === "ack") {
       const w = rpc.wait.get(m.id); if (!w) return; rpc.wait.delete(m.id);
       if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
     } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
-  }, () => Office.context.ui.messageParent(JSON.stringify({ k: "ready" })));
+}
+function initPopout() {
+  document.body.classList.add("popout");
+  Office.context.ui.addHandlerAsync(Office.EventType.DialogParentMessageReceived, onPaneMessage, () => Office.context.ui.messageParent(JSON.stringify({ k: "ready" })));
 }
 /* Full screen: the tracker floats inside the Excel page over the workbook; the menu sits on frosted glass over a blurred page (body.fs).
    In full screen the same button closes it. */
