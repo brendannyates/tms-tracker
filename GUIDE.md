@@ -65,22 +65,19 @@ Banners at the top flag an out-of-date appointment list, new NextGen patients wi
 |---|---|
 | Plain, **13 min left** | A session is running. The bar shows how far along it is. |
 | Amber, **Ends in 2 min** or **Over by 4 min** | The session is about to end, or its time is up. |
-| Red, **Waiting 12 min** | The patient booked here checked in and is 10 or more minutes past their time with no session started. Red only ever means someone is waiting on staff. |
+| Red, **Waiting 12 min** | Only for a visit checked in on an earlier version of the add-in: 10 or more minutes past their time with no session started. There is no separate check-in now, so a late patient shows as **Not started** under Still to come instead. |
 | **Open** | Nothing running. It names who is booked next. |
 
 The line under **Today** counts what matters: in session, waiting to start (in red when anyone is), still to come.
 
-**Still to come** lists everyone not yet started, with their time, chair and the most urgent thing on their course. **Check in** is beside each one. Below it, **Appointment list check** compares today with the last imported list (a NextGen visit missing from the tracker, or a visit on a tab NextGen doesn't have), and **Treatments today** gives "X of Y in treatment are booked" with the reasons for the rest.
+**Still to come** lists everyone not yet started, with their time, chair and the most urgent thing on their course. **Start session** is beside each one. Below it, **Appointment list check** compares today with the last imported list (a NextGen visit missing from the tracker, or a visit on a tab NextGen doesn't have), and **Treatments today** gives "X of Y in treatment are booked" with the reasons for the rest.
 
-**The visit card** follows a visit from check-in to the note. Its big button is always the next step:
+**The visit card** follows a visit from start to the note. There are two steps:
 
-1. **Check in [patient].**
-2. **Record motor threshold** (MT and MT redo visits): MT %, hotspot, amps, and at the first MT the baseline sleep and caffeine and the protocol chosen. They go in the MT row's Notes and J2:O4.
-3. **Start session in MagV 2.** If that chair is in use and another is open, the button becomes **Move to another chair**.
-4. **End session** asks for the pulses (filled in from the protocol), the treating technician, pain or discomfort and muscle movements, and PHQ-9 and GAD-7 when the visit has the x for them. If they weren't collected, tick **Not collected today** and pick the visit to move them to (it suggests the next MT, MT redo or follow-up within 7 days). Pulses entered means the treatment happened.
-5. **Draft treatment note** builds the note from mood on arrival, the observations and technician comments; the answers become sentences and the questions stay out. **Copy note** puts it on the clipboard for the chart.
+1. **Start session in MagV 2** stamps the check-in and start times together and opens the treatment note draft: mood on arrival, the screening questions and technician comments. The answers become sentences and the questions stay out. **Save draft** keeps it while the treatment runs. On an MT or MT redo, it opens **Record motor threshold** instead: MT %, hotspot, amps, and at the first MT the baseline sleep and caffeine and the protocol chosen (MT row's Notes and J2:O4). If the chair is in use and another is open, the button becomes **Move to another chair**.
+2. **Complete session** asks for the pulses (filled in from the protocol), the treating technician, pain or discomfort and muscle movements, and PHQ-9 and GAD-7 when the visit has the x for them. If they weren't collected, tick **Not collected today** and pick the visit to move them to (it suggests the next MT, MT redo or follow-up within 7 days). When a copay is due today, choose **Collected** or **Not collected**; it's saved to the visit's Notes, e.g. "Copay $25.00 collected". Pulses entered means the treatment happened. The note draft then opens again for **Copy note**, which puts it on the clipboard for the chart.
 
-Other actions on the card: **Record missed** (no-show or same-day cancel, then **Use freebie**, **Waived** or **Decide later**; it warns when the patient is down to 1 or 0 freebies and when this would be 3 missed in a row), **Undo missed visit**, **Undo end session** (only until the chair's next session starts), **Print schedule** (**Print course schedule** on an MT), and **Open tab**, which opens the patient's tab at that visit's row. Selecting a visit opens its tab too, unless **Settings > Selecting a visit on Today** is set to the card only. The card also shows the payment due today, or **Not set** when that visit type has no cost entered, and **BIDF info needed** with **Enter benefits** when benefits are missing.
+Other actions on the card: **Record missed** (no-show or same-day cancel, then **Use freebie**, **Waived** or **Decide later**; it warns when the patient is down to 1 or 0 freebies and when this would be 3 missed in a row), **Undo missed visit**, **Undo complete session** (clears the pulses, technician and copay line; only until the chair's next session starts), **Print schedule** (**Print course schedule** on an MT), and **Open tab**, which opens the patient's tab at that visit's row. Selecting a visit opens its tab too, unless **Settings > Selecting a visit on Today** is set to the card only. The card also shows the payment due today, or **Not set** when that visit type has no cost entered, and **BIDF info needed** with **Enter benefits** when benefits are missing.
 
 Follow-ups show on Today too: **Enter PHQ-9 and GAD-7** when they're due, then **Mark follow-up done**.
 

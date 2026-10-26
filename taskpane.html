@@ -270,6 +270,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .blk.track{box-shadow:inset 0 0 0 2px var(--faint)}
 .blk.soon{background:var(--warn-soft);box-shadow:inset 0 0 0 2px var(--warn)}
 .blk.late{background:var(--danger-soft);box-shadow:inset 0 0 0 2px var(--danger)}
+.blk.dbl:not(.soon):not(.late){box-shadow:inset 0 0 0 2px var(--warn)}
 .nowline{position:absolute;left:0;right:0;height:2px;background:var(--ink);z-index:0}
 .nowline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--ink)}
 .wkgrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
