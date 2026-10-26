@@ -2180,13 +2180,18 @@ function startTracker(mrn) {
 /* ---------- NextGen import: column layout is fixed by the "1 Appt List - ALL TMS" report, so it is detected, not mapped ---------- */
 const MAP_RE = { mMrn: /^mrn$/i, mDate: /appt\s*date|appointment\s*date/i, mTime: /^time$/i, mSts: /^sts$|^status$/i, mEvent: /^event$|appointment type/i, mProv: /^provider$/i, mChg: /charged/i, mMod: /^mod\s*dt|modified\s*date/i, mLoc: /^location$/i };
 async function onFile(e) {
-  const f = e.target.files[0]; if (!f) return;
+  // cleared at once so picking the same file again (a re-export, or after an error) still fires change
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
   try {
     failStep = "Reading the file";
     const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
     state.file = parseReport(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }), f.name);
     failStep = "Building the preview"; await buildPlan(); failStep = "";
-  } catch (err) { fail(err); }
+  } catch (err) {
+    // a file that fails must not leave the last preview up, where Apply would write the earlier list
+    if (state.file && !state.file.saved) state.file = null;
+    state.plan = null; $("planBox").hidden = true; renderSavedList(); fail(err);
+  }
 }
 function parseReport(all, name, saved) {
   const hi = all.findIndex(r => r.filter(c => String(c).trim() !== "").length >= 5);
@@ -2884,6 +2889,7 @@ Office.onReady(info => {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
   syncTheme();
   $("btnMatch").onclick = () => setupClick(true);
+  ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
