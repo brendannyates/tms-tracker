@@ -65,7 +65,7 @@ const chairName = () => DEVICES[device()].chair;
 
 const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", openTab: "on", cutoff: CUTOFF_DEFAULT },
-  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, pendingNew: [],
+  patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "today", ptAll: false, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
   dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
@@ -231,6 +231,11 @@ async function refresh() {
       const lay = x => ok(x) ? layoutOf(x.h.values[0][17], x.j6.values[0][0], x.v11.values[0][0]) : 0;
       const layout = new Map(sg.map(x => [x.name, lay(x)]));
       state.templateOk = layout.get("New Template") === 3;
+      /* what's off about New Template, in words, for the banner and the Match New Template button */
+      const nt = sg.find(x => x.name === "New Template"), shown = v => String(v ?? "").trim() === "" ? "is blank" : `reads "${String(v).trim()}"`;
+      state.templateWhy = state.templateOk ? "" : !nt ? "There's no tab named New Template, so tabs can't be matched or added."
+        : !ok(nt) ? `New Template's headings aren't the tracker's, so tabs can't be matched to it. It needs PATIENT: in A1, MRN: in A3, and ${SIG.map(([i, w]) => `${w[0].toUpperCase() + w.slice(1)} in ${colLetter(2 + i)}8`).join(", ")}.`
+        : `New Template needs Time in T8 and Freebie Count in J6 before tabs can match it. T8 ${shown(nt.h.values[0][17])} and J6 ${shown(nt.j6.values[0][0])}.`;
       state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !layout.get(x.name)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
       state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: 0 };   // tabs not named by LASFIR are left alone without a mention
       /* read in batches: Excel on the web caps how much one sync can return, and each log is 3,000 cells */
@@ -317,7 +322,7 @@ async function refresh() {
     if (pop.dlg) sendSnap();
     syncActiveSheet();
     /* once a session: visit logs edited by hand get the formatting that follows their dates (hand-colored rows stay) */
-    if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)); }
+    if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
   } catch (e) { fail(e); }
 }
 const num = (v, d) => (v === "" || v == null || isNaN(Number(v))) ? d : Number(v);
@@ -461,16 +466,16 @@ function renderBanners() {
   $("wbTitle").textContent = trackerTitle(); $("devTag").textContent = `${device() === "Brainsway" ? "BrainsWay" : "MagV"} tracker`;
   const sk = state.skipped, parts = [];
   if (sk.layout.length) parts.push(`${sk.layout.length} tab${sk.layout.length > 1 ? "s" : ""} in an older layout (${sk.layout.map(esc).join(", ")})`);
-  if (!state.templateOk) parts.push("the New Template tab does not match the current layout (Time in T8, Freebie Count in J6)");
   const ns = state.stale.length;
   $("cutoffNote").textContent = ns ? `${ns} tab${ns === 1 ? " is" : "s are"} left out of updates: no visit on or after this date, or Discontinued/Complete.` : "";
-  $("skipText").innerHTML = parts.length ? `Left untouched: ${parts.join("; ")}. The add-in only reads and writes tabs that match the current template.` : "";
-  show("skipNote", parts.length > 0);
+  $("tplNote").textContent = state.templateWhy; $("tplNote").hidden = state.templateOk;   // Settings keeps it where a dismissed banner can't hide it
+  const setupUp = state.fix.size + state.old.length > 0;
+  $("skipText").innerHTML = [!setupUp && state.templateWhy && esc(state.templateWhy), parts.length && `Left untouched: ${parts.join("; ")}. The add-in only reads and writes tabs that match the current template.`].filter(Boolean).join(" ");
+  show("skipNote", parts.length > 0 || (!setupUp && !state.templateOk));
   const n = state.fix.size, o = state.old.length, msg = [];
   if (n) msg.push(`${n} tab${n === 1 ? " doesn't" : "s don't"} match New Template yet (${[...state.fix.keys()].map(esc).join(", ")}). Match New Template moves benefits to the ${BEN_SHEET} tab and freebies to N6, and brings the PR formula, colors by visit type, dropdowns, borders and the TX SUMMARY checkbox over every log row`);
   if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is deleted once its entries are copied over`);
-  $("setupMsg").innerHTML = msg.join(". ") + ".";
-  $("btnSetup").disabled = o > 0 && !state.templateOk;
+  $("setupMsg").innerHTML = msg.join(". ") + "." + (state.templateWhy ? " " + esc(state.templateWhy) : "");
   show("setup", n + o > 0);
   $("newPtList").innerHTML = state.pendingNew.map(newPtItem).join("");
   $("newPtCount").textContent = state.pendingNew.length;
@@ -484,7 +489,7 @@ const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient"
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const LONG_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const LONG_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const clock = m => { if (m == null) return ""; m = Math.round(m); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
+const clock = m => m == null ? "" : fmtTime(Math.round(m));
 const fmtMon = s => { if (typeof s !== "number") return ""; const d = serialToDate(s); return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`; };
 const fmtDay = s => `${DAYS[dow(s)]} ${fmtMon(s)}`;
 const fmtLong = s => { const d = serialToDate(s); return `${LONG_DAYS[d.getUTCDay()]}, ${LONG_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`; };
@@ -518,6 +523,22 @@ function readSess(vals, cv) {
   });
   state.sess = { rows, next, chairs: chairsM, cnext };
 }
+const sessTimes = ws => { ws.getRange(`G${SESS_FIRST}:J${SESS_LAST}`).numberFormat = Array(SESS_LAST - SESS_FIRST + 1).fill(Array(4).fill("h:mm AM/PM")); };
+/* a Sessions sheet made before times read AM/PM gets the format once a session, on its own so a failure can't hold up a check-in */
+let sessAmPm = false;
+async function sessAmPmOnce() {
+  if (POPOUT || sessAmPm) return;
+  try {
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItemOrNullObject(SESS_SHEET); await ctx.sync();
+      if (!ws.isNullObject) {
+        const r = ws.getRange(`G${SESS_FIRST}:J${SESS_FIRST}`); r.load("numberFormat"); await ctx.sync();
+        if (r.numberFormat[0].some(f => !/AM\/PM/i.test(f))) { sessTimes(ws); await ctx.sync(); }
+      }
+      sessAmPm = true;
+    });
+  } catch (e) { console.error(e); }
+}
 async function sessSheet(ctx) {
   let ws = ctx.workbook.worksheets.getItemOrNullObject(SESS_SHEET); await ctx.sync();
   if (!ws.isNullObject) return ws;
@@ -525,7 +546,7 @@ async function sessSheet(ctx) {
   const h = ws.getRange("A1:J1"), c = ws.getRange("L1:P1"); h.values = [SESS_HDR]; c.values = [CH_HDR];
   [h, c].forEach(r => { r.format.font.bold = true; r.format.fill.color = "#1c2a33"; r.format.font.color = "#ffffff"; });
   ws.getRange(`A${SESS_FIRST}:A${SESS_LAST}`).numberFormat = Array(SESS_LAST - SESS_FIRST + 1).fill(["m/d/yyyy"]);
-  ws.getRange(`G${SESS_FIRST}:J${SESS_LAST}`).numberFormat = Array(SESS_LAST - SESS_FIRST + 1).fill(Array(4).fill("h:mm"));
+  sessTimes(ws);
   ws.getRange(`O${CH_FIRST}:O${CH_LAST}`).numberFormat = Array(CH_LAST - CH_FIRST + 1).fill(["m/d/yyyy"]);
   ws.getRange("A:P").format.columnWidth = 78; ws.getRange("K:K").format.columnWidth = 16;
   ws.getRange("A2").values = [[""]]; ws.freezePanes.freezeRows(1);
@@ -896,7 +917,7 @@ function viewSchedule(fl) {
   if (sl0(day, ent)) notes.push(`<p class="flag">Outside chair hours: ${sl0(day, ent)}</p>`);
   if (ent.noTime.length) notes.push(`<p class="flag">No time on the tab: ${ent.noTime.map(x => esc(x.p.tab)).join(", ")}. Import the appointment list to fill times.</p>`);
   return head("Schedule", isToday ? "Select a visit to open it on Today. Hours come from the Clinic Schedule sheet." : "Select a visit to open its row on the tab.", true) + seg + nav
-    + `<div class="card sched"><div class="sgrid" style="grid-template-columns:52px repeat(${used.length},minmax(110px,1fr))">${grid}</div>${notes.join("")}</div>`
+    + `<div class="card sched"><div class="sgrid" style="grid-template-columns:64px repeat(${used.length},minmax(110px,1fr))">${grid}</div>${notes.join("")}</div>`
     + (isToday ? "" : `<div style="margin-top:16px">${listCheckCard(day)}</div>`);
 }
 /* a day's visits for the Week card: time, patient, and anything but a plain daily treatment */
@@ -1634,6 +1655,7 @@ const fmtCell = c => {
     borders: Object.fromEntries(["top", "bottom", "left", "right"].filter(k => b[k]).map(k => [k, b[k].style === "None" ? { style: "None" } : b[k]])) } }) || {};
 };
 const fillOf = c => String((((c || {}).format || {}).fill || {}).color || "").toUpperCase();
+const ampm = f => /AM\/PM/i.test(f) ? f : "h:mm AM/PM";
 async function formatLogs(list) {
   if (!list.length) return 0;
   if (POPOUT) return callPane("formatLogs", [list]);
@@ -1655,17 +1677,20 @@ async function formatLogs(list) {
       const jobs = [];
       for (const g of part) {
         const P = g.cp.value, V = g.rg.values, NF = g.rg.numberFormat, first = P[0].map(fmtCell);
+        /* the visit time in T reads 2:30 PM, whatever the template's row 10 says, on hand-colored rows too (only T changes there) */
+        const nf0 = NF[0].map((f, j) => j === C.time ? ampm(f) : f), tOnly = i => { if (NF[i][C.time] !== ampm(NF[i][C.time])) jobs.push({ g, r: LOG_FIRST + i, t: true }); };
+        tOnly(0);
         for (let i = 1; i < V.length; i++) {
           const r = LOG_FIRST + i, dated = isNum(V[i][C.date]); if (!dated && !bp) continue;
           const ti = (r >= g.end - 1 ? LOG_LAST - (g.end - r) : Math.min(r, LOG_LAST - 2)) - LOG_FIRST - 1;   // New Template row for this position, 0 = row 11
-          const want = dated ? first : bp.value[ti].map(fmtCell), wantNf = dated ? NF[0] : bl.numberFormat[ti];
+          const want = dated ? first : bp.value[ti].map(fmtCell), wantNf = dated ? nf0 : bl.numberFormat[ti];
           const plain = P[i].every((c, j) => fillOf(c) === fillOf(P[0][j]) || (bp && fillOf(c) === fillOf(bp.value[ti][j])));
-          if (!g.touched.has(r) && !plain) continue;
+          if (!g.touched.has(r) && !plain) { if (dated) tOnly(i); continue; }
           if (P[i].every((c, j) => JSON.stringify(fmtCell(c)) === JSON.stringify(want[j])) && NF[i].every((f, j) => f === wantNf[j])) continue;
           jobs.push({ g, r, want, wantNf });
         }
       }
-      const put = j => { const row = j.g.ws.getRange(`A${j.r}:T${j.r}`); row.setCellProperties([j.want]); row.numberFormat = [j.wantNf]; };
+      const put = j => { if (j.t) { j.g.ws.getRange(`T${j.r}`).numberFormat = [["h:mm AM/PM"]]; return; } const row = j.g.ws.getRange(`A${j.r}:T${j.r}`); row.setCellProperties([j.want]); row.numberFormat = [j.wantNf]; };
       /* one bad row shouldn't stop the rest: if the batch fails, rows go one at a time and the ones Excel refuses are skipped */
       jobs.forEach(put);
       try { await ctx.sync(); n += jobs.length; }
@@ -2025,7 +2050,7 @@ async function rebuildTab(ctx, name) {
 }
 /* rebuilding deletes the earlier tabs, so it asks first. force: every active tracker, not only the ones that look off */
 function setupClick(force) {
-  if (!state.templateOk) return toast("New Template must have Time in T8 and Freebie Count in J6 before tabs can match it.", true);
+  if (!state.templateOk) return toast(state.templateWhy, true, true);
   if (!state.old.length) return setupColumns(force === true);
   const n = state.old.length;
   showModal(`<h2 id="mtitle">Rebuild ${n} tab${n > 1 ? "s" : ""} from New Template?</h2><p class="sub">${state.old.map(esc).join(", ")} will be copied onto New Template. Each earlier tab is deleted once every copied entry checks out on the new tab. If anything doesn't match, the earlier tab is kept as "(old)".</p>
@@ -2035,7 +2060,7 @@ function setupClick(force) {
 async function setupColumns(force) {
   if (POPOUT) return callPane("setupColumns", [force]);
   try {
-    if (!state.templateOk) return toast("New Template must have Time in T8 and Freebie Count in J6 before tabs can match it.", true);
+    if (!state.templateOk) return toast(state.templateWhy, true, true);
     const stale = new Set(state.stale), courseOf = n => (state.patients.find(p => p.tab === n) || { course: 0 }).course;
     /* oldest course first, so the newest course of an MRN writes its Benefits row last */
     const names = (force ? state.patients.filter(p => !stale.has(p.tab)).map(p => p.tab) : [...state.fix.keys()].filter(n => n !== "New Template")).sort((a, b) => courseOf(a) - courseOf(b));
@@ -2106,7 +2131,7 @@ async function addPatient(d) {
   if (POPOUT) { const ok = await callPane("addPatient", [d]); if (ok) { resetAddPatient(); if (state.file) { show("imp"); await buildPlan(); } else openCourse(apTabName(d)); } return ok; }
   const code = d.code, course = +d.apCourse || 1, name = course > 1 ? `${code} ${course}` : code;
   if (!code) return toast("Enter a name or a LASFIR code.", true);
-  if (!state.templateOk) return toast("New Template does not match the current layout, so a new tab cannot be created from it.", true);
+  if (!state.templateOk) return toast(state.templateWhy, true, true);
   const ded = benVal(d.apDed), oop = benVal(d.apOop), bidf = benVal(d.apBidf);
   if (ded === null || oop === null) return toast("Deductible and out-of-pocket max: enter an amount or N/A.", true);
   if (bidf === null || bidf === "N/A") return toast("BIDF estimate: enter an amount.", true);
@@ -2155,13 +2180,18 @@ function startTracker(mrn) {
 /* ---------- NextGen import: column layout is fixed by the "1 Appt List - ALL TMS" report, so it is detected, not mapped ---------- */
 const MAP_RE = { mMrn: /^mrn$/i, mDate: /appt\s*date|appointment\s*date/i, mTime: /^time$/i, mSts: /^sts$|^status$/i, mEvent: /^event$|appointment type/i, mProv: /^provider$/i, mChg: /charged/i, mMod: /^mod\s*dt|modified\s*date/i, mLoc: /^location$/i };
 async function onFile(e) {
-  const f = e.target.files[0]; if (!f) return;
+  // cleared at once so picking the same file again (a re-export, or after an error) still fires change
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
   try {
     failStep = "Reading the file";
     const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
     state.file = parseReport(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }), f.name);
     failStep = "Building the preview"; await buildPlan(); failStep = "";
-  } catch (err) { fail(err); }
+  } catch (err) {
+    // a file that fails must not leave the last preview up, where Apply would write the earlier list
+    if (state.file && !state.file.saved) state.file = null;
+    state.plan = null; $("planBox").hidden = true; renderSavedList(); fail(err);
+  }
 }
 function parseReport(all, name, saved) {
   const hi = all.findIndex(r => r.filter(c => String(c).trim() !== "").length >= 5);
@@ -2298,10 +2328,13 @@ function planTab(p, appts, from, to, o) {
       }
       continue;
     }
-    let r = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
-    if (!r) { r = R.find(x => !x.delivered && !x.alt && !x.miss && x.date == null && x.type !== "F/U"); if (r) { r.date = a.date; r.time = a.time; } }
+    // that day's row for the same kind of visit (a follow-up no-show never lands on the treatment row), else one with no type
+    const day = R.filter(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
+    let r = day.find(x => x.type !== "" && lpool(x.type) === lpool(a.type)) || day.find(x => x.type === "");
+    if (!r) { r = R.find(x => !x.delivered && !x.alt && !x.miss && x.date == null && lpool(x.type) === lpool(a.type)); if (r) { r.date = a.date; r.time = a.time; } }
     if (!r) { st.unrecorded++; continue; }
     if (!r.miss) { r.miss = true; st.miss++; if (kind === "Same-day cancel") st.sameCancel++; }
+    if (r.type === "") { r.type = a.type; st.types++; }
     r._p = true; tag(r, `${kind} ${fmtDate(a.date)} (NextGen)`);
     if (!r.freebie) {
       if (a.charged === "Waived") r.freebie = "Used";
@@ -2321,13 +2354,25 @@ function planTab(p, appts, from, to, o) {
   const eligible = r => !r._p && !r.delivered && (o.ps || !r.alt) && !r.miss;
   const inWin = r => eligible(r) && r.date != null && r.date >= from && r.date <= to;
   const over = r => eligible(r) && (r.date == null || r.date > to);
+  // a miss NextGen hasn't recorded (step 1 matched no no-show or same-day cancel to it) still answers that day's booking at the same
+  // time, so the visit isn't given a second row and everything after it pushed down. A booking at another time that day is another visit.
+  const sameTime = (r, e) => r.time == null || e.time == null || r.time === e.time;
+  const ownMiss = r => r.miss && !r._p && !r.delivered && r.date != null;
+  // one whose L was emptied first takes back the type of that day's booking no open row holds, a treatment ahead of a follow-up
+  for (const r of R.filter(r => ownMiss(r) && r.type === "")) {
+    const held = e => R.some(x => x !== r && !x.miss && !x.delivered && x.date === e.date && poolOf(x) === evPool(e));
+    const e = events.filter(e => e.date === r.date && sameTime(r, e) && !held(e)).sort((a, b) => (a.type === "F/U") - (b.type === "F/U"))[0];
+    if (e) { r.type = e.type; st.types++; }
+  }
   const fill = rows => {
     const f = { cleared: 0, types: 0, elsewhere: 0, past: 0 }, left = [];
     for (const pool of strict ? ["Daily", "MT", "MTR", "F/U"] : ["fu", "tx"]) {
       const free = rows.filter(r => poolOf(r) === pool && (inWin(r) || over(r)));
       const done = rows.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
+      const missed = rows.filter(r => ownMiss(r) && r.type !== "" && poolOf(r) === pool);
       for (const e of events.filter(e => evPool(e) === pool)) {
         const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
+        const m = missed.findIndex(r => r.date === e.date && sameTime(r, e)); if (m >= 0) { missed.splice(m, 1); continue; }
         if (e.date < from && rows.some(r => poolOf(r) === pool && r.date === e.date)) continue;
         const r = free.shift(); if (!r) { left.push(e); continue; }
         if (e.date < from) f.past++;
@@ -2353,7 +2398,8 @@ function planTab(p, appts, from, to, o) {
     }
     if (G.length <= LOG_READ) { rows = G; res = fill(rows); }
   }
-  Object.assign(st, res.f); st.none = res.left.length;
+  for (const [k, v] of Object.entries(res.f)) st[k] = (st[k] || 0) + v;   // steps 0-1 counted some of these already
+  st.none = res.left.length;
   rows.forEach((r, i) => { r.row = LOG_FIRST + i; });
   rows.forEach((r, i) => {
     if (r._o) return;
@@ -2597,7 +2643,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     sess: sessSnap() });
   sendParts("snap", s);
 }
@@ -2605,7 +2651,7 @@ function sendSnap() {
 function sendParts(k, s) { const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now() + Math.random(); for (let i = 0; i < n; i++) toChild({ k, seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) }); }
 const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
-  Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk,
+  Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     sess: null }); setSessSnap(o.sess);
   state.patients.forEach(p => p.d = derive(p));
@@ -2843,6 +2889,7 @@ Office.onReady(info => {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
   syncTheme();
   $("btnMatch").onclick = () => setupClick(true);
+  ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
