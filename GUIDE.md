@@ -135,6 +135,7 @@ What the import does:
 - Today and later: dates, times and visit types follow NextGen. Telehealth follow-ups get "Tele" in Notes. The provider on the tab follows the report.
 - Every Expected visit gets a row. When the visit log runs out (each no-show or MT redo uses a row), rows are added inside the log with the same formatting as rows of that visit type, so the last treatments and the final follow-up still show. The preview lists the tabs that grew.
 - Past visits never change, except no-shows and same-day cancels, which are always recorded so the freebie decision isn't missed. A kept visit with no row on the tab gets one with its date; enter the pulses.
+- A missed visit keeps its row: leave the visit type in L when you put x in M. The import won't add the day again while NextGen still shows it booked, and it puts the type back if L was emptied.
 - The visit log is put in date order, top to bottom, and Tx # (C) is renumbered: MT, Daily and MTR rows count, follow-ups and missed visits don't. Tx Remaining (D) follows.
 - Rows with an appointment date take row 10's formatting; empty rows go back to the template's gray. Rows you colored yourself are left alone. **Settings > Fix visit-log formatting** runs the same check on every tab.
 - A visit listed twice on the report gets one row. If NextGen corrects a no-show to kept or booked, the next import undoes the miss and gives the freebie back.
@@ -204,6 +205,7 @@ The sheet is view only and is rebuilt whenever something changes. Make changes o
 | Only one chair on Today | The chairs come from the appointment list. Import the list; until then the board shows the device's one chair. |
 | A patient shows on the wrong chair | Move them (Move to another chair), then move the appointment in NextGen and tick **Moved in NextGen**. |
 | A banner says tabs were left untouched | Its layout doesn't match the template. Use **Match New Template**, or check that A1 says PATIENT: and A3 says MRN:. |
+| Match New Template says New Template needs fixing | The message (on the banner, the button and Settings) says which cells are off and what they read. Fix them on New Template, for example Time in T8 and Freebie Count in J6, then select Refresh. |
 | The schedule doesn't show | Choose Print schedule again; it opens over the add-in, not in a separate window. |
 | Numbers look out of date | Select **Refresh** in the menu. The board moves on its own every 30 seconds and picks up other people's check-ins and moves then. |
 | "The visit on row N has moved on the tab" | Someone imported a list that re-sorted the tab. Nothing was saved. Select **Refresh** and do it again. |

@@ -136,10 +136,10 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .day{padding:18px 22px 12px}
 .day .h,.list .h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}
 .day .h span,.list .h span{font-size:13px;color:var(--muted)}
-.drow{display:grid;grid-template-columns:30px 52px 76px minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;min-height:52px;padding:8px 10px;border-radius:10px}
+.drow{display:grid;grid-template-columns:30px 72px 76px minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;min-height:52px;padding:8px 10px;border-radius:10px}
 .drow + .drow{box-shadow:0 -1px 0 var(--surface-2)}
 .drow:hover{background:var(--surface-3)}
-.drow .w{color:var(--muted)}
+.drow .w{color:var(--muted);white-space:nowrap}
 .drow .p{font-weight:600}
 .drow .st{font-size:13.5px;color:var(--muted);white-space:nowrap;text-align:right}
 .drow.past{color:var(--muted)}
@@ -159,11 +159,11 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .list{padding:18px 22px 10px}
 .row{display:flex;align-items:center;gap:8px}
 .row + .row{box-shadow:0 -1px 0 var(--surface-2)}
-.rowmain{flex:1;min-width:0;display:grid;grid-template-columns:72px 52px 96px minmax(0,1fr);align-items:center;gap:12px;min-height:48px;padding:6px 8px;margin:0 -8px;border-radius:10px;transition:background .2s}
+.rowmain{flex:1;min-width:0;display:grid;grid-template-columns:72px 72px 96px minmax(0,1fr);align-items:center;gap:12px;min-height:48px;padding:6px 8px;margin:0 -8px;border-radius:10px;transition:background .2s}
 .rowmain:not(.static):hover{background:var(--surface-3)}
 .rowmain[aria-pressed="true"]{box-shadow:0 0 0 2px var(--accent)}
 .rowmain .p{font-weight:600}
-.rowmain .w{color:var(--muted)}
+.rowmain .w{color:var(--muted);white-space:nowrap}
 .rowmain > span{white-space:nowrap}
 .rowmain .f{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .needline{flex:1;min-height:44px;display:flex;align-items:center;font-size:14px}
@@ -182,7 +182,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .tl .mark{position:absolute;top:7px;width:12px;height:12px;border-radius:50%;background:var(--surface);border:2px solid var(--faint);transform:translateX(-50%)}
 .tl .mark.done{background:var(--accent);border-color:var(--accent)}
 .tl .now{position:absolute;top:3px;width:2px;height:20px;background:var(--ink);transform:translateX(-50%)}
-.tl .lbl{position:absolute;top:26px;font-size:11.5px;color:var(--muted);transform:translateX(-50%)}
+.tl .lbl{position:absolute;top:26px;font-size:11.5px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .tl .lbl.start{transform:none}.tl .lbl.end{transform:translateX(-100%)}
 .steps{list-style:none;margin:6px 0 0;padding:0}
 .step{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:start;padding:9px 0}
@@ -261,7 +261,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .sgrid .ch{padding:0 8px 10px;font-weight:600;font-size:13.5px}
 .sgrid .ch small{display:block;font-weight:400;color:var(--muted);font-size:12px}
 .times{position:relative}
-.times span{position:absolute;right:10px;transform:translateY(-50%);font-size:12px;color:var(--muted)}
+.times span{position:absolute;right:10px;transform:translateY(-50%);font-size:12px;color:var(--muted);white-space:nowrap}
 .lane{position:relative;margin:0 4px;border-radius:10px;background:var(--surface-3)}
 .lane .hr{position:absolute;left:0;right:0;height:1px;background:var(--surface-2)}
 .blk{position:absolute;z-index:1;left:4px;right:4px;border-radius:8px;padding:4px 8px;font-size:12.5px;line-height:1.25;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--surface-2);overflow:hidden;text-align:left}
@@ -378,7 +378,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
   .chead span:nth-child(n+3),.crow .proto,.crow .prog{display:none}
   .rowmain{grid-template-columns:64px auto minmax(0,1fr)}
   .rowmain .f{grid-column:1/-1}
-  .drow{grid-template-columns:24px 44px 64px minmax(0,1fr)}
+  .drow{grid-template-columns:24px 66px 64px minmax(0,1fr)}
   .drow .st{grid-column:2/-1;text-align:left}
   .g3,.g2,.row2{grid-template-columns:1fr}
   .g4r{grid-template-columns:1fr 1fr}
@@ -490,6 +490,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       </div>
       <div class="card form">
         <h2>Workbook tools</h2>
+        <p class="hint warnline" id="tplNote" hidden></p>
         <div class="actions"><button id="btnMatch">Match New Template (all active tabs)</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMeas">Replan measures and pulse totals</button><button id="btnApRebuild">Rebuild Active Patients sheet</button></div>
         <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
       </div>
