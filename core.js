@@ -1,6 +1,6 @@
 /* core.js: the TMS Tracker floor rules. Pure functions (no Office.js, no DOM), shared with tests/.
    A visit's phase, a chair's state on the Today board, chair moves against NextGen, missed-visit streaks, and the needs list
-   that Courses sorts by. taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
+   that Patients sorts by. taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.TmsCore = factory();
@@ -113,6 +113,15 @@
   }
   const loud = list => list.filter(y => !y.quiet);
 
+  /* the provider's last name for E2, from the report's name: "Smith, Jane MD" or "Dr. Jane Smith, PMHNP" both give "Smith".
+     With a comma, the part before it; otherwise the last word once credentials are dropped. */
+  const CRED = /^(md|do|np|pmhnp|pa-c|phd|psyd|dr)$/i;
+  function providerLast(name) {
+    const parts = String(name ?? "").split(",").map(x => x.trim().split(/\s+/).filter(t => t && !CRED.test(t.replace(/\./g, "")))).filter(a => a.length);
+    if (!parts.length) return "";
+    return parts.length > 1 ? parts[0].join(" ") : parts[0][parts[0].length - 1];
+  }
+
   /* "Castro MagV1" -> "MagV 1": the clinic's own name is dropped, a chair number gets a space */
   function chairLabel(name, location) {
     let s = String(name || "").trim();
@@ -170,5 +179,5 @@
     return ops;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures };
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast };
 });

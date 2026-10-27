@@ -7,7 +7,7 @@
    W5 OOP max, W6 MTR approved, W7 extensions, W8 last schedule, X12:Y16 cost by code) as keys, and applyOps sends those there.
    Tabs in the previous layout (freebies in N7, benefits in V1:Y16) are still read; Match New Template moves them over.
    PHI: MRNs are read into memory to match NextGen rows; they are never sent anywhere. Names typed in Add patient become LASFIR.
-   v2 screens (Today chair board, Schedule, Courses, Chairs) follow the MHS tracker design. core.js holds the floor rules; check-in,
+   v2 screens (Today chair board, Schedule, Patients, Chairs) follow the MHS tracker design. core.js holds the floor rules; check-in,
    session times and chair moves live on the Sessions sheet, not on the patient tabs. */
 "use strict";
 
@@ -44,6 +44,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
+const D4_FMT = "0";                                              // # of MT redos (D4) is a count, never a date
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
 const isTxRow = r => !r.miss && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // a numbered row in C (Tx #)
@@ -244,9 +245,13 @@ async function refresh() {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
         L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") });
+        L[L.length - 1].d4 = s.getRange("D4"); L[L.length - 1].d4.load("numberFormat");
         if (L.length % 8 === 0) await ctx.sync();
       }
       await ctx.sync();
+      /* # of MT redos (D4) is a count: a date or decimal format there gets "0" (finished tabs are left alone) */
+      const d4s = L.filter(l => !stale.has(l.name) && l.d4.numberFormat[0][0] !== D4_FMT);
+      if (d4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -483,7 +488,7 @@ function renderBanners() {
 }
 const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button></div>`;
 
-/* ---------- v2 screens: Today (the chair board), Schedule, Courses and Chairs, on the design language ESK Tracker shares
+/* ---------- v2 screens: Today (the chair board), Schedule, Patients and Chairs, on the design language ESK Tracker shares
    (tokens and components live in taskpane.html). The reads and writes are the same as before; core.js holds the floor rules.
    On these screens times read 24-hour (9:05) and dates "Oct 21". ---------- */
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -698,7 +703,7 @@ function facts(p, short) {
 
 /* ---------- rail and header ---------- */
 function renderRail(fl) {
-  document.querySelectorAll(".rail [data-view]").forEach(b => { if (b.dataset.view === state.view || (state.view === "add" && b.dataset.view === "courses")) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+  document.querySelectorAll(".rail [data-view]").forEach(b => { if (b.dataset.view === state.view || (state.view === "add" && b.dataset.view === "patients")) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   const need = state.patients.filter(onSched).map(p => TmsCore.loud(courseNeeds(p, fl))).filter(n => n.length), cc = $("ccount");
   cc.textContent = need.length || ""; cc.className = "count" + (need.some(n => n.some(x => x.bad)) ? " bad" : "");
   cc.setAttribute("aria-label", need.length ? `${need.length} need attention` : "");
@@ -708,10 +713,10 @@ const head = (title, sub, withClock) => `<header class="top"><div><h1>${title}</
 function renderDash() {
   const fl = state.fl = floor();
   renderRail(fl);
-  if (!["today", "schedule", "courses", "chairs"].includes(state.view)) return;
+  if (!["today", "schedule", "patients", "chairs"].includes(state.view)) return;
   const el = $("v-" + state.view);
-  if (!state.patients.length && state.view !== "chairs") { el.innerHTML = head({ today: "Today", schedule: "Schedule", courses: "Courses" }[state.view], "") + `<div class="card list">${NO_TABS}</div>`; return; }
-  el.innerHTML = state.view === "today" ? viewToday(fl) : state.view === "schedule" ? viewSchedule(fl) : state.view === "courses" ? viewCourses(fl) : viewChairs(fl);
+  if (!state.patients.length && state.view !== "chairs") { el.innerHTML = head({ today: "Today", schedule: "Schedule", patients: "Patients" }[state.view], "") + `<div class="card list">${NO_TABS}</div>`; return; }
+  el.innerHTML = state.view === "today" ? viewToday(fl) : state.view === "schedule" ? viewSchedule(fl) : state.view === "patients" ? viewPatients(fl) : viewChairs(fl);
   refocus();
 }
 
@@ -939,7 +944,7 @@ function dayVisits(day) {
 }
 function sl0(day, ent) { const h = state.clinic?.days[dow(day)]; if (!h || h.open == null || h.close == null) return ""; return ent.chair.filter(e => e.start < h.open || e.end > h.close).map(e => `${esc(e.p.tab)} ${clock(e.start)}`).join(", "); }
 
-/* ---------- Courses: one row per tab, sorted by what needs doing ---------- */
+/* ---------- Patients: one row per tab, sorted by what needs doing ---------- */
 const FILTERS = [
   ["needs", "Needs attention", (p, n) => onSched(p) && TmsCore.loud(n).length > 0],
   ["active", "All active", p => p.d.active],
@@ -950,7 +955,7 @@ const FILTERS = [
   ["complete", "Complete", p => p.status === "Complete"],
   ["disc", "Discontinued", p => !onSched(p)]
 ];
-function viewCourses(fl) {
+function viewPatients(fl) {
   const N = new Map(state.patients.map(p => [p.tab, courseNeeds(p, fl)])), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   const act = state.patients.filter(p => p.d.active).length, need = state.patients.filter(p => FILTERS[0][2](p, N.get(p.tab))).length;
   const chips = FILTERS.map(([k, l, fn]) => `<button class="chip" data-filter="${k}" aria-pressed="${k === f[0]}">${l} <span class="n">${state.patients.filter(p => fn(p, N.get(p.tab))).length}</span></button>`).join("");
@@ -962,9 +967,9 @@ function viewCourses(fl) {
     return `<button class="crow" data-course="${esc(p.tab)}" aria-pressed="${p.tab === state.ptTab}"><span class="p">${esc(p.tab)}<small>${esc(p.status || "No status")}</small></span><span class="proto">${esc(protoText(p))}</span>
       <span class="prog"><span class="pbar"><i style="width:${Math.min(100, d.txDone / Math.max(1, d.total) * 100).toFixed(1)}%"></i></span>${d.txDone}/${d.total}</span>
       <span class="flags">${needSummary(n)}</span></button>`;
-  }).join("") || `<p class="empty">Nothing here. Every course in this group is on track.</p>`;
-  return `<header class="top"><div><h1>Courses</h1><p class="sub">${act} active course${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
-    <div class="chips" role="group" aria-label="Filter courses">${chips}</div>
+  }).join("") || `<p class="empty">Nothing here. Everyone in this group is on track.</p>`;
+  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
+    <div class="chips" role="group" aria-label="Filter patients">${chips}</div>
     <div class="cols"><div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>
       <aside class="card detail">${courseHtml(fl, N)}</aside></div>`;
 }
@@ -975,7 +980,7 @@ function needSummary(n) {
   return L.slice(0, 2).map(x => `<span class="f${x.bad ? " bad" : ""}">${esc(x.t)}</span>`).join(", ") + (L.length > 2 ? ` <span class="muted">and ${L.length - 2} more</span>` : "");
 }
 function courseHtml(fl, N) {
-  const p = state.patients.find(x => x.tab === state.ptTab); if (!p) return '<p class="body">Select a course.</p>';
+  const p = state.patients.find(x => x.tab === state.ptTab); if (!p) return '<p class="body">Select a patient.</p>';
   const n = TmsCore.loud(N.get(p.tab)), first = n[0], d = p.d, tv = fl.visits.filter(v => v.tab === p.tab);
   const A = x => `data-act="${x.act[1]}" data-t="${esc(p.tab)}"${x.row ? ` data-row="${x.row}"` : ""}${x.key ? ` data-k="${esc(x.key)}"` : ""}${x.v ? ` data-v="${esc(x.v)}"` : ""}`;
   const used = new Set(n.map(x => x.act && x.act[1]));
@@ -1265,7 +1270,7 @@ function mMiss(v) {
     <h3>Freebie</h3>
     <div class="opts"><label class="opt"><input type="radio" name="fb" value="Used"${left <= 0 ? " disabled" : ""}><span>Use freebie${warn ? `<small class="warnline">${warn}</small>` : ""}</span></label>
       <label class="opt"><input type="radio" name="fb" value="Waived"><span>Waived</span></label>
-      <label class="opt"><input type="radio" name="fb" value="" checked><span>Decide later<small>Stays on Courses until it's decided</small></span></label></div>
+      <label class="opt"><input type="radio" name="fb" value="" checked><span>Decide later<small>Stays on Patients until it's decided</small></span></label></div>
     ${mfoot("Record missed visit", "doMiss")}`);
 }
 async function doMiss() {
@@ -1282,7 +1287,7 @@ async function recordMiss(tab, row, kind, fb) {
     await writeCells(tab, pairs, at(r)); if (fb === "Used") p.freebiesLeft = Math.max(0, left - 1);
     patchRow(tab, row, { miss: true, note, freebie: fb || "" });
     const n = TmsCore.missStreak(p.rows, todaySerial());
-    toast(n >= 3 ? `${tab}: ${n} missed in a row. Call to reschedule is on Courses.` : fb === "Used" && left - 1 <= 1 ? `${kind} recorded. ${tab} has ${Math.max(0, left - 1)} freebie${left - 1 === 1 ? "" : "s"} left.` : `${kind} recorded for ${tab}.`);
+    toast(n >= 3 ? `${tab}: ${n} missed in a row. Call to reschedule is on Patients.` : fb === "Used" && left - 1 <= 1 ? `${kind} recorded. ${tab} has ${Math.max(0, left - 1)} freebie${left - 1 === 1 ? "" : "s"} left.` : `${kind} recorded for ${tab}.`);
   } catch (e) { fail(e); }
 }
 function freebieModal(tab, row) {
@@ -1318,7 +1323,7 @@ async function doMove() {
 }
 async function setNgTick(k, on) {
   const s = state.sess && state.sess.rows.get(k); if (!s) return;
-  await sessWrite({ key: k, date: s.date, tab: s.tab, visit: s.visit }, { tick: on }, on ? `Noted: ${s.tab} moved in NextGen.` : "Unticked. Courses will remind you.");
+  await sessWrite({ key: k, date: s.date, tab: s.tab, visit: s.visit }, { tick: on }, on ? `Noted: ${s.tab} moved in NextGen.` : "Unticked. Patients will remind you.");
 }
 function mNote(v) {
   const p = v.p, r = v.r, dr = draftOf(p, r), bl = baselineOf(p), sel = (dk, opts, val) => `<select data-dk="${dk}">${opts.map(o => `<option${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
@@ -1357,7 +1362,7 @@ async function doFuMeas() {
   if (!(isInt(P, 0, 27) && isInt(Q, 0, 21))) return merr("Enter PHQ-9 (0 to 27) and GAD-7 (0 to 21).");
   closeModal(); await saveMeasures(v.tab, v.row, { P: +P, Q: +Q });
 }
-/* Courses: the needs' own dialogs, for one tab (and a log row where the need is about one visit) */
+/* Patients: the needs' own dialogs, for one tab (and a log row where the need is about one visit) */
 function mPastPulses(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return; state.mctx = { t: tab, row };
   showModal(`<h2 id="mtitle">Pulses for ${fmtDay(r.date)}: ${esc(tab)}</h2><p class="sub">No pulses on the row and it isn't marked missed. Enter what was delivered, or record it as missed.</p>
@@ -2012,6 +2017,7 @@ async function matchTab(ctx, name) {
     if (layout === 2) ws.getRange("N6:N7").values = [[typeof at("N7") === "number" ? at("N7") : 3], [at("N6") ?? ""]];
     ws.getRange("J6:J7").values = tl.values;
   }
+  ws.getRange("D4").numberFormat = [[D4_FMT]];
   /* 3. visit log: the PR formula over the whole log, and the template's formulas on rows that lost them */
   const F = lg.formulas;
   ws.getRange(`A${LOG_FIRST}:A${end}`).formulas = F.slice(0, end - LOG_FIRST + 1).map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, end) : v[0]]);
@@ -2038,6 +2044,7 @@ async function rebuildTab(ctx, name) {
   const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
   const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); }, ben = {};
   ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
+  ws.getRange("D4").numberFormat = [[D4_FMT]];
   for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
   const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N7", assess);
   /* visit log: typed entries only, so the template's formulas (A, D, G, I, K) stay */
@@ -2168,7 +2175,7 @@ async function addPatient(d) {
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
       set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N7", d.apAssess);
       set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
-      ws.getRange("D7").values = [["Pending Start"]];
+      ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("D7").values = [["Pending Start"]];
       if (d.apHome) ws.getRange("S9").values = [[`Home Clinic: ${d.apHome}`]];
       /* benefits and cost by code go on the patient's Benefits row */
       const mrn = normMrn(d.apMrn), bv = { W1: bidf, W4: ded, W5: oop, W6: d.apMtr, W7: 0 };
@@ -2517,7 +2524,7 @@ async function buildPlan(quiet) {
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim() });
-    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}; c[pv] = (c[pv] || 0) + 1; clin.set(mrn, c); }
+    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   const latest = new Map(), latestCode = new Map();
@@ -2534,7 +2541,7 @@ async function buildPlan(quiet) {
     // a Discontinued tab is left as it is; the preview and the Day view's list check name any visits NextGen still has booked
     if (!onSched(p)) { if (appts.some(a => a.status === "Scheduled" && a.date >= from)) disc.push(p.tab); continue; }
     const pl = planTab(p, appts, from, maxDate, { ...o, mrn, grow: p.canGrow });
-    // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
+    // the report is the source of truth for the provider, so E2 follows it (last name only) even when something was typed there
     const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
     plans.push(pl);
@@ -2653,7 +2660,7 @@ async function onSchedMessage(m) {
 }
 
 /* ---------- wiring ---------- */
-const VIEWS = ["today", "schedule", "courses", "chairs", "imp", "settings", "add"];
+const VIEWS = ["today", "schedule", "patients", "chairs", "imp", "settings", "add"];
 function show(view) {
   state.view = view;
   VIEWS.forEach(v => $("v-" + v).hidden = v !== view);
@@ -2764,11 +2771,11 @@ async function openTabName(tab, row) {
     });
   } catch (e) { fail(e); }
 }
-/* a course on Courses; it switches to All active when the current filter hides it */
+/* a course on Patients; it switches to All active when the current filter hides it */
 function openCourse(tab) {
   state.ptTab = tab; const p = state.patients.find(x => x.tab === tab), fl = state.fl || floor(), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   if (p && !f[2](p, courseNeeds(p, fl))) state.cfilter = onSched(p) ? (p.d.active ? "active" : FILTERS.find(x => x[2](p, []))?.[0] || "active") : "disc";
-  show("courses");
+  show("patients");
 }
 /* appearance is per computer (localStorage), like the Today view; the pane and full screen share it */
 const themeOf = () => document.documentElement.dataset.theme || "light";
@@ -2808,7 +2815,7 @@ Office.onReady(info => {
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
     const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "San Rafael", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
-  $("apBack").onclick = () => show("courses");
+  $("apBack").onclick = () => show("patients");
   $("btnFull").onclick = fullScreen;
   $("popClose").onclick = closePopout;
   syncFs();
@@ -2834,7 +2841,7 @@ Office.onReady(info => {
     const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt]"); if (!x) return;
     const d = x.dataset;
     if (d.act) return act(d.act, x, e);
-    if (d.view) { if (d.view === "courses" && state.view === "add") resetAddPatient(); return show(d.view); }
+    if (d.view) { if (d.view === "patients" && state.view === "add") resetAddPatient(); return show(d.view); }
     if (d.mode) { state.chair = d.mode; state.sel = null; try { localStorage.setItem("tms_chair", d.mode); } catch { /* this session only */ } return renderDash(); }
     /* selecting a visit also opens its tab at that row, unless Settings turns it off */
     if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") openTabName(v.tab, v.row); if (d.go) return show("today"); return renderDash(); }
@@ -2857,7 +2864,7 @@ Office.onReady(info => {
       start: needV(startSession), end: needV(mEnd), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),
       fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: () => setNgTick(k, true),
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openTabName(t, row), course: () => openCourse(t),
-      /* Courses */
+      /* Patients */
       status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProto(t), avail: () => mAvail(t),
       ptAll: () => { state.ptAll = !state.ptAll; renderDash(); }, pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
       /* Chairs */

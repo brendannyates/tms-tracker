@@ -48,7 +48,7 @@ The menu runs down the left in full screen and across the top in the panel.
 |---|---|
 | Today | The chair board, who is still to come, and the visit card for whoever you select. **View** switches between **Clinic** (every chair) and one chair's day; your pick is remembered on your computer. |
 | Schedule | **Day by chair**: one weekday's visits in columns by chair, plus the provider's MT, MT redo and follow-up visits, with a line at the current time. **Earlier** and **Later** move between weekdays. **Week**: Monday to Friday with "X of Y" treated or booked, the reasons for each day, and each day's visits (select one to open its row). On a day other than today, the appointment list check for that day is under the grid. |
-| Courses | A course is marked Complete on its own once every approved treatment is done (36 of 36, 15 of 15). Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Courses in the menu counts courses that need attention; it turns red when one needs action now. |
+| Patients | A course is marked Complete on its own once every approved treatment is done (36 of 36, 15 of 15). Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Patients in the menu counts patients that need attention; it turns red when one needs action now. |
 | Chairs | Each chair's device, coil, last service and today's count, with **Mark unavailable**; the chair hours from Clinic Schedule; the protocol list. |
 | Import | The NextGen appointment list and Sohar benefits. |
 | Settings | Clinic settings, Appearance (Light, Dark or Match Windows, for this computer) and the workbook tools. **Dark mode** in the menu switches it too. |
@@ -88,16 +88,16 @@ Follow-ups show on Today too: **Enter PHQ-9 and GAD-7** when they're due, then *
 Moving in the tracker doesn't move the appointment in NextGen, so every move asks you to do that too:
 
 - Right after the move, tick **Moved in NextGen** once you've moved it there. The same checkbox stays on the visit card ("Moved from MagV 1 to MagV 3. NextGen still has MagV 1; move it there too").
-- Until it's ticked, Courses lists "Moved to MagV 3, not yet in NextGen", and the import keeps the tracker's chair.
+- Until it's ticked, Patients lists "Moved to MagV 3, not yet in NextGen", and the import keeps the tracker's chair.
 - It also clears on its own when an appointment list run after the move shows the new chair, or if you move the patient back to the chair NextGen has.
 
 **Mark unavailable** (Chairs) takes a chair off the board and the schedule. Its bookings for the rest of the day show **No chair yet** with **Choose a chair**, which is a move like any other. **Mark available** puts them back.
 
-## Courses
+## Patients
 
-Each course row shows its two most urgent needs. Red is for what blocks care or billing: an expired or overrun authorization, no visit in the recent-visit window, 3 missed in a row. Amber is everything else that needs doing. Muted labels such as Tapering don't count.
+Each patient row shows its two most urgent needs. Red is for what blocks care or billing: an expired or overrun authorization, no visit in the recent-visit window, 3 missed in a row. Amber is everything else that needs doing. Muted labels such as Tapering don't count.
 
-Select a course for its card. The big button resolves the top need; **Also needs** lists the rest, each with its own button.
+Select a patient for their card. The big button resolves the top need; **Also needs** lists the rest, each with its own button.
 
 | Need | Action |
 |---|---|
@@ -129,7 +129,7 @@ Run this whenever the schedule changes, at least daily. The banner tells you whe
 
 What the import does:
 
-- Today and later: dates, times and visit types follow NextGen. Telehealth follow-ups get "Tele" in Notes. The provider on the tab follows the report.
+- Today and later: dates, times and visit types follow NextGen. Telehealth follow-ups get "Tele" in Notes. The provider on the tab (E2) follows the report, last name only.
 - Every Expected visit gets a row. When the visit log runs out (each no-show or MT redo uses a row), rows are added inside the log with the same formatting as rows of that visit type, so the last treatments and the final follow-up still show. The preview lists the tabs that grew.
 - Past visits never change, except no-shows and same-day cancels, which are always recorded so the freebie decision isn't missed. A kept visit with no row on the tab gets one with its date; enter the pulses.
 - A missed visit keeps its row: leave the visit type in L when you put x in M. The import won't add the day again while NextGen still shows it booked, and it puts the type back if L was emptied.
@@ -163,7 +163,7 @@ Delete the downloaded file afterward.
 
 ## Add a patient
 
-When NextGen has a patient without a tab, the banner (and Today's appointment list check) lists them; select **Create tracker** to start one with the MRN and LASFIR filled in. Otherwise, go to **Courses > Add patient**.
+When NextGen has a patient without a tab, the banner (and Today's appointment list check) lists them; select **Create tracker** to start one with the MRN and LASFIR filled in. Otherwise, go to **Patients > Add patient**.
 
 Fill in what you have: name (the LASFIR tab name builds from it; names themselves aren't saved), course number, MRN, DOB, home clinic, MD required on-site, insurance, auth assessment, auth start and expiry, number of treatments and MT redos, MTR approved, deductible and out-of-pocket max remaining, BIDF estimated course cost, cost by code, availability, and dates away. In cost by code, **PR** is the patient's cost per visit; fill **Before ded.** only when a deductible applies. Select **Create tab**. The protocol is chosen at the MT.
 
@@ -171,7 +171,7 @@ The add-in copies New Template, fills the tab, places measure placeholders, and,
 
 ## Print a patient schedule
 
-From **Print course schedule** on an MT visit, **Print schedule** on any visit card, or a course card, pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it over the add-in with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
+From **Print course schedule** on an MT visit, **Print schedule** on any visit card, or a patient's card on Patients, pick **Next 14 days**, **Next 30 days**, **Rest of course**, or your own dates; the count of visits updates as you choose. **Open schedule** shows it over the add-in with **Print** and **Save as PDF**. Either one notes "Schedule provided" on the tab.
 
 The schedule includes the MRN. Hand it to the patient or save it only where patient information is allowed.
 

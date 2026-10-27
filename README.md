@@ -6,13 +6,13 @@ Staff install and day-to-day use: see [GUIDE.md](GUIDE.md).
 
 ## Status
 
-Version 1.3 (v2 screens: chair board, Courses, Sessions sheet, chair moves) follows the reformatted MagV template (the "MagV Template" workbook): on the patient tabs the add-in writes only into the template's own cells.
+Version 1.3 (v2 screens: chair board, Patients, Sessions sheet, chair moves) follows the reformatted MagV template (the "MagV Template" workbook): on the patient tabs the add-in writes only into the template's own cells.
 
 Tested with fictional patients:
 
 - in a headless browser, against an in-memory copy of the real template's cells: reading tabs, BIDF and freebie flags, benefits, extensions, availability, Add patient, rebuilding an earlier-layout tab, the import planner, the schedule window, and the pop-out window relaying every read and write through the task pane
 - in desktop Excel, on a scratch copy of the template: the column A PR formula, with and without a deductible
-- v2 screens, in headless Edge against a fake Office.js and an invented three-chair clinic day: every Today step (check in, motor threshold, start, end with pulses and measures, note, undo), missed visits and freebies, chair moves and the Moved in NextGen tick, chairs marked unavailable, each Courses need's action and the cells it writes, Schedule, Import apply, Add patient, Settings, the full-screen snapshot, keyboard focus, and a pass that presses every button on every screen; `core.js` has unit tests
+- v2 screens, in headless Edge against a fake Office.js and an invented three-chair clinic day: every Today step (check in, motor threshold, start, end with pulses and measures, note, undo), missed visits and freebies, chair moves and the Moved in NextGen tick, chairs marked unavailable, each Patients need's action and the cells it writes, Schedule, Import apply, Add patient, Settings, the full-screen snapshot, keyboard focus, and a pass that presses every button on every screen; `core.js` has unit tests
 
 **Not yet run in Excel on the web.** Test on a copy of the real workbook first.
 
@@ -22,7 +22,7 @@ Tested with fictional patients:
 |---|---|
 | `manifest.xml` | Office add-in manifest (version 1.2). Requires ExcelApi 1.9, which Excel on the web supports. Points to the GitHub Pages pilot host, `https://brendannyates.github.io/tms-tracker`, served from `main`. |
 | `taskpane.html`, `taskpane.js` | The add-in. A single static page with no build step. |
-| `core.js` | The floor rules (pure functions): visit phases, chair board states, chair moves against NextGen, missed streaks, and the Courses needs list. |
+| `core.js` | The floor rules (pure functions): visit phases, chair board states, chair moves against NextGen, missed streaks, and the Patients needs list. |
 | `benefits.js` | Sohar benefits import: matching and plan (pure functions). |
 | `tests/` | Tests for `core.js` and `benefits.js` (`npm test`). |
 | `schedule.html` | The patient schedule printout, shown over the add-in: print or save as PDF. |
@@ -55,8 +55,8 @@ New Template owns the layout. The add-in reads and writes these cells; benefits 
 | Cells | Purpose |
 |---|---|
 | A2, A4, A6 | LASFIR, MRN, DOB. |
-| D2 / D4 / D6 / D7 | # of TXs (authorized treatments, extensions included), # of MT redos, MD required on-site, Status. |
-| E2 / E4 / E6 | Provider (set from the appointment list on import), care navigator (TAS), insurance. |
+| D2 / D4 / D6 / D7 | # of TXs (authorized treatments, extensions included), # of MT redos (number format `0`, set on every refresh, Add patient and Match New Template), MD required on-site, Status. |
+| E2 / E4 / E6 | Provider's last name (set from the appointment list on import), care navigator (TAS), insurance. |
 | F4:G4, G2, G6 | Auth start and expiry, update protocol by, progress note sent on. |
 | J2:O4, N5 | Protocol rows 1 to 3 (Hz, pulses per train, trains, wait; N calculates minutes; O is the site) and the total duration. |
 | N6 / N7 | **Freebie Count** (freebies left, 3 on a new tab); auth assessment. Using a freebie takes one off N6, undoing it gives it back. |
@@ -76,7 +76,7 @@ New Template owns the layout. The add-in reads and writes these cells; benefits 
 
 The screens follow the MHS tracker design shared with ESK Tracker (tokens, chair board, visit and course cards, copy rules). They're built for the full-screen window at 1366x768 and up; in the task pane the menu becomes a bar across the top. Times on the floor screens read 24-hour (9:05) and dates "Oct 21". Patients show by LASFIR only; MRNs appear only in the import previews, the new-patient banner (last four digits) and printed schedules.
 
-- **Menu:** the workbook's name and device, then **Today**, **Schedule**, **Courses** (with a count of courses that need attention, red when one needs action now), **Chairs**, **Import**, **Settings**, **Refresh** and **Full screen**.
+- **Menu:** the workbook's name and device, then **Today**, **Schedule**, **Patients** (with a count of patients that need attention, red when one needs action now), **Chairs**, **Import**, **Settings**, **Refresh** and **Full screen**.
 - **Banners:** the stale appointment list (with the NextGen directions), new patients needing a tracker, tracker tabs left untouched, and tabs that don't match New Template. Each can be dismissed for the session or snoozed for 3 hours.
 
 ### Today
@@ -86,13 +86,13 @@ The screens follow the MHS tracker design shared with ESK Tracker (tokens, chair
 - **Still to come:** everyone not started, with time, chair, and the top need on their course or "Not started, 25 min"; **Start session** or **Choose a chair** beside each.
 - **Appointment list check** and **Treatments today** (the variances: in follow-up, missed, away, at another clinic, not scheduled, graduated this week).
 - **Visit card:** two steps, no separate check-in. **Start session in MagV 2** writes the check-in and start times together (Sessions H and I) and opens the treatment note draft, or **Record motor threshold** on an MT or MT redo (MT details to Notes; at the first MT also the protocol to J2:O4). **Move to another chair** replaces it when that chair is busy and another is open. **Complete session**: pulses pre-filled from the protocol, technician, pain and muscle movements, PHQ-9 and GAD-7 when the row has the x (or move them to the next measures visit), and, when payment today is over $0, Collected or Not collected, saved as "Copay $X collected" in Notes (S). The note draft then reopens for **Copy note**. Also **Record missed** (No-show or Same-day cancel with Use freebie, Waived or Decide later, warning at 1 or 0 freebies and at 3 missed in a row), **Undo missed visit**, **Undo complete session** (clears the pulses, technician and copay line it wrote, only while the chair hasn't started another session), **Print schedule**, **Open tab**. Payment today (column A) or **Not set**; **BIDF info needed** with **Enter benefits**. Follow-ups: **Enter PHQ-9 and GAD-7**, **Mark follow-up done**. Selecting a visit also opens its tab at that row unless Settings turns it off.
-- **Chair moves:** **Move to another chair** on any visit not started. The dialog shows each chair's current state and any booking the move would overlap. Every move prompts **Moved in NextGen**, in the dialog and on the card. Until it's ticked, Courses lists the move and the import keeps the tracker's chair; a list run after the move that shows the new chair, or a move back to NextGen's chair, also settles it (`core.js` moveState).
+- **Chair moves:** **Move to another chair** on any visit not started. The dialog shows each chair's current state and any booking the move would overlap. Every move prompts **Moved in NextGen**, in the dialog and on the card. Until it's ticked, Patients lists the move and the import keeps the tracker's chair; a list run after the move that shows the new chair, or a move back to NextGen's chair, also settles it (`core.js` moveState).
 
 ### Schedule
 
 **Day by chair:** columns per chair plus a provider column (MT, MT redo and F/U), 1.6 px per minute over the Clinic Schedule hours, with a now-line today; selecting a visit opens it on Today (another day: its row on the tab). Notes for closures, visits outside chair hours, and visits with no time. **Week:** Monday to Friday cards with "X of Y" treated or booked and each day's variances. **Write this week to the Chair Schedule sheet** is here.
 
-### Courses
+### Patients
 
 One row per tab with its two most urgent needs; filters Needs attention (default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued; **Add patient**. Every check from the earlier Attention list is a need on its course, red for what blocks care or billing (auth expired or overrun, no visit in the recent-visit window, 3 missed in a row), amber otherwise, each with its action: Add extension, Enter or Review benefits, Decide freebie, Enter pulses, Add technician, Enter scores, Update protocol, Edit availability, Set status, Call to reschedule (logged in Notes), Mark moved in NextGen, Choose a chair, Print course schedule, or Open tab. The card shows the course strip (30 daily, 6 taper), PHQ-9 and GAD-7 as recorded, the patient view's facts, the next eight booked visits and, on request, every visit with pulses and scores; Print schedule, Edit benefits, Add extension, Edit availability, Edit protocol and Change status are always there.
 
@@ -133,7 +133,7 @@ Every write reads the sheet again first and adds rows after what is there, so tw
 - **No setup needed:** the report's columns are detected automatically. There is no mapping and no ignore pattern to manage.
 - **Preview:** upload the file and the preview appears with Apply below it.
 - **Device:** each patient's device is decided by where their daily treatments are booked. A Brainsway patient's MT on a provider schedule is ignored on a MagV tracker.
-- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the provider named on the report, replacing anything typed there. The schedule uses E2.
+- **Today and later:** dates, times and types are updated. Telehealth follow-ups get "Tele" in Notes. E2 (Provider) is set to the last name of the provider on the report, replacing anything typed there: the part before a comma ("Smith, Jane MD"), otherwise the last word once MD, DO, NP, PMHNP, PA-C, PhD, PsyD and Dr. are dropped (`core.js` providerLast). The schedule uses E2.
 - **Every Expected visit gets a row:** free rows fill in row order, so the log stays in date order. When a pool runs out (no-shows and MT redos use rows), rows are inserted in A:T only, after the visits they follow and never below the last log row, so Excel stretches the PR formulas, header counts and conditional formats over them. Each new row copies a row of the same visit type (fill, borders, validation, height, formulas) with the typed cells blank. The add-in finds a grown log from the range in A10's PR formula, so a tab without that formula (Match New Template adds it) is not grown and the preview says so.
 - **Past visits:** never change, except no-shows and same-day cancels (cancelled with Mod Dt on the visit date). Those are always recorded, including in an empty row if needed. Earlier cancellations (any date) have their date and time cleared so the row is free for another visit, unless the patient is still booked or seen that day. A Kept visit on or after the tab's first dated row that has no row that day gets one, with its date and time, so the pulses can be entered.
 - **Order and Tx #:** after every import the visit log reads top to bottom by date (open rows with no date last), so a follow-up sits between the treatments around it. Only the typed cells move (B, C, E, F, H, J, L to T); the formulas in A, D, G, I and K stay on their rows. C numbers MT, Daily, Taper and MTR rows from 1 down the log, skipping missed visits and follow-ups, so D (D2 minus C) is the treatments left. The preview lists the tabs re-sorted or renumbered.
@@ -165,7 +165,7 @@ The rule is `planMeasures` in core.js, with tests.
 - **Skipped:** an in-between collection when a required one is 7 days away or less (by the dates in E). One collection covers both, so patients aren't asked too often.
 - **Taken a day late:** x's on an earlier day with scores on the next row means the scores came a day late. The x's are cleared and the row with the scores is where the count starts again (it gets the Measures flag).
 - **Not collected:** x's on an earlier day with no scores after them are cleared, and the next visit takes the measures instead. The count restarts there.
-- **On Courses:** earlier measures that weren't entered show as one need, **Check NextGen for PHQ-9 and GAD-7**, on active courses only.
+- **On Patients:** earlier measures that weren't entered show as one need, **Check NextGen for PHQ-9 and GAD-7**, on active courses only.
 
 **Status:** when the treatments done reach D2 (36 of 36, 15 of 15), refresh writes Complete in D7. Paused and Discontinued are left alone. Freebie decisions are asked for misses in the last 10 days.
 - **Upcoming visits** with a date get the plan: x's added where it wants them and removed where it doesn't. Rows with no date get none until an import dates them.
@@ -175,7 +175,7 @@ The rule is `planMeasures` in core.js, with tests.
 
 ## Schedule printout
 
-**Print schedule** (on a visit card or a course card; **Print course schedule** on an MT visit and as the need on its course until a schedule is given) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
+**Print schedule** (on a visit card or a patient's card on Patients; **Print course schedule** on an MT visit and as the need on its course until a schedule is given) opens a pop-up to choose the visits: **Next 14 days** (default), **Next 30 days**, **Rest of course**, or any From / To range. It shows how many visits fall in the range.
 
 **Open schedule** shows the schedule over the add-in on a blurred backdrop (`schedule.html` in a frame), not in a workbook tab or a separate window. Nothing is added to the workbook. It shows the clinic logo centered over the table, the report's "As of" time, and the visits (no patient-name column).
 
