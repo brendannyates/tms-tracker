@@ -365,12 +365,56 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 #toast .tmsg{user-select:text;white-space:pre-wrap;word-break:break-word}
 #toast .tact{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
 #toast .tact button{min-height:32px;padding:0 10px;border-radius:8px;box-shadow:inset 0 0 0 1px currentColor}
+/* the patient view: over the Patients list, ink at 28% and a 6 px blur behind it; under dialogs, which open on top */
+#ptView{position:fixed;inset:0;z-index:15;background:rgba(27,33,31,.28);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:grid;place-items:start center;padding:3vh 20px;overflow:auto}
+.pv{width:min(1080px,100%);background:var(--surface);border-radius:16px;box-shadow:var(--shadow);padding:22px 26px 26px;max-height:94vh;overflow:auto}
+.pvh{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.pvh h2{font-size:22px;letter-spacing:-.01em}
+.pvh .mrn{font-size:14px;font-weight:500;color:var(--muted);margin-left:8px}
+.pvh .meta{margin-top:4px;color:var(--muted);font-size:14px}
+.pvr{display:flex;align-items:center;gap:12px}
+.pvr .chairname{font-weight:600;font-size:14px}
+.pvr .x{width:40px;height:40px;border-radius:12px;font-size:24px;line-height:1;color:var(--muted)}
+.pvr .x:hover{background:var(--surface-3);color:var(--ink)}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tag{display:inline-block;padding:2px 8px;border-radius:8px;background:var(--surface-3);color:var(--muted);font-size:12.5px}
+.copay{margin-top:14px;padding:10px 14px;border-radius:12px;background:var(--surface-3)}
+.copay .payline{margin-top:0}
+.copay .actions{align-items:center}
+.copay .btn[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.copay .by{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.copay .by input{width:120px;min-height:36px}
+.showbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:18px}
+.showbar .lbl{font-size:13px;color:var(--muted);margin-right:4px}
+.showbar .saved{font-size:12.5px;color:var(--faint);margin-left:6px}
+.pvs .sub{margin-top:4px}
+.sub2{margin-top:14px;font-size:13px;font-weight:600;color:var(--muted)}
+.pname{margin-top:10px;font-weight:600}
+.prow{margin-top:4px;font-size:14px}
+.prow small{display:block;color:var(--warn);font-size:12.5px}
+.payrow{display:grid;gap:3px;margin-top:4px}
+.payrow span{height:5px;border-radius:2px}
+.payrow .un{background:var(--warn)}
+.payrow .pd{background:var(--accent);opacity:.35}
+.srow{display:grid;grid-template-columns:96px 72px 90px 70px 1fr auto;gap:10px;align-items:center;padding:6px 0;font-size:13.5px}
+.srow + .srow{box-shadow:0 -1px 0 var(--surface-2)}
+.srow .p{font-weight:600}
+.g3c{display:grid;grid-template-columns:repeat(3,1fr);gap:0 24px}
+.pick{display:grid;grid-template-columns:1fr 140px auto;gap:8px;align-items:center;margin-top:10px}
+.g4.greyed{display:grid;grid-template-columns:repeat(4,1fr);gap:0 10px;opacity:.5}
+.per{display:grid;grid-template-columns:1.4fr 1fr repeat(4,.8fr);gap:8px;align-items:center;margin-top:8px}
+.per.hdr{font-size:12.5px;color:var(--muted)}
 #schedOverlay{position:fixed;inset:0;z-index:40;background:var(--scrim);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
 #schedFrame{width:100%;height:100%;border:0;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
 
 @media (max-width:1180px){.cols{grid-template-columns:1fr}.wkgrid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}}
 /* the task pane: the rail becomes a top bar */
 @media (max-width:760px){
+  #ptView{padding:0;place-items:stretch}
+  .pv{width:100%;max-height:none;min-height:100%;border-radius:0;padding:16px}
+  .g3c{grid-template-columns:1fr}
+  .srow{grid-template-columns:80px 64px 1fr auto}.srow span:nth-child(4),.srow span:nth-child(5){display:none}
+  .per{grid-template-columns:1fr 1fr}
   .app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
   .rail{flex-direction:row;align-items:center;overflow-x:auto;padding:8px 10px;gap:4px}
   .brand{display:none}
@@ -550,6 +594,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
   </main>
 </div>
 
+<div id="ptView" hidden><div id="pvBody" class="pv" role="dialog" aria-modal="true" aria-labelledby="pvTitle"></div></div>
 <div id="modal" hidden><div id="modalBody" class="modal" role="dialog" aria-modal="true"></div></div>
 <div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule"></iframe></div>
 <div id="toast" role="status"></div>

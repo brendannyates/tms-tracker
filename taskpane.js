@@ -68,7 +68,7 @@ const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", openTab: "on", cutoff: CUTOFF_DEFAULT },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
-  view: "today", ptAll: false, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
+  view: "today", ptOpen: null, ptPast: false, ptPick: null, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
   dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
 };
 try { state.chair = localStorage.getItem("tms_chair") || "all"; } catch { /* storage unavailable */ }
@@ -243,7 +243,7 @@ async function refresh() {
       const L = [];
       for (const s of sheets.items.filter(s => layout.get(s.name) >= 2)) {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
-        L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
+        L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O5"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") });
         L[L.length - 1].d4 = s.getRange("D4"); L[L.length - 1].d4.load("numberFormat");
         if (L.length % 8 === 0) await ctx.sync();
@@ -284,7 +284,7 @@ async function refresh() {
           txEnd: isNum(H(7, 5)) ? H(7, 5) : null, txRem: typeof H(7, 7) === "number" ? H(7, 7) : null,
           authAssess: String((v3 ? n7 : n6) || ""), freebiesLeft: typeof fbv === "number" ? fbv : null,
           protoRows: [0, 1, 2].map(i => ({ n: i + 1, row: 2 + i, hz: pv[i][0], dur: pv[i][1], trains: pv[i][2], wait: pv[i][3], site: String(pv[i][5] || "") })),
-          protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null,
+          protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null, protoTotal: typeof pv[3][4] === "number" && pv[3][4] > 0 ? pv[3][4] : null,   // N5
           home, external: !!home && !/^(srl|san rafael)$/i.test(home),
           ben: { bidf: money0(w[0]), dedNA: isNA(w[3]), dedRem: money0(w[3]), dedBlank: w[3] === "" || w[3] == null, oopNA: isNA(w[4]), oopRem: money0(w[4]),
             mtr: String(w[5] || ""), ext: typeof w[6] === "number" ? w[6] : 0, lastSched: isNum(w[7]) ? Math.floor(w[7]) : null },
@@ -351,7 +351,10 @@ function baselineOf(p) {
   return { sleep: g("sleep"), caffeine: g("caffeine"), date: mt.date };
 }
 const protoName = x => { const m = state.protocols.find(q => q.rep === x.hz && q.pulses === x.dur && q.trains === x.trains && q.iti === x.wait); return m ? m.name.trim() : ""; };
-const protoText = p => p.protoRows.filter(x => isNum(x.hz)).map(x => `${x.site || "Protocol " + x.n}: ${protoName(x) || `${x.hz} Hz, ${x.dur}/train, ${x.trains} trains, ${x.wait}s`}`).join("; ") || "not entered";
+const siteRows = p => p.protoRows.filter(x => isNum(x.hz) && TmsCore.siteOf(x.site));   // protocol rows with a site in O
+const protoText = p => p.protoRows.filter(x => isNum(x.hz)).map(x => `${TmsCore.siteOf(x.site) || "Protocol " + x.n}: ${(TmsCore.protoMatch(x, state.protocols) || {}).name || `${x.hz} Hz, ${x.dur}/train, ${x.trains} trains, ${x.wait}s`}`).join("; ") || "not entered";
+const protoLen = p => p.protoTotal || p.protoMin;   // session minutes: N5, else N2:N4 added up
+const yearOf = s => serialToDate(s).getUTCFullYear();
 
 function derive(p) {
   const today = todaySerial(), cfg = state.cfg, rows = p.rows, rec = cfg.recentDays, total = p.txApproved || 36;
@@ -411,20 +414,30 @@ function derive(p) {
     if (p.updateBy != null) { if (p.updateBy < today) protoFlags.push(`Protocol update was due ${fmtMon(p.updateBy)}`); else if (bizDaysUntil(today, p.updateBy) <= cfg.protoDays) protoFlags.push(`Protocol update due ${fmtMon(p.updateBy)}`); }
     const pa = rows.filter(r => r.action === "Protocol" && !r.delivered && r.date != null && r.date >= today).sort(cmp).find(r => bizDaysUntil(today, r.date) <= cfg.protoDays);
     if (pa) protoFlags.push(`Protocol action at the ${fmtMon(pa.date)} visit`);
-    if (!p.protoRows.some(x => isNum(x.hz)) && rows.some(r => r.type === "MT" && r.delivered)) protoFlags.push("Protocol not entered (J2:M4) since the MT");
   }
+  /* no protocol row with a site in O: chosen at the MT, so asked for from the MT on (Choose a protocol) */
+  const noProto = active && !siteRows(p).length && rows.some(r => r.type === "MT" && (r.delivered || r.date === today));
   /* patient cost so far and projected, the BIDF estimate and out-of-pocket max */
-  const accrued = rows.filter(r => happened(r, today)).reduce((s, r) => s + (payOf(p, r) || 0), 0);
-  const futurePay = sched.filter(r => !r.alt).map(r => ({ r, v: payOf(p, r) || 0 }));
+  /* TMS Follow Ups keep their own PR in column A but stay out of the course cost, the BIDF estimate and the OOPM tally */
+  const accrued = rows.filter(r => happened(r, today) && r.type !== "F/U").reduce((s, r) => s + (payOf(p, r) || 0), 0);
+  const futurePay = sched.filter(r => !r.alt && r.type !== "F/U").map(r => ({ r, v: payOf(p, r) || 0 }));
   const projected = accrued + futurePay.reduce((s, x) => s + x.v, 0);
+  /* copays: the plan year is Last updated's year; logged copays are a floor (claims applied to the deductible count too) */
+  const planYear = yearOf(p.benUpdated ?? today), owes = TmsCore.owes(p.ben);
+  const tally = TmsCore.copayTally(rows, utcSerial(planYear, 1, 1), utcSerial(planYear, 12, 31));
+  const toConfirm = owes ? TmsCore.copaysToConfirm(rows, r => payOf(p, r), today) : [];
+  const todayRow = rows.find(r => r.date === today && !r.miss && !r.alt && r.type !== "F/U"), todayPay = todayRow && !TmsCore.copayOf(todayRow.note) ? payOf(p, todayRow) || 0 : 0;
+  const oopmLikely = owes && p.ben.oopRem != null && p.ben.oopRem > 0 && tally.sum + todayPay >= p.ben.oopRem - 0.005;
+  const oopmMet = p.ben.oopRem === 0 && !p.ben.oopNA ? planYear : null;
   const benFlags = [];
-  if (active) {
+  if (active && owes) {
     if (p.ben.bidf != null && projected > p.ben.bidf + 0.005) benFlags.push(`Projected ${money(projected)}, over the BIDF estimate ${money(p.ben.bidf)}`);
-    if (p.ben.oopRem != null) {
-      if (accrued >= p.ben.oopRem) benFlags.push("Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen");
-      else { let c = accrued; const hit = futurePay.find(x => (c += x.v) >= p.ben.oopRem); if (hit) benFlags.push(`Likely meets the out-of-pocket max around ${fmtMon(hit.r.date)}: verify the copay at pre-check`); }
-    }
+    if (oopmLikely) benFlags.push("Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen");
+    else if (p.ben.oopRem != null) { let c = tally.sum; const hit = futurePay.find(x => (c += x.v) >= p.ben.oopRem); if (hit) benFlags.push(`Likely meets the out-of-pocket max around ${fmtMon(hit.r.date)}: verify the copay at pre-check`); }
   }
+  const ro = p.benUpdated != null ? TmsCore.rollover({ updated: p.benUpdated, dec1: utcSerial(yearOf(p.benUpdated), 12, 1), jan1: utcSerial(yearOf(p.benUpdated) + 1, 1, 1) }, rows, today,
+    r => r.date === today && !!state.sess && [...state.sess.rows.values()].some(s => s.tab === p.tab && s.date === today && s.checkin != null)) : null;
+  const rollover = ro ? { ...ro, year: yearOf(p.benUpdated) + 1 } : null;
   const mdOnSite = /^y/i.test(p.mdReq);
   /* only dates the patient said they are away; weekday preferences are for scheduling, not flags */
   const awayConflicts = [];
@@ -436,7 +449,8 @@ function derive(p) {
   const lastRow = rows.filter(r => r.type !== "F/U" && r.date != null).sort(cmp).pop();
   const bidf = bidfMissing(p), todayVisit = rows.some(r => r.date === today && !r.miss && !r.alt);
   return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
-    authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && todayVisit && bidf.length > 0,
+    authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && owes && todayVisit && bidf.length > 0,
+    noProto, owes, planYear, tally, toConfirm, todayRow, oopmLikely, oopmMet, rollover,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
 }
 function availText(p) {
@@ -642,7 +656,7 @@ function floor() {
       const v = { key, date: t, visit, p, r, tab: p.tab, row: r.row, type: r.type || "Daily", time: r.time, tele: r.tele, alt: r.alt, chairVisit: !fu && !r.alt, s, rc,
         chair: fu || r.alt ? "" : ms.chair, moved: ms.moved, settled: ms.settled, from: ms.from, offChair: "", miss: r.miss,
         done: fu ? !!(s && s.end != null) : r.delivered, checkin: s ? s.checkin : null, start: s ? s.start : null, end: s ? s.end : null,
-        len: p.protoMin || DEFAULT_LEN, mtDone: /\bmt %:/i.test(r.note) };
+        len: Math.round(protoLen(p) || DEFAULT_LEN), protoLen: protoLen(p), mtDone: /\bmt %:/i.test(r.note) };
       if (v.chairVisit && v.chair && !on.has(v.chair) && ["booked", "waiting"].includes(TmsCore.phase(v))) { v.offChair = v.chair; v.chair = ""; v.moved = false; }
       visits.push(v);
     }
@@ -717,6 +731,7 @@ function renderDash() {
   const el = $("v-" + state.view);
   if (!state.patients.length && state.view !== "chairs") { el.innerHTML = head({ today: "Today", schedule: "Schedule", patients: "Patients" }[state.view], "") + `<div class="card list">${NO_TABS}</div>`; return; }
   el.innerHTML = state.view === "today" ? viewToday(fl) : state.view === "schedule" ? viewSchedule(fl) : state.view === "patients" ? viewPatients(fl) : viewChairs(fl);
+  renderPt();
   refocus();
 }
 
@@ -858,6 +873,7 @@ function detailHtml(fl) {
       else if (v.time != null && lateMin > 5) { lead = `Not started, booked ${clock(v.time)} (${lateMin} min ago)`; cls = "soon"; } else lead = `Booked ${clock(v.time) || "with no set time"} in ${chairLbl(v.chair)}`;
       if (busy) { lead += `. ${chairLbl(v.chair)} in use by ${busy.tab} until ${clock(busy.start + busy.len)}`; primary = openChairs(v, fl).length ? ["Move to another chair", "move"] : [`Start session in ${chairLbl(v.chair)}`, "start", true]; }
       else primary = [`Start session in ${chairLbl(v.chair)}`, "start"];
+      lead += `. Projected to end ${clock(Math.max(fl.now, v.time ?? fl.now, busy ? busy.start + busy.len : 0) + v.len)}`;
     }
     if (v.chair && !(primary && primary[1] === "move")) ghosts.push(["Move to another chair", "move"]);
     ghosts.push(["Record missed", "miss"]);
@@ -867,7 +883,7 @@ function detailHtml(fl) {
   const bidf = p.d.bidfToday ? `<div class="notice"><p><b>BIDF info needed.</b> Enter the ${esc(p.d.bidf.join("; "))}.</p><div class="actions" style="margin:4px 0 6px"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Enter benefits</button></div></div>` : "";
   const priced = (p.cost[billIdx(v.r)] || {}).after != null, pay = payOf(p, v.r);
   const payline = v.alt || p2 === "missed" ? "" : `<div class="payline"><span>Payment today</span><span>${!priced && typeof v.r.pr !== "number" ? '<span class="flag">Not set</span>' : money(pay ?? 0) || "$0.00"}</span></div>`;
-  const meta = v.type === "F/U" ? `Follow-up, ${v.tele ? "telehealth" : "in office"}` : `${typeName(v)}, treatment ${sessNo(v)} of ${p.d.total}`;
+  const meta = v.type === "F/U" ? `Follow-up, ${v.tele ? "telehealth" : "in office"}` : `${typeName(v)}, treatment ${sessNo(v)} of ${p.d.total} · ${v.protoLen ? `protocol ${Math.round(v.protoLen)} min` : `no protocol time, ${DEFAULT_LEN} min assumed`}`;
   return `<div class="dh"><div><div class="name">${esc(v.tab)}<span class="loc">${esc(where(v) || "No chair")}</span></div><div class="meta">${esc(meta)}</div></div><button class="btn mute sm" data-act="opentab" ${K}>Open tab</button></div>
     <p class="lead ${cls}">${esc(lead)}</p>${tl}
     ${v.type === "F/U" || p2 === "missed" || v.alt ? "" : stepsFor(v, s, fl)}${moved}${bidf}
@@ -953,7 +969,8 @@ const FILTERS = [
   ["taper", "Tapering", p => p.status === "Tapering"],
   ["paused", "Paused", p => p.status === "Paused"],
   ["complete", "Complete", p => p.status === "Complete"],
-  ["disc", "Discontinued", p => !onSched(p)]
+  ["disc", "Discontinued", p => !onSched(p)],
+  ["copay", "Copay unconfirmed", p => p.d.toConfirm.length > 0]
 ];
 function viewPatients(fl) {
   const N = new Map(state.patients.map(p => [p.tab, courseNeeds(p, fl)])), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
@@ -961,7 +978,6 @@ function viewPatients(fl) {
   const chips = FILTERS.map(([k, l, fn]) => `<button class="chip" data-filter="${k}" aria-pressed="${k === f[0]}">${l} <span class="n">${state.patients.filter(p => fn(p, N.get(p.tab))).length}</span></button>`).join("");
   const rank = p => { const n = TmsCore.loud(N.get(p.tab)); return n.some(x => x.bad) ? 0 : n.length ? 1 : 2; };
   const list = state.patients.filter(p => f[2](p, N.get(p.tab))).sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code) || a.course - b.course);
-  if (!list.some(p => p.tab === state.ptTab)) state.ptTab = list[0] ? list[0].tab : null;
   const rows = list.map(p => {
     const n = N.get(p.tab), d = p.d;
     return `<button class="crow" data-course="${esc(p.tab)}" aria-pressed="${p.tab === state.ptTab}"><span class="p">${esc(p.tab)}<small>${esc(p.status || "No status")}</small></span><span class="proto">${esc(protoText(p))}</span>
@@ -970,8 +986,7 @@ function viewPatients(fl) {
   }).join("") || `<p class="empty">Nothing here. Everyone in this group is on track.</p>`;
   return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
     <div class="chips" role="group" aria-label="Filter patients">${chips}</div>
-    <div class="cols"><div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>
-      <aside class="card detail">${courseHtml(fl, N)}</aside></div>`;
+    <div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>`;
 }
 /* a course row names its two most urgent needs and counts the rest; quiet labels show only when nothing needs doing */
 function needSummary(n) {
@@ -979,31 +994,234 @@ function needSummary(n) {
   if (!L.length) return q.length ? esc(q.map(x => x.t).join(", ")) : "On track";
   return L.slice(0, 2).map(x => `<span class="f${x.bad ? " bad" : ""}">${esc(x.t)}</span>`).join(", ") + (L.length > 2 ? ` <span class="muted">and ${L.length - 2} more</span>` : "");
 }
-function courseHtml(fl, N) {
-  const p = state.patients.find(x => x.tab === state.ptTab); if (!p) return '<p class="body">Select a patient.</p>';
-  const n = TmsCore.loud(N.get(p.tab)), first = n[0], d = p.d, tv = fl.visits.filter(v => v.tab === p.tab);
+/* ---------- the patient view: an overlay over Patients (in the task pane it fills the pane). The Show bar picks the sections,
+   saved on this computer like the Today view. The list row stays selected behind it. ---------- */
+const PT_SECT = [["proto", "Protocol"], ["sched", "Schedule"], ["money", "Copay and benefits"]];
+function ptShow() {
+  try { const v = JSON.parse(localStorage.getItem("tms_ptshow") || "null"); if (Array.isArray(v)) return v; } catch { /* storage unavailable */ }
+  return state.ptShowMem || PT_SECT.map(s => s[0]);
+}
+function setPtShow(k) {
+  const cur = ptShow(), nx = cur.includes(k) ? cur.filter(x => x !== k) : PT_SECT.map(s => s[0]).filter(x => cur.includes(x) || x === k);
+  state.ptShowMem = nx; try { localStorage.setItem("tms_ptshow", JSON.stringify(nx)); } catch { /* this session only */ }
+  renderPt();
+}
+let ptFrom = null;
+function openPt(tab) {
+  state.ptTab = tab; state.ptOpen = tab; state.ptPick = new Set(); state.ptPast = false; ptFrom = document.activeElement; renderDash();
+  const x = $("pvBody").querySelector("[data-act=ptClose]"); if (x) x.focus();
+}
+function closePt() {
+  state.ptOpen = null; $("ptView").hidden = true; $("pvBody").innerHTML = ""; renderDash();
+  const back = document.querySelector(`#v-patients [data-course="${CSS.escape(state.ptTab || "")}"]`) || ptFrom; if (back && document.contains(back)) back.focus(); ptFrom = null;
+}
+/* re-drawn with the dashboard (the 30 s tick, every save); scroll, focus and the ticked copays are kept */
+function renderPt() {
+  const box = $("ptView"), body = $("pvBody"), p = state.ptOpen && state.patients.find(x => x.tab === state.ptOpen);
+  if (!p) { if (!box.hidden) { box.hidden = true; body.innerHTML = ""; state.ptOpen = null; } return; }
+  const top = body.scrollTop, fk = document.activeElement && body.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+  const by = $("pvBy") ? $("pvBy").value : null;
+  body.innerHTML = ptHtml(p, state.fl || floor()); box.hidden = false; body.scrollTop = top;
+  if (by != null && $("pvBy")) $("pvBy").value = by;
+  if (fk) { const el = body.querySelector(fk); if (el) el.focus(); }
+}
+const ptVisit = (p, fl) => { const tv = fl.visits.filter(v => v.tab === p.tab && !v.miss); return tv.find(v => v.chairVisit) || tv[0] || null; };
+const chairFor = (p, r) => { const s = state.sess && [...state.sess.rows.values()].find(x => x.tab === p.tab && x.date === r.date && x.chair); return s ? s.chair : chairOf(p, r); };
+const visitNote = note => String(note || "").split("; ").filter(x => x && !TmsCore.copayOf(x)).join("; ");
+function ptHtml(p, fl) {
+  const N = courseNeeds(p, fl), n = TmsCore.loud(N), first = n[0], d = p.d, v = ptVisit(p, fl), on = ptShow();
   const A = x => `data-act="${x.act[1]}" data-t="${esc(p.tab)}"${x.row ? ` data-row="${x.row}"` : ""}${x.key ? ` data-k="${esc(x.key)}"` : ""}${x.v ? ` data-v="${esc(x.v)}"` : ""}`;
-  const used = new Set(n.map(x => x.act && x.act[1]));
-  const ghosts = [["Print schedule", "print"], ["Edit benefits", "ben"], ["Add extension", "ext"], ["Edit availability", "avail"], ["Edit protocol", "proto"], ["Change status", "statuspick"]].filter(([, a]) => !used.has(a));
   const shown = new Set([first && first.act[1]]);
   const also = n.slice(1).map(x => { const dup = shown.has(x.act[1]) && !x.row && !x.key; shown.add(x.act[1]); return `<div class="row"><span class="f ${x.bad ? "bad" : "flag"} needline">${esc(x.t)}</span>${dup ? "" : `<button class="btn ghost sm" ${A(x)}>${esc(x.act[0])}</button>`}</div>`; }).join("");
-  const up = d.sched.slice(0, 8);
-  return `<div class="dh"><div><div class="name">${esc(p.tab)}</div><div class="meta">${esc([p.status || "No status", p.insurance, p.provider].filter(Boolean).join(", "))}</div></div><button class="btn mute sm" data-act="opentab" data-t="${esc(p.tab)}">Open tab</button></div>
-    <p class="lead ${first ? (first.bad ? "late" : "soon") : ""}">${first ? esc(first.t) : d.active ? "On track" : esc(p.status || "No status")}</p>
-    ${first ? `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>` : ""}
-    <div class="actions">${tv.length ? `<button class="btn ghost sm" data-open="${esc(p.tab)}">Open today's visit</button>` : ""}${ghosts.map(([l, a]) => btn(a, p.tab, a === "print" ? "14" : "", l)).join("")}</div>
+  const quiet = N.filter(x => x.quiet).map(x => `<span class="tag">${esc(x.t)}</span>`).join("");
+  const meta = [p.provider && `Dr. ${p.provider}`, v && v.chairVisit && `Session ${sessNo(v)} of ${d.total} today`, v && v.start != null && ph(v) === "running" && `in chair since ${clock(v.start)}`].filter(Boolean).join(" · ");
+  const sect = { proto: ptProto, sched: ptSched, money: ptMoney };
+  return `<div class="pvh"><div><h2 id="pvTitle">${esc(p.tab)} <span class="mrn">MRN ${esc(p.mrnRaw || "not entered")}</span></h2><p class="meta">${esc(meta || p.status || "No status")}</p></div>
+      <div class="pvr">${v && v.chair ? `<span class="chairname">${esc(chairLbl(v.chair))}</span>` : ""}<button class="x" data-act="ptClose" aria-label="Close">×</button></div></div>
+    <p class="lead ${first ? (first.bad ? "late" : "soon") : ""}">${first ? esc(first.t) : d.active ? "On track" : esc(p.status || "No status")}</p>${quiet ? `<div class="tags">${quiet}</div>` : ""}
+    ${first && first.act ? `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>` : ""}
     ${also ? `<div class="section"><div class="h"><h2>Also needs</h2><span>${n.length - 1} more</span></div>${also}</div>` : ""}
-    <div class="section"><div class="h"><h2>Treatments</h2><span>${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</span></div>${strip(p, tv.some(v => v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}</div>
-    <div class="section"><div class="h"><h2>Measures</h2><span>Lower is better</span></div>${scores(p, tv.some(v => v.r.measX && !v.r.measVal))}</div>
-    <div class="section"><div class="h"><h2>Details</h2></div>${facts(p, false)}</div>
-    <div class="section"><div class="h"><h2>Upcoming</h2><span>${d.sched.length} booked</span></div>${up.length ? up.map(r => `<div class="row"><button class="rowmain" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="p">${fmtMon(r.date)}</span><span class="w">${DAYS[dow(r.date)]}</span><span>${clock(r.time) || "no time"}</span><span class="f muted">${esc(apptTypeName(r))}${r.measX ? ", measures" : ""}</span></button></div>`).join("") : '<p class="body">Nothing booked.</p>'}</div>
-    <div class="section"><div class="h"><h2>Every visit</h2><button class="btn ghost sm" data-act="ptAll">${state.ptAll ? "Hide" : "Show all visits and scores"}</button></div>${state.ptAll ? allVisits(p) : ""}</div>`;
+    <div class="actions">${v ? `<button class="btn ghost sm" data-open="${esc(p.tab)}">Open today's visit</button>` : ""}${[["Add extension", "ext"], ["Edit availability", "avail"], ["Change status", "statuspick"]].map(([l, a]) => btn(a, p.tab, "", l)).join("")}<button class="btn mute sm" data-act="opentab" data-t="${esc(p.tab)}">Open tab</button></div>
+    ${ptCopayToday(p)}
+    <div class="showbar" role="group" aria-label="Show sections"><span class="lbl">Show</span>${PT_SECT.map(([k, l]) => `<button class="chip" data-ptshow="${k}" aria-pressed="${on.includes(k)}">${l}</button>`).join("")}<span class="saved">Saved for you</span></div>
+    ${PT_SECT.filter(([k]) => on.includes(k)).map(([k]) => `<div class="section pvs" data-sect="${k}">${sect[k](p, fl)}</div>`).join("")}`;
 }
 
-/* the whole visit log with pulses and scores, as the earlier patient view had it */
-function allVisits(p) {
-  const t = todaySerial(), all = p.rows.filter(r => r.date != null).sort(cmp);
-  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Pulses L / R / O</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Status</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${esc(r.type)}${r.tele ? " tele" : ""}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${r.miss ? "Missed" : r.delivered ? "Done" : r.alt ? "Other clinic" : r.date < t ? "Not entered" : "Booked"}</td></tr>`).join("")}</table>`;
+/* today's copay: the payment from column A on today's row, the answer from its Notes, and who answered. Answering here also
+   answers it in Complete session, and the other way round. */
+function ptCopayToday(p) {
+  const t = todaySerial(), r = p.rows.find(x => x.date === t && !x.miss && !x.alt && x.type !== "F/U") || p.rows.find(x => x.date === t && !x.miss && !x.alt);
+  if (!r) return "";
+  const c = TmsCore.copayOf(r.note), pay = payOf(p, r);
+  if (!p.d.owes && !c) return `<div class="payline"><span>Copay today</span><span class="muted">${p.d.oopmMet ? `None: ${p.d.oopmMet} OOPM met` : "None: the BIDF quote is $0"}</span></div>`;
+  const st = !c ? "Not logged yet" : c.kind === "collected" ? `Collected ${money(c.amt)}${c.by ? ` · ${c.by}${c.at ? `, ${c.at}` : ""}` : ""}` : c.kind === "not" ? "Not collected" : c.kind === "oopm" ? "$0, OOPM met" : c.kind === "waived" ? "Waived" : c.line;
+  const b = (k, l, dis) => `<button class="btn ghost sm" data-act="copayToday" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="${k}" aria-pressed="${!!c && c.kind === k}"${dis ? " disabled" : ""}>${l}</button>`;
+  return `<div class="copay"><div class="payline"><span>Copay today${pay != null ? ` ${money(pay)}` : ""}</span><span>${esc(st)}</span></div>
+    <div class="actions">${b("collected", pay != null ? `Collected ${money(pay)}` : "Collected", pay == null)}${b("not", "Not collected")}${b("oopm", "$0, OOPM met")}
+      <label class="by">By <input id="pvBy" value="${esc(state.techName || lastTech(p))}" autocomplete="off"></label></div></div>`;
+}
+async function copayToday(tab, row, kind) {
+  const [p, r] = findPR(tab, row); if (!r) return;
+  const by = (($("pvBy") || {}).value || "").trim(); if (!by) return toast("Enter who answered the copay (By).", true);
+  const note = withCopay(r.note, copayLine(kind, payOf(p, r), by));
+  try { await writeCells(tab, [[`S${row}`, note]], at(r)); state.techName = by; patchRow(tab, row, { note }); toast("Copay saved to Notes."); } catch (e) { fail(e); }
+}
+
+/* ---------- Protocol: J2:O4 against the Protocols table; sites read F3 (left) and F4 (right) ---------- */
+const pctMt = v => typeof v === "number" ? `${v <= 3 ? Math.round(v * 100) : v}% MT` : String(v || "").trim() ? `${String(v).trim()} MT` : "";
+function protoLines(p) {
+  return siteRows(p).map(x => {
+    const m = TmsCore.protoMatch(x, state.protocols), site = TmsCore.siteOf(x.site), q = m && m.base, tot = x.dur * x.trains;
+    const ch = !q ? [] : [...(m.diffs.some(dd => dd.k !== "wait") ? [`${tot.toLocaleString()} pulses (standard ${(q.pulses * q.trains).toLocaleString()})`] : []), ...(m.diffs.some(dd => dd.k === "wait") ? [`${x.wait} s wait (standard ${q.iti} s)`] : [])];
+    return { x, m, site, text: [TmsCore.SITE_LABEL[site], `${x.hz} Hz`, q && pctMt(q.inten), `${tot.toLocaleString()} pulses`].filter(Boolean).join(" · "), ch };
+  });
+}
+function ptProto(p) {
+  const L = protoLines(p), d = p.d, t = todaySerial();
+  const head = `<div class="h"><h2>Protocol</h2><button class="btn ghost sm" data-act="proto" data-t="${esc(p.tab)}">Edit</button></div>`;
+  if (!L.length) return head + `<p class="body">No protocol chosen. Pick one from the Protocols table; its values fill in.</p>${protoPick(p)}`;
+  const names = [...new Set(L.map(l => l.m ? l.m.name : "Custom"))].join(" + ");
+  const mtRow = p.rows.filter(r => (r.type === "MT" || r.type === "MTR") && /mt %:/i.test(r.note)).sort(cmp).pop(), mt = mtRow && (mtRow.note.match(/mt %:\s*([^;]+)/i) || [])[1];
+  const recheck = d.sched.find(r => r.type === "MTR"), tot = Math.max(1, d.total), taper = tot >= 12 ? 6 : 0, len = protoLen(p);
+  const auth = `${p.authStart != null ? fmtMon(p.authStart) : "No start"} to ${p.authExp != null ? fmtMon(p.authExp) : "no end"}, ${Math.max(0, d.total - d.txDone)} of ${d.total} left`;
+  const rows = [["Treatment", `${L.length > 1 ? `Bilateral, ${L.map(l => l.site).join(" then ")}` : "Unilateral"}${len ? `, ${Math.round(len)} min` : ""}`],
+    ["MT", `${mt ? mt.trim() : "Not recorded"}${recheck ? `, recheck ${fmtMon(recheck.date)}` : ""}`],
+    ["Device", device() === "Brainsway" ? "BrainsWay" : "MagVenture"],
+    ["Course", `${tot} treatments: ${tot - taper} daily${taper ? ` + ${taper} taper` : ""}`],
+    ["Authorization", auth, p.authExp == null || p.authExp < t ? "bad" : p.authExp - t <= state.cfg.authDays ? "flag" : ""],
+    ["Update protocol by", p.updateBy != null ? fmtMon(p.updateBy) : "Not set", d.protoFlags.length ? "flag" : ""]];
+  return head + `<p class="pname">${esc(names)}</p>${L.map(l => `<p class="prow">${esc(l.text)}${l.ch.length ? `<small>${esc(l.ch.join("; "))}</small>` : ""}</p>`).join("")}
+    <dl class="facts">${rows.map(([k, v, cls]) => `<dt>${k}</dt><dd class="${cls || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+}
+/* no protocol yet: the dropdown, with the values greyed until one is chosen */
+function protoPick(p) {
+  return `<div class="g2p pick"><select id="pvProto" aria-label="Protocol"><option value="">Choose a protocol</option>${state.protocols.map(q => `<option>${esc(q.name.trim())}</option>`).join("")}</select>
+    <select id="pvSite" aria-label="Site">${["F3", "F4", "Other"].map(s => `<option value="${s}">${TmsCore.SITE_LABEL[s]}</option>`).join("")}</select>
+    <button class="btn ghost sm" data-act="pvProtoSave" data-t="${esc(p.tab)}">Save protocol</button></div>
+    <div class="g4 greyed" aria-hidden="true">${["Hz", "Pulses per train", "Trains", "Wait (s)"].map(l => `<label class="fld"><span>${l}</span><input disabled tabindex="-1"></label>`).join("")}</div>`;
+}
+/* Edit: a protocol per row from the table (its values fill in and stay editable), the site, and the next expiration date (G2,
+   required). Saving also logs "Protocol renewed, next by m/d" in today's Notes. */
+function mProtoEdit(tab) {
+  const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
+  const opt = v => `<option value="">(none)</option>` + state.protocols.map(q => `<option${q.name.trim() === v ? " selected" : ""}>${esc(q.name.trim())}</option>`).join("");
+  const rowH = x => {
+    const m = TmsCore.protoMatch(x, state.protocols), base = m && m.base ? m.base.name.trim() : "", s = TmsCore.siteOf(x.site), has = isNum(x.hz);
+    return `<div class="per" data-pr="${x.n}"><select data-pk="name" aria-label="Protocol ${x.n}">${opt(base)}</select><select data-pk="site" aria-label="Site ${x.n}"><option value="">Site</option>${["F3", "F4", "Other"].map(k => `<option value="${k}"${k === s ? " selected" : ""}>${TmsCore.SITE_LABEL[k]}</option>`).join("")}</select>
+      ${[["hz", "Hz"], ["dur", "Pulses per train"], ["trains", "Trains"], ["wait", "Wait (s)"]].map(([k, l]) => `<input type="number" min="0" step="any" data-pk="${k}" aria-label="${l}, row ${x.n}" value="${has && typeof x[k] === "number" ? x[k] : ""}"${has || base ? "" : " disabled"}>`).join("")}</div>`;
+  };
+  showModal(`<h2 id="mtitle">Protocol: ${esc(tab)}</h2><p class="sub">Choose from the Protocols table; a changed value reads Custom. One row with a site is unilateral, two are bilateral, in order. Saved to J2:O4; N calculates the minutes.</p>
+    <div class="per hdr" aria-hidden="true"><span>Protocol</span><span>Site</span><span>Hz</span><span>Pulses/train</span><span>Trains</span><span>Wait (s)</span></div>${p.protoRows.map(rowH).join("")}
+    ${fld("Next expiration date (update protocol by, G2)", `<input type="date" id="mProtoBy" value="${p.updateBy != null && p.updateBy > todaySerial() ? serialToInput(p.updateBy) : ""}" required>`)}
+    ${mfoot("Save protocol", "doProtoEdit")}`, true);
+}
+function protoEditRead() {
+  return [...$("modalBody").querySelectorAll(".per[data-pr]")].map(el => { const g = k => el.querySelector(`[data-pk="${k}"]`).value.trim(); return { n: +el.dataset.pr, name: g("name"), site: g("site"), hz: g("hz"), dur: g("dur"), trains: g("trains"), wait: g("wait") }; });
+}
+async function doProtoEdit() {
+  const tab = state.mctx.t, rows = protoEditRead(), by = inputToSerial(mval("mProtoBy")), t = todaySerial();
+  const used = rows.filter(r => r.site || r.hz || r.name);
+  if (!used.some(r => r.site)) return merr("Choose a site for at least one protocol row.");
+  const bad = used.find(r => !r.site || !["hz", "dur", "trains", "wait"].every(k => r[k] !== "" && !isNaN(+r[k]) && +r[k] >= 0) || !(+r.hz > 0));
+  if (bad) return merr(`Row ${bad.n}: choose a site and fill Hz, pulses per train, trains and wait.`);
+  if (by == null || by <= t) return merr("Choose the next expiration date, after today.");
+  const pairs = [];
+  rows.forEach(r => {
+    const row = r.n + 1, u = used.includes(r);
+    [["J", "hz"], ["K", "dur"], ["L", "trains"], ["M", "wait"]].forEach(([c, k]) => pairs.push([`${c}${row}`, u ? +r[k] : ""]));
+    pairs.push([`O${row}`, u ? TmsCore.SITE_CELL[r.site] : ""]);
+  });
+  pairs.push(["G2", by]);
+  const p = state.patients.find(x => x.tab === tab), lr = p && p.rows.find(r => r.date === t && !r.miss);
+  if (lr) pairs.push([`S${lr.row}`, [...String(lr.note || "").split("; ").filter(x => x && !/^protocol renewed/i.test(x)), `Protocol renewed, next by ${fmtDate(by)}`].join("; ")]);
+  closeModal();
+  try { await writeCells(tab, pairs, lr ? at(lr) : null); toast(lr ? "Protocol saved. The renewal is noted on today's visit." : "Protocol saved. There's no visit today, so the renewal isn't in the log."); await refresh(); } catch (e) { fail(e); }
+}
+/* choosing a protocol in the Edit dialog fills its values (they stay editable) */
+function protoEditPick(sel) {
+  const el = sel.closest(".per"), q = state.protocols.find(x => x.name.trim() === sel.value); if (!el) return;
+  [["hz", "rep"], ["dur", "pulses"], ["trains", "trains"], ["wait", "iti"]].forEach(([k, f]) => { const i = el.querySelector(`[data-pk="${k}"]`); if (q) { i.value = q[f]; i.disabled = false; } else i.value = ""; });
+}
+
+/* ---------- Schedule: the course with its payments, what's booked, and every past visit ---------- */
+function payRow(p) {
+  const tot = Math.max(1, p.d.total), taper = tot >= 12 ? 6 : 0, daily = tot - taper, cols = taper ? `repeat(${daily},1fr) 10px repeat(${taper},1fr)` : `repeat(${tot},1fr)`;
+  const un = new Set(p.d.toConfirm.map(r => r.row)), done = p.rows.filter(r => TmsCore.isTreatment(r) && r.delivered).sort(cmp);
+  let cells = "";
+  for (let i = 1; i <= tot; i++) {
+    if (taper && i === daily + 1) cells += "<span></span>";
+    const r = done[i - 1], c = r && TmsCore.copayOf(r.note);
+    cells += `<span class="${!r ? "" : un.has(r.row) ? "un" : c && c.kind !== "not" ? "pd" : ""}"></span>`;
+  }
+  const n = un.size;
+  return `<div class="payrow" style="grid-template-columns:${cols}" role="img" aria-label="${n ? `${n} copay${n > 1 ? "s" : ""} to confirm` : "Copays logged"}">${cells}</div>
+    <p class="hint">${!p.d.owes ? "No copays to log: " + (p.d.oopmMet ? `${p.d.oopmMet} OOPM met` : "the BIDF quote is $0") : n ? `${n} copay${n > 1 ? "s" : ""} to confirm` : "Every copay due is logged"}</p>`;
+}
+function ptSched(p, fl) {
+  const d = p.d, t = todaySerial(), up = d.sched.slice(0, 8), av = availText(p);
+  const vt = fl.visits.filter(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting"].includes(ph(v)));
+  const line = r => {
+    const v = r.date === t && vt.find(x => x.row === r.row);
+    return `<div class="srow"><span class="p">${fmtDay(r.date)}</span><span>${clock(r.time) || "no time"}</span><span>${esc(r.type === "F/U" ? (r.tele ? "Telehealth" : p.provider || "Provider") : chairLbl(chairFor(p, r)))}</span><span>${typeof r.tx === "number" ? `#${r.tx}` : esc(apptTypeName(r))}</span><span class="muted">${esc(visitNote(r.note))}</span>${v ? `<button class="btn ghost sm" data-act="move" data-k="${esc(v.key)}">Move</button>` : "<span></span>"}</div>`;
+  };
+  return `<div class="h"><h2>Schedule</h2><button class="btn ghost sm" data-act="print" data-t="${esc(p.tab)}" data-v="14">Print schedule</button></div>
+    <p class="sub">${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</p>${strip(p, fl.visits.some(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}${payRow(p)}
+    <div class="sub2">Measures</div>${scores(p, fl.visits.some(v => v.tab === p.tab && v.r.measX && !v.r.measVal))}
+    <div class="sub2">Next visits <span class="muted">${d.sched.length} booked</span></div>${up.length ? up.map(line).join("") : '<p class="body">Nothing booked.</p>'}
+    ${av ? `<p class="hint">Availability: ${esc(av)}</p>` : ""}
+    <div class="actions"><button class="btn ghost sm" data-act="ptSchedView" data-t="${esc(p.tab)}">Open in Schedule</button><button class="btn ghost sm" data-act="goimport">Book the rest of the course</button>${p.status === "Paused" ? "" : `<button class="btn ghost sm" data-act="status" data-t="${esc(p.tab)}" data-v="Paused">Pause course</button>`}</div>
+    <p class="hint">Book the rest in NextGen, then import the appointment list. The planner comes later.</p>
+    <div class="h"><h2>Past visits</h2><button class="btn ghost sm" data-act="ptPast" aria-expanded="${!!state.ptPast}">${state.ptPast ? "Hide" : "Show"}</button></div>${state.ptPast ? pastVisits(p) : ""}`;
+}
+/* every logged visit, newest first: Tx #, chair, pulses, PR, the copay and who logged it, the note */
+function pastVisits(p) {
+  const t = todaySerial(), all = p.rows.filter(r => r.date != null && r.date <= t && (r.delivered || r.miss || r.alt || r.type === "F/U")).sort(cmp).reverse();
+  if (!all.length) return '<p class="body">No visits logged yet.</p>';
+  const cp = r => { const c = TmsCore.copayOf(r.note); return !c ? "" : c.kind === "collected" ? `${money(c.amt)}${c.by ? `, ${c.by}` : ""}` : c.kind === "not" ? "Not collected" : c.kind === "oopm" ? "$0, OOPM met" : c.kind === "waived" ? "Waived" : c.line; };
+  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Chair</th><th>Pulses L / R / O</th><th class="num">PR</th><th>Copay</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Note</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${r.miss ? "Missed" : esc(r.type)}${r.tele ? " tele" : ""}</td><td>${esc(r.type === "F/U" || r.alt ? "" : chairLbl(chairFor(p, r)))}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(money(r.pr))}</td><td>${esc(cp(r))}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${esc(visitNote(r.note))}</td></tr>`).join("")}</table>`;
+}
+
+/* ---------- Copay and benefits: the Benefits row, the copay tally against what's left, and copays to confirm ---------- */
+function ptMoney(p) {
+  const b = p.ben, d = p.d, amt = (na, v) => na ? "N/A" : v != null ? money(v) : "Not entered", daily = (p.cost[1] || {}).after, Y = d.planYear;
+  const ro = d.rollover ? `Re-verify for ${d.rollover.year}` : p.benUpdated != null ? `Current for ${yearOf(p.benUpdated)}` : "Not verified";
+  const facts1 = [["Insurance", p.insurance || "Not entered"], ["Copay per treatment visit", daily != null ? `${money(daily)} (90868 Daily)` : "Not entered"],
+    ["Deductible remaining", amt(b.dedNA, b.dedRem)], ["OOPM remaining", amt(b.oopNA, b.oopRem)], ["BIDF estimate", b.bidf != null ? `${money(b.bidf)}, projected ${money(d.projected) || "$0.00"}` : "Not entered"],
+    ["Last updated", p.benUpdated != null ? fmtDateY(p.benUpdated) : "Never"], ["Plan year", ro, d.rollover ? (d.rollover.bad ? "bad" : "flag") : ""]];
+  const dl = rows => `<dl class="facts">${rows.map(([k, v, cls]) => `<dt>${k}</dt><dd class="${cls || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+  const col1 = `<div><div class="sub2">Benefits</div>${dl(facts1)}<div class="actions"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Update BIDF</button><button class="btn ghost sm" data-act="goimport">Re-run eligibility</button></div><p class="hint">Re-run eligibility in the Sohar tool, then Import > Import Sohar benefits.</p></div>`;
+  let col2;
+  if (d.oopmMet) col2 = `<div><div class="sub2">Copay tally</div><p><span class="tag">${d.oopmMet} OOPM met</span></p><p class="hint">No copay checks for this patient until the plan year ends.</p></div>`;
+  else if (!d.owes) col2 = `<div><div class="sub2">Copay tally</div><p class="body">The BIDF quote is $0, so there are no copays to track.</p></div>`;
+  else col2 = `<div><div class="sub2">Copay tally ${Y}</div>${dl([["Logged collected", `${money(d.tally.sum) || "$0.00"} over ${d.tally.n} visit${d.tally.n === 1 ? "" : "s"}`], ["OOPM remaining", amt(b.oopNA, b.oopRem)], ["Deductible remaining", amt(b.dedNA, b.dedRem)]])}
+      ${d.oopmLikely ? `<p class="warnline">Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen.</p><p class="hint">Logged copays are a floor: claims applied to the deductible after adjudication count too. Confirm in NextGen or re-run eligibility first.</p>` : ""}
+      <div class="actions"><button class="btn ghost sm" data-act="oopmMet" data-t="${esc(p.tab)}">Mark ${Y} OOPM met</button></div></div>`;
+  return `<div class="h"><h2>Copay and benefits</h2></div><div class="g3c">${col1}${col2}<div><div class="sub2">Copays to confirm</div>${toConfirmHtml(p)}</div></div>`;
+}
+function toConfirmHtml(p) {
+  const L = p.d.toConfirm, pick = state.ptPick || new Set();
+  if (!p.d.owes) return '<p class="body">None needed.</p>';
+  if (!L.length) return '<p class="body">Every copay due is logged.</p>';
+  return `${L.map(r => `<label class="chk"><input type="checkbox" data-pick="${r.row}"${pick.has(r.row) ? " checked" : ""}> ${fmtMon(r.date)}${typeof r.tx === "number" ? `, #${r.tx}` : ""}: ${money(payOf(p, r))}</label>`).join("")}
+    <div class="actions"><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="sel">Mark selected paid</button><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="all">Mark all paid</button><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="waive">Waive</button></div>`;
+}
+/* "Copay $X collected (confirmed m/d by Name)" or "Copay waived by Name m/d" on each visit's Notes */
+async function copayMark(tab, how) {
+  const p = state.patients.find(x => x.tab === tab); if (!p) return;
+  const pick = state.ptPick || new Set(), L = p.d.toConfirm.filter(r => how === "all" || pick.has(r.row));
+  if (!L.length) return toast("Tick the visits first.", true);
+  const by = firstName((($("pvBy") || {}).value || "").trim() || state.techName); if (!by) return toast("Enter your name in By on today's copay line, or complete a session first.", true);
+  const t = fmtDate(todaySerial()), ops = L.map(r => [r, withCopay(r.note, how === "waive" ? `Copay waived by ${by} ${t}` : `Copay ${money(payOf(p, r))} collected (confirmed ${t} by ${by})`)]);
+  try {
+    await applyOps(ops.map(([r, note]) => ({ tab, a: `S${r.row}`, v: [[note]] })), ops.map(([r]) => ({ tab, ...at(r) })));
+    ops.forEach(([r, note]) => { r.note = note; }); p.d = derive(p); state.ptPick = new Set(); renderDash();
+    toast(`${L.length} copay${L.length > 1 ? "s" : ""} ${how === "waive" ? "waived" : "marked paid"}.`);
+  } catch (e) { fail(e); }
+}
+/* OOPM met: 0 remaining on the Benefits row (Last updated follows); the copay flags stop for this patient */
+async function oopmMet(tab) {
+  if (!state.patients.some(x => x.tab === tab)) return;
+  try { await applyOps([{ tab, a: "W5", v: [[0]] }]); toast(`${tab}: ${yearOf(todaySerial())} OOPM met. Copay checks stop until the plan year ends.`); await refresh(); } catch (e) { fail(e); }
 }
 
 /* ---------- Chairs: devices, chair hours and protocols ---------- */
@@ -1188,7 +1406,7 @@ const techInput = cur => `<input id="mTech" list="mTechs" value="${esc(cur || ""
 /* what the protocol calls for, per site (J:M rows with a site in O) */
 function wantPulses(p) {
   const want = { Left: 0, Right: 0, Other: 0 };
-  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES.includes(x.site) ? x.site : "Left"] += x.dur * x.trains; });
+  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES[TmsCore.pulseCol(TmsCore.siteOf(x.site) || "F3")]] += x.dur * x.trains; });
   return want;
 }
 function pulseFields(p) {
@@ -1205,13 +1423,18 @@ const measUp = (p, r) => p.rows.filter(x => x.date != null && r.date != null && 
 const measPick = (p, r, dest) => `<select id="mMeasTo" aria-label="Move the measures to">${measUp(p, r).slice(0, 20).map(x => `<option value="${x.row}"${x === dest ? " selected" : ""}>${fmtDay(x.date)}, ${esc(apptTypeName(x))}</option>`).join("")}</select>`;
 
 /* "Copay $25.00 collected" (or not collected) in the visit's Notes; a later answer replaces it */
-const withCopay = (note, line) => [...String(note || "").split("; ").filter(x => x && !/^copay .* (not )?collected/i.test(x)), ...(line ? [line] : [])].join("; ");
+const withCopay = TmsCore.withCopayLine;
+const firstName = s => String(s || "").trim().split(/[\s,]+/)[0] || "";
+/* the copay line with who answered and when: "Copay $25.00 collected by Priya 11:32 AM" */
+const copayLine = (kind, amt, by) => (kind === "oopm" ? "Copay $0, OOPM met" : `Copay ${money(amt)} ${kind === "not" ? "not collected" : "collected"}`) + (by ? ` by ${firstName(by)} ${clock(nowMin())}` : "");
 function mEnd(v) {
-  const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r), pay = payOf(p, v.r);
+  const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r);
+  /* the copay asked here is the patient view's copay line too: an answer there is already chosen (OOPM met: not asked) */
+  const cl = TmsCore.copayOf(v.r.note), pay = cl && cl.kind === "oopm" || !p.d.owes ? 0 : payOf(p, v.r);
   state.mctx = { k: v.key, pay: pay > 0 ? pay : null };
   showModal(`<h2 id="mtitle">Complete ${esc(v.tab)}'s session</h2><p class="sub">Treatment ${sessNo(v)} of ${p.d.total}. Protocol: ${esc(protoText(p))}. Pulses are filled from the protocol; change them if delivery differed.</p>
     ${pulseFields(p)}${fld("Treating technician", techInput(v.r.tech || state.techName || lastTech(p)))}
-    ${pay > 0 ? `<h3>Copay today: ${esc(money(pay))}</h3><div class="opts"><label class="opt"><input type="radio" name="copay" value="collected"><span>Collected</span></label><label class="opt"><input type="radio" name="copay" value="not collected"><span>Not collected</span></label></div>` : ""}
+    ${pay > 0 ? `<h3>Copay today: ${esc(money(pay))}</h3><div class="opts"><label class="opt"><input type="radio" name="copay" value="collected"${cl && cl.kind === "collected" ? " checked" : ""}><span>Collected</span></label><label class="opt"><input type="radio" name="copay" value="not"${cl && cl.kind === "not" ? " checked" : ""}><span>Not collected</span></label></div>` : ""}
     <h3>Side effects</h3>
     <div class="qrow"><span>Any pain or discomfort during treatment?</span><select id="mPain"><option${dr.a.pain === "Yes" ? "" : " selected"}>No</option><option${dr.a.pain === "Yes" ? " selected" : ""}>Yes</option></select><input id="mPainD" class="sp" placeholder="What and where (needed if yes)" value="${esc(dr.d.pain || "")}"${dr.a.pain === "Yes" ? "" : " hidden"}></div>
     <div class="qrow"><span>Involuntary muscle movements?</span><select id="mMus">${["Yes (normal)", "No"].map(o => `<option${dr.a.mus === o ? " selected" : ""}>${o}</option>`).join("")}</select></div>
@@ -1236,7 +1459,7 @@ async function doEnd() {
   }
   const dr = draftOf(v.p, v.r); dr.a.pain = pain; dr.d.pain = painD; dr.a.mus = mval("mMus"); if (!dr.initials) dr.initials = state.initials || initialsOf(tech);
   closeModal();
-  if (!await markPulses(v.tab, v.row, { vals, tech, note: cp ? withCopay(v.r.note, `Copay ${money(pay)} ${cp}`) : null })) return;
+  if (!await markPulses(v.tab, v.row, { vals, tech, note: cp ? withCopay(v.r.note, copayLine(cp, pay, tech)) : null })) return;
   if (meas && meas.move) await moveMeasures(v.tab, v.row, meas.move.row); else if (meas) await saveMeasures(v.tab, v.row, meas);
   if (!await sessWrite(v, { end: nowMin(), ...(v.start == null ? { start: v.checkin ?? nowMin() } : {}) }, `Treatment ${sessNo(v)} saved to ${v.tab}.`)) return;
   const nv = findVisit(v.key); if (nv && !state.copied.has(nv.key)) mNote(nv);   // the drafted note, ready to copy into NextGen
@@ -1396,11 +1619,6 @@ function mExt(tab) {
   showModal(`<h2 id="mtitle">Add extension: ${esc(tab)}</h2><p class="sub">${p.d.total} treatments authorized (D2)${p.authExp != null ? `, ${p.authExp < todaySerial() ? "expired" : "ends"} ${fmtMon(p.authExp)}` : ""}. Adds daily visits to D2 and Extensions added on the ${p.layout === 3 ? BEN_SHEET + " tab" : "tab (W7)"}.</p>
     <div class="g2">${fld("Daily visits to add", '<input type="number" min="1" id="mExtN" value="15">')}${fld("New auth end (optional)", '<input type="date" id="mExtD">')}</div>${mfoot("Add extension", "doExt")}`);
 }
-function mProto(tab) {
-  const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
-  showModal(`<h2 id="mtitle">Protocol: ${esc(tab)}</h2><p class="sub">Now: ${esc(protoText(p))}. ${p.d.protoFlags.length ? esc(p.d.protoFlags.join("; ")) + "." : ""}</p>
-    ${protoEditor(p, "pm").replace(/<button[^>]*data-act="protoSave"[^>]*>[^<]*<\/button>/, "")}${mfoot("Save protocol", "doProto")}`, true);
-}
 function mAvail(tab, keep) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
   const av = keep && state.avDraft && state.avDraft.tab === tab ? state.avDraft : (state.avDraft = { tab, week: JSON.parse(JSON.stringify(p.week)), ranges: p.avail.map(w => ({ ...w })) });
@@ -1475,13 +1693,13 @@ const AP_SHEET = "Active Patients", AP_SHOW = [...ACTIVE, "Paused"], AP_HEAD = 4
 const AP_FILL = { MT: "#dcffff", MTR: "#e6f3d6", "F/U": "#ffe6f1", Alt: "#ffeccc" };
 function activeSheetModel() {
   const t = todaySerial(), ws = weekStart(t), days = [1, 2, 3, 4, 5].map(i => ws + i);
-  const P = state.patients.filter(p => p.status === "" || AP_SHOW.includes(p.status)), blank = Array(6).fill("");
-  const head = ["Patient", "MRN", "Status", ...days.map(d => `${DAYS[dow(d)]} ${fmtDate(d)}${d === t ? " (today)" : ""}`), "Next F/U", "Graduation", "Auth exp", "Tx left", "MD on-site", "Schedule given"];
+  const P = state.patients.filter(p => p.status === "" || AP_SHOW.includes(p.status)), blank = Array(7).fill("");
+  const head = ["Patient", "MRN", "Status", ...days.map(d => `${DAYS[dow(d)]} ${fmtDate(d)}${d === t ? " (today)" : ""}`), "Next F/U", "Graduation", "Auth exp", "Tx left", "MD on-site", "Schedule given", "Copays unconfirmed"];
   const vs = days.map(variances);
   const treated = ["Treated", "", "", ...vs.map(v => v.expected ? `${v.actual} of ${v.expected}` : ""), ...blank];
   const notes = ["Variances", "", "", ...vs.map((v, i) => [state.closures.has(days[i]) ? `Closed: ${state.closures.get(days[i])}` : "", ...Object.entries(v.groups).filter(([, a]) => a.length).map(([k, a]) => `${a.length} ${k.toLowerCase()}`)].filter(Boolean).join(", ")), ...blank];
   const rows = P.map(p => [p.tab, p.mrnRaw, p.status || "(blank)", ...days.map(d => dayCode(p, d)), p.d.fuNext ? p.d.fuNext.date : "", p.d.grad ?? "", p.authExp ?? "",
-    p.txRem ?? Math.max(0, p.d.total - p.d.txDone), p.d.mdOnSite ? "Yes" : "", p.ben.lastSched ?? ""]);
+    p.txRem ?? Math.max(0, p.d.total - p.d.txDone), p.d.mdOnSite ? "Yes" : "", p.ben.lastSched ?? "", p.d.toConfirm.length || ""]);
   return { t, days, P, head, sum: [treated, notes], rows, sig: JSON.stringify([t, head, treated, notes, rows]) };
 }
 async function syncActiveSheet(force) {
@@ -1504,15 +1722,15 @@ async function syncActiveSheet(force) {
       ws.getRange("A1").values = [[AP_SHEET]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
       ws.getRange("A2").values = [[`Week of ${fmtDateY(m.days[0])}. Rebuilt by the TMS Tracker add-in ${stamp}. View only: change things on the patient tabs or in the add-in.`]];
       ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
-      const hd = ws.getRange(`A${AP_HEAD}:N${AP_HEAD}`); hd.values = [m.head];
+      const hd = ws.getRange(`A${AP_HEAD}:O${AP_HEAD}`); hd.values = [m.head];
       hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true; hd.format.wrapText = true; hd.format.verticalAlignment = "Center"; hd.format.rowHeight = 30;
-      const sm = ws.getRange(`A${AP_HEAD + 1}:N${AP_HEAD + 2}`); sm.values = m.sum; sm.format.fill.color = "#f3f6f8"; sm.format.verticalAlignment = "Top";
+      const sm = ws.getRange(`A${AP_HEAD + 1}:O${AP_HEAD + 2}`); sm.values = m.sum; sm.format.fill.color = "#f3f6f8"; sm.format.verticalAlignment = "Top";
       ws.getRange(`A${AP_HEAD + 1}:A${AP_HEAD + 2}`).format.font.bold = true;
       ws.getRange(`D${AP_HEAD + 1}:H${AP_HEAD + 1}`).format.font.bold = true;
       const vr = ws.getRange(`D${AP_HEAD + 2}:H${AP_HEAD + 2}`); vr.format.wrapText = true; vr.format.font.size = 9; vr.format.font.color = "#5b6b75";
       ws.getRange(`D${AP_HEAD}:H${end}`).format.horizontalAlignment = "Center";
       if (n) {
-        const body = ws.getRange(`A${AP_FIRST}:N${last}`); body.values = m.rows;
+        const body = ws.getRange(`A${AP_FIRST}:O${last}`); body.values = m.rows;
         ["I", "J", "K", "N"].forEach(c => ws.getRange(`${c}${AP_FIRST}:${c}${last}`).numberFormat = m.rows.map(() => ["m/d/yyyy"]));
         const b = body.format.borders.getItem("InsideHorizontal"); b.style = "Continuous"; b.color = "#dde3e8";
         const bb = body.format.borders.getItem("EdgeBottom"); bb.style = "Continuous"; bb.color = "#dde3e8";
@@ -1538,8 +1756,8 @@ async function syncActiveSheet(force) {
       ws.getRange(`A${legend}`).format.font.bold = true;
       [["B", AP_FILL.MT], ["C", AP_FILL.MTR], ["D", AP_FILL["F/U"]], ["E", AP_FILL.Alt], ["F", "#fbe9e7"]].forEach(([c, f]) => { const x = ws.getRange(`${c}${legend}`); x.format.fill.color = f; x.format.horizontalAlignment = "Center"; });
       ws.getRange(`F${legend}`).format.font.color = "#b3261e";
-      [72, 62, 82, 64, 64, 64, 64, 64, 66, 66, 66, 48, 58, 70].forEach((w, i) => ws.getRange(`${col(i)}:${col(i)}`).format.columnWidth = w);
-      ws.getRange(`A${AP_HEAD + 2}:N${AP_HEAD + 2}`).format.autofitRows();
+      [72, 62, 82, 64, 64, 64, 64, 64, 66, 66, 66, 48, 58, 70, 70].forEach((w, i) => ws.getRange(`${col(i)}:${col(i)}`).format.columnWidth = w);
+      ws.getRange(`A${AP_HEAD + 2}:O${AP_HEAD + 2}`).format.autofitRows();
       ws.freezePanes.freezeAt(ws.getRange(`A1:A${AP_HEAD + 2}`));
       ws.protection.protect({ allowFormatColumns: true, allowFormatRows: true });
       await ctx.sync();
@@ -2662,6 +2880,7 @@ async function onSchedMessage(m) {
 /* ---------- wiring ---------- */
 const VIEWS = ["today", "schedule", "patients", "chairs", "imp", "settings", "add"];
 function show(view) {
+  if (view !== "patients" && state.ptOpen) { state.ptOpen = null; $("ptView").hidden = true; $("pvBody").innerHTML = ""; }
   state.view = view;
   VIEWS.forEach(v => $("v-" + v).hidden = v !== view);
   $("page").scrollTop = 0;
@@ -2775,7 +2994,7 @@ async function openTabName(tab, row) {
 function openCourse(tab) {
   state.ptTab = tab; const p = state.patients.find(x => x.tab === tab), fl = state.fl || floor(), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   if (p && !f[2](p, courseNeeds(p, fl))) state.cfilter = onSched(p) ? (p.d.active ? "active" : FILTERS.find(x => x[2](p, []))?.[0] || "active") : "disc";
-  show("patients");
+  show("patients"); if (p) openPt(tab);
 }
 /* appearance is per computer (localStorage), like the Today view; the pane and full screen share it */
 const themeOf = () => document.documentElement.dataset.theme || "light";
@@ -2838,7 +3057,7 @@ Office.onReady(info => {
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);
     const pq = el.closest("[data-prq]"); if (pq) { $("prFrom").value = serialToInput(todaySerial()); $("prTo").value = serialToInput(+pq.dataset.prq); document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", String(b === pq))); return prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); }
     const ap = el.closest("[data-apact]"); if (ap) { document.querySelectorAll("[data-apr]").forEach(i => { state.apRanges[+i.dataset.apr][i.dataset.k] = i.value; }); if (ap.dataset.apact === "add") state.apRanges.push({}); else state.apRanges.splice(+ap.dataset.v, 1); renderApRanges(); return; }
-    const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt]"); if (!x) return;
+    const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt],[data-ptshow]"); if (!x) return;
     const d = x.dataset;
     if (d.act) return act(d.act, x, e);
     if (d.view) { if (d.view === "patients" && state.view === "add") resetAddPatient(); return show(d.view); }
@@ -2846,7 +3065,8 @@ Office.onReady(info => {
     /* selecting a visit also opens its tab at that row, unless Settings turns it off */
     if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") openTabName(v.tab, v.row); if (d.go) return show("today"); return renderDash(); }
     if (d.chair) { state.sel = { chair: d.chair }; return renderDash(); }
-    if (d.course) { state.ptTab = d.course; return renderDash(); }
+    if (d.course) return openPt(d.course);
+    if (d.ptshow) return setPtShow(d.ptshow);
     if (d.filter) { state.cfilter = d.filter; return renderDash(); }
     if (d.sv) { state.dash = d.sv; return renderDash(); }
     if (d.open) { const v = (state.fl || floor()).visits.find(y => y.tab === d.open && ["running", "waiting", "booked"].includes(ph(y))) || state.fl.visits.find(y => y.tab === d.open); if (v) { state.sel = { k: v.key }; state.chair = "all"; } return show("today"); }
@@ -2865,8 +3085,11 @@ Office.onReady(info => {
       fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: () => setNgTick(k, true),
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openTabName(t, row), course: () => openCourse(t),
       /* Patients */
-      status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProto(t), avail: () => mAvail(t),
-      ptAll: () => { state.ptAll = !state.ptAll; renderDash(); }, pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
+      status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProtoEdit(t), avail: () => mAvail(t),
+      ptClose: () => closePt(), ptPast: () => { state.ptPast = !state.ptPast; renderPt(); }, ptSchedView: () => { const p = state.patients.find(y => y.tab === t), nx = p && p.d.next; closePt(); state.dash = "day"; show("schedule"); if (nx) toast(`${t}'s next visit: ${fmtDay(nx.date)}, ${clock(nx.time) || "no time"}.`); },
+      copayToday: () => copayToday(t, row, v), copayMark: () => copayMark(t, v), oopmMet: () => oopmMet(t),
+      pvProtoSave: () => { const name = ($("pvProto") || {}).value, site = ($("pvSite") || {}).value; if (!name) return toast("Choose a protocol first.", true); saveProtocol(t, [{ name, site: TmsCore.SITE_CELL[site] || "Left" }]); },
+      pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
       /* Chairs */
       chairOff: () => mChairOff(v), chairEdit: () => mChairEdit(v),
       chairOn: async () => { try { await writeSess([{ chairId: v, set: { off: false } }]); renderDash(); toast(`${chairLbl(v)} is available again.`); } catch (err) { fail(err); } },
@@ -2874,7 +3097,7 @@ Office.onReady(info => {
       prev: () => { state.weekOffset--; renderDash(); }, next: () => { state.weekOffset++; renderDash(); }, this: () => { state.weekOffset = 0; renderDash(); },
       sprev: () => skipWeekend("schedOffset", -1), snext: () => skipWeekend("schedOffset", 1), sthis: () => { state.schedOffset = 0; renderDash(); },
       /* dialog saves */
-      doEnd, doMt, doMiss, doMove, doCopyNote, doSaveNote, resetNote, doFuMeas,
+      doEnd, doProtoEdit, doMt, doMiss, doMove, doCopyNote, doSaveNote, resetNote, doFuMeas,
       doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return merr("Pick a valid date range."); closeModal(); openSchedule(t, f, to); },
       doPastPulses: () => { const vals = readPulses(), tech = mval("mTech"); if (!vals.some(n => n !== "" && n > 0)) return merr("Enter the pulses delivered."); if (!tech) return merr("Enter the treating technician."); closeModal(); markPulses(m.t, m.row, { vals, tech }).then(ok => ok && toast("Pulses saved.")); },
       pastMissed: () => { const [p, r] = findPR(m.t, m.row); if (!r) return closeModal(); mMiss({ p, r, tab: m.t, row: m.row, time: r.time, key: null }); },
@@ -2883,7 +3106,6 @@ Office.onReady(info => {
       doMoveMeas: () => { const to = +mval("mMeasTo") || m.dest; closeModal(); moveMeasures(m.t, m.row, to); },
       doBen: () => { const data = Object.fromEntries([...$("modalBody").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value])); if (!benOk(data)) return merr("Use amounts like 25 or 25.00. Only the deductible and out-of-pocket max can be N/A."); closeModal(); saveBenefits(m.t, data); },
       doExt: () => { const n = mval("mExtN"); if (!isInt(n, 1, 99)) return merr("Add 1 or more visits."); const exp = inputToSerial(mval("mExtD")); if (exp != null && exp <= todaySerial()) return merr("Choose an end date after today, or leave it blank."); closeModal(); addExtension(m.t, { n: +n, exp }); },
-      doProto: () => { const pe = $("modalBody").querySelector(".pe"), picks = [1, 2, 3].map(n => ({ name: pe.querySelector(`select[data-pname="${n}"]`).value, site: pe.querySelector(`select[data-psite="${n}"]`).value })); closeModal(); saveProtocol(m.t, picks); },
       doAvail: () => { const av = state.avDraft; if (!av || av.tab !== m.t) return closeModal(); readAvailEditor($("modalBody"), av); closeModal(); saveAvailability(m.t, av); },
       avAdd: () => { readAvailEditor($("modalBody"), state.avDraft); state.avDraft.ranges.push({ type: "Unavailable", from: null, to: null, note: "" }); mAvail(m.t, true); },
       avDel: () => { readAvailEditor($("modalBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); mAvail(m.t, true); },
@@ -2897,6 +3119,12 @@ Office.onReady(info => {
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !$("schedOverlay").hidden) return closeSchedOverlay();
     if (e.key === "Escape" && !$("modal").hidden) return closeModal();
+    if (e.key === "Escape" && !$("ptView").hidden) return closePt();
+    if (e.key === "Tab" && $("modal").hidden && !$("ptView").hidden) {   // and inside the patient view
+      const f = [...$("pvBody").querySelectorAll("button,input,select,textarea")].filter(x => !x.disabled && x.type !== "hidden" && x.offsetParent);
+      if (f.length && e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (f.length && !e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    }
     if (e.key === "Tab" && !$("modal").hidden) {   // keep focus inside the dialog
       const f = [...$("modalBody").querySelectorAll("button,input,select,textarea")].filter(x => !x.disabled && !x.hidden && x.type !== "hidden" && x.offsetParent);
       if (!f.length) return;
@@ -2908,6 +3136,8 @@ Office.onReady(info => {
     const el = e.target;
     if (el.dataset.ngk) { focusWant = el.closest("#modal") ? null : focusKey(el); return setNgTick(el.dataset.ngk, el.checked).then(refocus); }
     if (el.id === "mPain") { $("mPainD").hidden = el.value !== "Yes"; return; }
+    if (el.dataset.pick) { const n = +el.dataset.pick; state.ptPick = state.ptPick || new Set(); if (el.checked) state.ptPick.add(n); else state.ptPick.delete(n); return; }
+    if (el.dataset.pk === "name") return protoEditPick(el);
     if (el.dataset.dk) draftInput(el);
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
