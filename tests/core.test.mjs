@@ -188,3 +188,16 @@ test("needs: earlier measures are one Check NextGen line, and none once the cour
   assert.deepEqual(on.map(y => [y.t, y.act[1], y.row]), [["Check NextGen for PHQ-9 and GAD-7", "pastmeas", 15]]);
   assert.equal(T.needs(P({ status: "Complete", d: { active: false, measDue: meas } }), X({})).some(y => y.k === "measures"), false);
 });
+
+test("providerLast: E2 gets the last name from either report shape", () => {
+  assert.equal(T.providerLast("Testlast, Pat MD"), "Testlast");
+  assert.equal(T.providerLast("Van Testa, Pat"), "Van Testa");
+  assert.equal(T.providerLast("Dr. Pat Testlast"), "Testlast");
+  assert.equal(T.providerLast("Pat Q. Testlast, PMHNP"), "Testlast");
+  assert.equal(T.providerLast("Pat Testlast PA-C"), "Testlast");
+  assert.equal(T.providerLast("Pat Testlast M.D."), "Testlast");
+  assert.equal(T.providerLast("Pat Testlast, Ph.D."), "Testlast");
+  assert.equal(T.providerLast("Testlast"), "Testlast");
+  assert.equal(T.providerLast(""), "");
+  assert.equal(T.providerLast(null), "");
+});

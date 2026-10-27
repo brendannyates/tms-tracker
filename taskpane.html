@@ -236,7 +236,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .btn.sm{min-height:36px;font-size:13.5px;font-weight:500;padding:0 10px;white-space:nowrap;flex:none}
 .actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
 
-/* courses */
+/* patients */
 .courses{padding:6px 8px}
 .crow,.chead{display:grid;grid-template-columns:88px minmax(120px,1fr) minmax(130px,.9fr) 1.4fr;gap:16px;align-items:center}
 .crow{width:100%;min-height:52px;padding:12px 14px;border-radius:12px;transition:background .2s}
@@ -400,7 +400,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
     <div class="brand"><img src="assets/logo.png" alt="Mindful Health Solutions"><span><b id="wbTitle">TMS Tracker</b><small id="devTag"></small></span></div>
     <button class="item" data-view="today" aria-current="page">Today</button>
     <button class="item" data-view="schedule">Schedule</button>
-    <button class="item" data-view="courses">Courses <span class="count" id="ccount"></span></button>
+    <button class="item" data-view="patients">Patients <span class="count" id="ccount"></span></button>
     <div class="gap"></div>
     <button class="item" data-view="chairs">Chairs</button>
     <button class="item" data-view="imp">Import</button>
@@ -450,7 +450,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 
     <section id="v-today" aria-label="Today"></section>
     <section id="v-schedule" aria-label="Schedule" hidden></section>
-    <section id="v-courses" aria-label="Courses" hidden></section>
+    <section id="v-patients" aria-label="Patients" hidden></section>
     <section id="v-chairs" aria-label="Chairs" hidden></section>
 
     <section id="v-imp" aria-label="Import" hidden>
