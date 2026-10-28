@@ -97,13 +97,16 @@
     d.noTech.forEach(r => add("tech", `No technician on ${f(r.date)}`, ["Add technician", "pasttech"], { row: r.row }));
     /* earlier days' measures can't be collected now: one reminder to look in NextGen, only while the course is active */
     if (A && d.measDue.length) add("measures", "Check NextGen for PHQ-9 and GAD-7", ["Enter scores", "pastmeas"], { row: d.measDue.reduce((a, b) => b.date > a.date ? b : a).row });
+    if (A && d.noProto) add("noproto", "Choose a protocol", ["Choose a protocol", "proto"]);
     if (A) d.protoFlags.forEach(t => add("protocol", t, ["Update protocol", "proto"]));
+    if (A && d.rollover) add("rollover", `Re-verify benefits for ${d.rollover.year}`, ["Update BIDF", "ben"], { bad: d.rollover.bad });
     /* one line per absence, naming every visit booked inside it */
     if (A) [...new Set(d.awayConflicts.map(c => c.why))].forEach(why => { const cs = d.awayConflicts.filter(c => c.why === why); add("away", `Booked ${cs.map(c => f(c.r.date)).join(", ")} while ${why}`, ["Edit availability", "avail"], { row: cs[0].r.row }); });
     d.closedConflicts.forEach(c => add("closed", `Booked ${f(c.r.date)} on a closure (${c.why})`, ["Open tab", "opentab"], { row: c.r.row }));
     if (A && d.sameDay.length) add("sameday", `More than one visit on ${d.sameDay.map(f).join(", ")}`, ["Open tab", "opentab"]);
     if (A && x.mtToday && !x.schedGiven) add("sched", "Course schedule not given", ["Print course schedule", "print"], { v: "all" });
     if (A) d.benFlags.forEach(t => add("cost", t, ["Review benefits", "ben"]));
+    if (d.oopmMet) add("oopm", `${d.oopmMet} OOPM met`, null, { quiet: true });
     if (x.mtToday) add("start", "Starts today", null, { quiet: true });
     if (/^tapering$/i.test(p.status)) add("taper", "Tapering", null, { quiet: true });
     if (/^paused$/i.test(p.status)) add("paused", "Paused", null, { quiet: true });
@@ -112,6 +115,60 @@
     return n.map((y, i) => [y, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(a => a[0]);
   }
   const loud = list => list.filter(y => !y.quiet);
+
+  /* ---------- copays: the one "Copay ..." line the add-in keeps in a visit's Notes (S) ----------
+     "Copay $25.00 collected by Priya 11:32 AM", "Copay $25.00 not collected by ...", "Copay $0, OOPM met by ...",
+     "Copay $25.00 collected (confirmed 10/27 by Priya)", "Copay waived by Priya 10/27". A later answer replaces the line. */
+  const COPAY_RE = /^copay\b/i;
+  function copayOf(note) {
+    const s = String(note ?? "").split("; ").map(x => x.trim()).find(x => COPAY_RE.test(x));
+    if (!s) return null;
+    const m = s.match(/\$([\d,]+(?:\.\d+)?)/), amt = m ? +m[1].replace(/,/g, "") : null;
+    const kind = /oopm met/i.test(s) ? "oopm" : /waived/i.test(s) ? "waived" : /not collected/i.test(s) ? "not" : /collected/i.test(s) ? "collected" : "other";
+    return { line: s, kind, amt, by: (s.match(/\bby ([A-Za-z][\w'-]*)/) || [])[1] || "", at: (s.match(/\b(\d{1,2}:\d{2} ?[AP]M)\b/i) || [])[1] || "", confirmed: /confirmed/i.test(s) };
+  }
+  const withCopayLine = (note, line) => [...String(note ?? "").split("; ").filter(x => x && !COPAY_RE.test(x.trim())), ...(line ? [line] : [])].join("; ");
+  const isTreatment = r => !r.miss && !r.alt && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // TMS Follow Ups (F/U) never count
+  /* delivered treatment visits before today, with a payment due (pay(r) > 0) and no copay line yet */
+  const copaysToConfirm = (rows, pay, today) => rows.filter(r => isTreatment(r) && r.delivered && r.date != null && r.date < today && !copayOf(r.note) && (pay(r) ?? 0) > 0).sort((a, b) => a.date - b.date);
+  /* copays logged as collected on treatment visits dated from..to (the plan year) */
+  function copayTally(rows, from, to) {
+    let sum = 0, n = 0;
+    rows.forEach(r => { if (!isTreatment(r) || r.date == null || r.date < from || r.date > to) return; const c = copayOf(r.note); if (c && c.kind === "collected" && c.amt != null) { sum += c.amt; n++; } });
+    return { sum: Math.round(sum * 100) / 100, n };
+  }
+  /* benefits reminders only matter while copays are still being collected: not once the OOPM is met (0 remaining) or the BIDF quote is $0 */
+  const owes = ben => !(ben.oopRem === 0 && !ben.oopNA) && ben.bidf !== 0;
+  /* plan-year rollover: a visit booked after Dec 31 of Last updated's year needs benefits re-verified. Amber from Dec 1, red once a
+     new-year visit has happened (or checked in) without it. y: { updated, dec1, jan1 } serials for Last updated's year. */
+  function rollover(y, rows, today, checkedIn) {
+    if (y.updated == null || y.updated >= y.jan1) return null;
+    const ahead = rows.some(r => r.date != null && r.date >= y.jan1 && !r.miss);
+    if (!ahead || today < y.dec1) return null;
+    const late = rows.some(r => r.date != null && r.date >= y.jan1 && r.date <= today && (r.delivered || checkedIn(r)));
+    return { bad: late };
+  }
+
+  /* ---------- protocol ---------- */
+  /* site in O: F3 (left), F4 (right) or another site; the template's Left / Right / Other read the same */
+  const siteOf = o => { const s = String(o ?? "").trim(); return /^(f3|left)$/i.test(s) ? "F3" : /^(f4|right)$/i.test(s) ? "F4" : s ? "Other" : ""; };
+  const SITE_LABEL = { F3: "F3 (left)", F4: "F4 (right)", Other: "Other" };
+  const SITE_CELL = { F3: "Left", F4: "Right", Other: "Other" };     // what O holds (the template's dropdown)
+  const pulseCol = site => site === "F3" ? 0 : site === "F4" ? 1 : 2;  // F, H, J on the visit row
+  /* a protocol row (J:M) against the Protocols table: the same Hz and values is that protocol; the same Hz with other values is
+     "{name} (Custom)" with what changed; anything else "Custom" */
+  const PF = [["dur", "pulses", "pulses per train"], ["trains", "trains", "trains"], ["wait", "iti", "s wait"]];
+  function protoMatch(x, table) {
+    if (typeof x.hz !== "number") return null;
+    let best = null;
+    for (const q of table.filter(q => q.rep === x.hz)) {
+      const diffs = PF.filter(([a, b]) => x[a] !== q[b]).map(([a, b, label]) => ({ k: a, label, v: x[a], std: q[b] }));
+      if (!best || diffs.length < best.diffs.length) best = { q, diffs };
+    }
+    if (!best) return { name: "Custom", base: null, custom: true, diffs: [] };
+    const name = String(best.q.name).trim();
+    return { name: best.diffs.length ? `${name} (Custom)` : name, base: best.q, custom: best.diffs.length > 0, diffs: best.diffs };
+  }
 
   /* the provider's last name for E2, from the report's name: "Smith, Jane MD" or "Dr. Jane Smith, PMHNP" both give "Smith".
      With a comma, the part before it; otherwise the last word once credentials are dropped. */
@@ -179,5 +236,6 @@
     return ops;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast };
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast,
+    copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });

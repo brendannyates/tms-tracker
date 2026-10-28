@@ -72,7 +72,7 @@ The line under **Today** counts what matters: in session, waiting to start (in r
 
 **Still to come** lists everyone not yet started, with their time, chair and the most urgent thing on their course. **Start session** is beside each one. Below it, **Appointment list check** compares today with the last imported list (a NextGen visit missing from the tracker, or a visit on a tab NextGen doesn't have), and **Treatments today** gives "X of Y in treatment are booked" with the reasons for the rest.
 
-**The visit card** follows a visit from start to the note. There are two steps:
+**The visit card** follows a visit from start to the note. Under the name it shows the protocol time (for example "protocol 19 min"), and until the session starts, when it's projected to end. There are two steps:
 
 1. **Start session in MagV 2** stamps the check-in and start times together and opens the treatment note draft: mood on arrival, the screening questions and technician comments. The answers become sentences and the questions stay out. **Save draft** keeps it while the treatment runs. On an MT or MT redo, it opens **Record motor threshold** instead: MT %, hotspot, amps, and at the first MT the baseline sleep and caffeine and the protocol chosen (MT row's Notes and J2:O4). If the chair is in use and another is open, the button becomes **Move to another chair**.
 2. **Complete session** asks for the pulses (filled in from the protocol), the treating technician, pain or discomfort and muscle movements, and PHQ-9 and GAD-7 when the visit has the x for them. If they weren't collected, tick **Not collected today** and pick the visit to move them to (it suggests the next MT, MT redo or follow-up within 7 days). When a copay is due today, choose **Collected** or **Not collected**; it's saved to the visit's Notes, e.g. "Copay $25.00 collected". Pulses entered means the treatment happened. The note draft then opens again for **Copy note**, which puts it on the clipboard for the chart.
@@ -97,7 +97,7 @@ Moving in the tracker doesn't move the appointment in NextGen, so every move ask
 
 Each patient row shows its two most urgent needs. Red is for what blocks care or billing: an expired or overrun authorization, no visit in the recent-visit window, 3 missed in a row. Amber is everything else that needs doing. Muted labels such as Tapering don't count.
 
-Select a patient for their card. The big button resolves the top need; **Also needs** lists the rest, each with its own button.
+Select a patient to open them over the list. Esc or × closes it. The header shows the tab name, the MRN, the provider and today's session and chair. The big button resolves the top need; **Also needs** lists the rest, each with its own button. **Show** picks the sections (Protocol, Schedule, Copay and benefits); your choice is saved on this computer.
 
 | Need | Action |
 |---|---|
@@ -106,7 +106,8 @@ Select a patient for their card. The big button resolves the top need; **Also ne
 | Freebie decision, or Exempt in NextGen | **Decide freebie**: Use freebie or Waived. Asked for misses in the last 10 days only. |
 | No pulses, or no technician, on a past visit | **Enter pulses** (or **It was missed**) / **Add technician**. |
 | Check NextGen for PHQ-9 and GAD-7 | One line for any earlier visit whose measures weren't entered, on active courses only. If NextGen has them, **Enter scores**; if not, the next replan moves them to the next visit. |
-| Protocol update due | **Update protocol**. |
+| Protocol update due, Choose a protocol | **Update protocol** / **Choose a protocol**: opens the protocol Edit dialog. |
+| Re-verify benefits for next year | **Update BIDF**. Amber from Dec 1 when a visit is booked in the new year; red once one happens. |
 | Booked while away | **Edit availability**: weekly hours and dates away. |
 | Status suggested, cancelled in NextGen, no visit in 10+ days | **Set to [status]** / **Update status** / **Pause or discontinue**. |
 | Missed 3 in a row | **Call to reschedule**: logs the outcome in Notes on the last missed visit. |
@@ -114,7 +115,15 @@ Select a patient for their card. The big button resolves the top need; **Also ne
 | MT today, course schedule not given | **Print course schedule**. |
 | Booked on a closure, more than one visit in a day | **Open tab**. |
 
-The card also shows the treatments done (30 daily, then a 6-session taper), PHQ-9 and GAD-7 as recorded, the details (protocol, authorization, freebies, insurance, deductible and out-of-pocket left, BIDF estimate and projected cost, next visit and follow-up, graduation, schedule given, provider, care navigator, MD on-site, home clinic, MT redos, auth assessment, progress note sent) and the next eight booked visits; **Show all visits and scores** lists the whole visit log. **Print schedule**, **Edit benefits**, **Add extension**, **Edit availability**, **Edit protocol**, **Change status** and **Open tab** are always there.
+**Today's copay.** When the patient has a visit today, the line under the header shows the payment due and whether it's logged. Put your name in **By**, then choose **Collected**, **Not collected** or **$0, OOPM met**. It goes in the visit's Notes with your name and the time, and Complete session starts from the same answer.
+
+**Protocol.** Each site as "F3 (left) · 10 Hz · 120% MT · 3,000 pulses", the protocol name from the Protocols table ("(Custom)" and what changed when a value differs), treatment, MT, device, course, authorization and update-by. **Edit** picks the protocol per row (the values fill in; change one and it reads Custom), the site, and the **next expiration date**, which is required and goes in G2. Saving also notes "Protocol renewed, next by m/d" on today's visit. A patient with no protocol shows the dropdown instead.
+
+**Schedule.** The course strip with a thin payment row under it (amber = copay not logged, pale green = logged), PHQ-9 and GAD-7, the next eight visits (with **Move** for today's), availability, **Open in Schedule**, **Book the rest of the course** (book in NextGen, then import the list), **Pause course**, **Print schedule**, and **Past visits** (every logged visit with pulses, PR, the copay and who logged it, and the note).
+
+**Copay and benefits.** The Benefits row with **Update BIDF** and **Re-run eligibility**; the copay tally for the plan year against the OOPM and deductible remaining, with **Mark {year} OOPM met**; and **Copays to confirm**: tick visits and **Mark selected paid**, or **Mark all paid**, or **Waive**. The **Copay unconfirmed** filter lists everyone with one to confirm.
+
+Follow-ups (99214) keep their own PR, but don't count toward the course cost or the OOPM tally. When the OOPM is met (0 remaining) or the BIDF quote is $0, the copay and benefits reminders stop for that patient; only the new-year re-verify still shows.
 
 ## Import the appointment list
 
