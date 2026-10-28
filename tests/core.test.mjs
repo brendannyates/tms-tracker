@@ -201,3 +201,67 @@ test("providerLast: E2 gets the last name from either report shape", () => {
   assert.equal(T.providerLast(""), "");
   assert.equal(T.providerLast(null), "");
 });
+
+// copays, benefits and protocol (synthetic rows only)
+const row = o => ({ row: 10, type: "Daily", date: 100, delivered: true, miss: false, alt: false, note: "", ...o });
+
+test("copayOf: reads every line the add-in writes, and none", () => {
+  assert.equal(T.copayOf("Tele; Copay $25.00 collected by Pat 11:32 AM").kind, "collected");
+  assert.deepEqual((({ amt, by, at }) => ({ amt, by, at }))(T.copayOf("Copay $1,025.50 collected by Pat 11:32 AM")), { amt: 1025.5, by: "Pat", at: "11:32 AM" });
+  assert.equal(T.copayOf("Copay $25.00 not collected").kind, "not");
+  assert.equal(T.copayOf("Copay $0, OOPM met by Pat 9:05 AM").kind, "oopm");
+  assert.equal(T.copayOf("Copay waived by Pat 10/27").kind, "waived");
+  const c = T.copayOf("Copay $20.00 collected (confirmed 10/27 by Pat)"); assert.ok(c.kind === "collected" && c.confirmed && c.by === "Pat");
+  assert.equal(T.copayOf("Tele; Freebie used"), null);
+  assert.equal(T.withCopayLine("Tele; Copay $20.00 not collected", "Copay $20.00 collected by Pat 1:00 PM"), "Tele; Copay $20.00 collected by Pat 1:00 PM");
+  assert.equal(T.withCopayLine("Copay waived by Pat 10/27", ""), "");
+});
+
+test("copays to confirm: delivered treatment rows before today, owed, no copay line; F/U never", () => {
+  const pay = r => r.pay;
+  const rows = [row({ row: 10, pay: 20 }), row({ row: 11, pay: 20, note: "Copay $20.00 collected" }), row({ row: 12, type: "F/U", pay: 40 }),
+    row({ row: 13, pay: 0 }), row({ row: 14, pay: 20, date: 105 }), row({ row: 15, pay: 20, delivered: false }), row({ row: 16, pay: 20, miss: true }), row({ row: 17, type: "MTR", pay: 50, date: 99 })];
+  assert.deepEqual(T.copaysToConfirm(rows, pay, 105).map(r => r.row), [17, 10]);
+});
+
+test("copay tally: collected amounts on treatment rows in the plan year only", () => {
+  const rows = [row({ date: 100, note: "Copay $20.00 collected" }), row({ date: 101, note: "Copay $20.00 collected (confirmed 10/27 by Pat)" }), row({ date: 102, note: "Copay $20.00 not collected" }),
+    row({ date: 103, type: "F/U", note: "Copay $40.00 collected" }), row({ date: 50, note: "Copay $20.00 collected" }), row({ date: 104, note: "Copay $0, OOPM met" })];
+  assert.deepEqual(T.copayTally(rows, 90, 200), { sum: 40, n: 2 });
+});
+
+test("owes: no benefits reminders once the OOPM is met or the BIDF quote is $0", () => {
+  assert.equal(T.owes({ oopRem: 0, oopNA: false, bidf: 900 }), false);
+  assert.equal(T.owes({ oopRem: 500, bidf: 0 }), false);
+  assert.equal(T.owes({ oopRem: null, oopNA: true, bidf: 900 }), true);
+  assert.equal(T.owes({ oopRem: 500, bidf: null }), true);
+});
+
+test("rollover: amber from Dec 1 with a new-year visit booked, red once one happens, cleared by a new-year update", () => {
+  const y = { updated: 10, dec1: 100, jan1: 131 }, booked = [row({ date: 140, delivered: false })], none = () => false;
+  assert.equal(T.rollover(y, booked, 99, none), null);
+  assert.deepEqual(T.rollover(y, booked, 100, none), { bad: false });
+  assert.equal(T.rollover(y, [row({ date: 120, delivered: false })], 110, none), null);
+  assert.deepEqual(T.rollover(y, [row({ date: 132, delivered: true }), ...booked], 133, none), { bad: true });
+  assert.deepEqual(T.rollover(y, [row({ date: 133, delivered: false })], 133, r => r.date === 133), { bad: true });
+  assert.equal(T.rollover({ ...y, updated: 131 }, booked, 133, none), null);
+  assert.equal(T.rollover({ ...y, updated: null }, booked, 133, none), null);
+});
+
+test("protocol: exact, custom with what changed, none; sites and pulse columns", () => {
+  const table = [{ name: "HF 10Hz ", rep: 10, pulses: 40, trains: 75, iti: 11 }, { name: "LF 1Hz", rep: 1, pulses: 1800, trains: 1, iti: 0 }];
+  assert.deepEqual(T.protoMatch({ hz: 10, dur: 40, trains: 75, wait: 11 }, table), { name: "HF 10Hz", base: table[0], custom: false, diffs: [] });
+  const c = T.protoMatch({ hz: 1, dur: 1200, trains: 1, wait: 0 }, table);
+  assert.equal(c.name, "LF 1Hz (Custom)"); assert.deepEqual(c.diffs.map(d => [d.k, d.v, d.std]), [["dur", 1200, 1800]]);
+  assert.equal(T.protoMatch({ hz: 5, dur: 40, trains: 75, wait: 11 }, table).name, "Custom");
+  assert.equal(T.protoMatch({ hz: "", dur: 40 }, table), null);
+  assert.deepEqual(["F3", "Left", "f4", "Right", "Other", "Cz", ""].map(T.siteOf), ["F3", "F3", "F4", "F4", "Other", "Other", ""]);
+  assert.deepEqual(["F3", "F4", "Other"].map(T.pulseCol), [0, 1, 2]);
+});
+
+test("needs: Choose a protocol, rollover, OOPM met is quiet", () => {
+  const d = { active: true, authFlags: [], decisions: [], overdue: [], noTech: [], measDue: [], protoFlags: [], awayConflicts: [], closedConflicts: [], sameDay: [], benFlags: [], noProto: true, rollover: { year: 2027, bad: true }, oopmMet: 2026 };
+  const n = T.needs({ status: "In Progress", rows: [], d }, { today: 100, fmtDate: String, recentDays: 10 });
+  assert.deepEqual(n.map(x => [x.k, !!x.bad, !!x.quiet]), [["rollover", true, false], ["noproto", false, false], ["oopm", false, true]]);
+  assert.equal(n[0].t, "Re-verify benefits for 2027");
+});
