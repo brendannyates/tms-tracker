@@ -908,7 +908,7 @@ function detailHtml(fl) {
   const payline = v.alt || p2 === "missed" ? "" : `<div class="payline"><span>Payment today</span><span>${!priced && typeof v.r.pr !== "number" ? '<span class="flag">Not set</span>' : money(pay ?? 0) || "$0.00"}</span></div>`;
   const meta = v.type === "F/U" ? `Follow-up, ${v.tele ? "telehealth" : "in office"}` : `${typeName(v)}, treatment ${sessNo(v)} of ${p.d.total} · ${v.protoLen ? `protocol ${Math.round(v.protoLen)} min` : `no protocol time, ${DEFAULT_LEN} min assumed`}`;
   return `<div class="dh"><div><div class="name">${esc(v.tab)}<span class="loc">${esc(mrnTag(p))}</span></div><div class="meta">${esc(meta)}${where(v) ? ` · ${esc(where(v))}` : ""}</div></div><button class="btn mute sm" data-act="course" data-t="${esc(p.tab)}">Open</button></div>
-    <p class="lead ${cls}">${esc(lead)}</p>${tl}
+    <p class="lead ${cls}">${esc(lead)}</p>${schedBand(v.r)}${tl}
     ${v.type === "F/U" || p2 === "missed" || v.alt ? "" : stepsFor(v, s, fl)}${moved}${bidf}
     ${primary ? `<button class="btn primary" data-act="${primary[1]}" ${K}${primary[2] ? " disabled" : ""}>${esc(primary[0])}</button>` : ""}
     <div class="actions">${ghosts.map(([l, a]) => `<button class="btn ghost sm" data-act="${a}" ${K}${a === "print" && v.type === "MT" ? ' data-v="all"' : ""}>${esc(l)}</button>`).join("")}</div>${payline}
@@ -1071,7 +1071,8 @@ function needSummary(n) {
 }
 /* ---------- the patient view: an overlay over Patients (in the task pane it fills the pane). Today's visit sits at the top; the
    sidebar picks one section (saved on this computer like the Today view). The list row stays selected behind it. ---------- */
-const PT_SECT = [["sched", "Schedule"], ["proto", "Protocol"], ["ben", "Benefits"], ["fin", "Financial"]];
+const PT_SECT = [["sched", "Schedule"], ["course", "Course"], ["proto", "Protocol"], ["meas", "Measures"], ["ben", "Benefits"], ["fin", "Financial"]];
+const PT_NEEDS = 4;   // needs shown before "Show all"; the next one peeks through, faded
 function ptShow() {
   let v = state.ptShowMem; try { v = v || localStorage.getItem("tms_ptsect"); } catch { /* storage unavailable */ }
   return PT_SECT.some(s => s[0] === v) ? v : "sched";
@@ -1082,7 +1083,7 @@ function setPtShow(k) {
 }
 let ptFrom = null;
 function openPt(tab) {
-  state.ptTab = tab; state.ptOpen = tab; state.ptPick = new Set(); state.ptPast = false; ptFrom = document.activeElement; renderDash();
+  state.ptTab = tab; state.ptOpen = tab; state.ptPick = new Set(); state.ptPast = false; state.ptNeedsAll = false; ptFrom = document.activeElement; renderDash();
   const x = $("pvBody").querySelector("[data-act=ptClose]"); if (x) x.focus();
 }
 function closePt() {
@@ -1101,23 +1102,55 @@ function renderPt() {
 }
 const ptVisit = (p, fl) => { const tv = fl.visits.filter(v => v.tab === p.tab && !v.miss); return tv.find(v => v.chairVisit) || tv[0] || null; };
 const chairFor = (p, r) => { const s = state.sess && [...state.sess.rows.values()].find(x => x.tab === p.tab && x.date === r.date && x.chair); return s ? s.chair : chairOf(p, r); };
-const visitNote = note => String(note || "").split("; ").filter(x => x && !TmsCore.copayOf(x)).join("; ");
+/* Notes (S) hold the add-in's own entries (copay, freebie, NextGen tags, MT %, protocol renewal, a scheduled note) beside what
+   staff type. Editing a note changes only the typed part; a scheduled note is one entry, "Scheduled note: ...", shown on its day. */
+const SCHED_RE = /^scheduled note:\s*/i;
+const ownEntry = x => !(TmsCore.copayOf(x) || SCHED_RE.test(x) || /^freebie (used|waived)$/i.test(x) || x === TELE_TAG || x === EXEMPT_TAG || x === UNCLASS_TAG || /\(NextGen\)$/.test(x) || /^mt %:/i.test(x) || /^protocol renewed/i.test(x));
+const noteParts = note => String(note || "").split("; ").filter(Boolean);
+const ownNote = note => noteParts(note).filter(ownEntry).join("; ");
+const schedNote = note => (noteParts(note).find(x => SCHED_RE.test(x)) || "").replace(SCHED_RE, "");
+const cleanNote = s => String(s || "").replace(/\s*;\s*/g, ", ").replace(/\s+/g, " ").trim();   // "; " separates entries
+const withOwnNote = (note, s) => [...noteParts(note).filter(x => !ownEntry(x)), ...(cleanNote(s) ? [cleanNote(s)] : [])].join("; ");
+const withSchedNote = (note, s) => [...noteParts(note).filter(x => !SCHED_RE.test(x)), ...(cleanNote(s) ? [`Scheduled note: ${cleanNote(s)}`] : [])].join("; ");
+const visitNote = note => noteParts(note).filter(x => !TmsCore.copayOf(x) && !SCHED_RE.test(x)).join("; ");
+/* a scheduled note on its day: the band that leads the visit */
+const schedBand = r => { const s = r && schedNote(r.note); return s ? `<div class="snote"><b>Scheduled note</b><span>${esc(s)}</span></div>` : ""; };
+/* color-coded markers on a visit, each with its word: MT, MTR, follow-up, auth end, final TMS visit, measures due */
+function visitMarks(p, r) {
+  const m = [];
+  if (r.type === "MT") m.push(["mt", "MT"]); else if (r.type === "MTR") m.push(["mtr", "MTR"]); else if (r.type === "F/U") m.push(["fu", r.tele ? "Follow-up, tele" : "Follow-up"]);
+  if (p.authExp != null && r.date === p.authExp) m.push(["auth", "Auth ends"]); else if (p.authExp != null && r.date > p.authExp && r.type !== "F/U") m.push(["auth", "Past auth end"]);
+  if (p.d.grad != null && r.date === p.d.grad && TmsCore.isTreatment(r)) m.push(["final", "Final TMS visit"]);
+  if (r.measX && !r.measVal) m.push(["meas", "Measures due"]);
+  return m.map(([k, l]) => `<span class="mk mk-${k}">${esc(l)}</span>`).join("");
+}
+/* what the patient owes and has paid, in the place an Add extension button would take at the top (that lives in Course) */
+function finLine(p) {
+  const b = p.ben, d = p.d;
+  const parts = d.oopmMet ? [["OOPM", `met (${d.oopmMet})`]] : !d.owes ? [["Copays", "none, BIDF $0"]]
+    : [["Collected", money(d.tally.sum) || "$0.00"], ["To confirm", String(d.toConfirm.length)], ["OOPM left", benAmt(b.oopNA, b.oopRem)], ["Deductible left", benAmt(b.dedNA, b.dedRem)]];
+  return `<div class="finline">${[["Cost so far", money(d.accrued) || "$0.00"], ...parts].map(([k, v]) => `<span><small>${esc(k)}</small><b>${esc(v)}</b></span>`).join("")}<button class="btn mute sm" data-ptshow="fin">Financial</button></div>`;
+}
 function ptHtml(p, fl) {
   const N = courseNeeds(p, fl), n = TmsCore.loud(N), first = n[0], d = p.d, v = ptVisit(p, fl), on = ptShow();
-  const A = x => `data-act="${x.act[1]}" data-t="${esc(p.tab)}"${x.row ? ` data-row="${x.row}"` : ""}${x.key ? ` data-k="${esc(x.key)}"` : ""}${x.v ? ` data-v="${esc(x.v)}"` : ""}`;
-  const shown = new Set([first && first.act[1]]);
-  const also = n.slice(1).map(x => { const dup = shown.has(x.act[1]) && !x.row && !x.key; shown.add(x.act[1]); return `<div class="row"><span class="f ${x.bad ? "bad" : "flag"} needline">${esc(x.t)}</span>${dup ? "" : `<button class="btn ghost sm" ${A(x)}>${esc(x.act[0])}</button>`}</div>`; }).join("");
+  const A = x => x.act[1] === "ext" ? 'data-ptshow="course"' : `data-act="${x.act[1]}" data-t="${esc(p.tab)}"${x.row ? ` data-row="${x.row}"` : ""}${x.key ? ` data-k="${esc(x.key)}"` : ""}${x.v ? ` data-v="${esc(x.v)}"` : ""}`;
+  const label = x => x.act[1] === "ext" ? "Open Course" : x.act[0];
+  const shown = new Set([first && first.act[1] !== "ext" && first.act[1]]);   // an auth lead shows the financial line, so its rows below keep one Open Course
+  /* four needs in all (the lead and three); a fifth peeks through faded until Show all */
+  const all = !!state.ptNeedsAll, rest = n.slice(1), keep = all ? rest : rest.slice(0, PT_NEEDS - 1), peek = all ? null : rest[PT_NEEDS - 1];
+  const needRow = (x, cls) => { const dup = shown.has(x.act[1]) && !x.row && !x.key; shown.add(x.act[1]); return `<div class="row${cls || ""}"${cls ? ' aria-hidden="true"' : ""}><span class="f ${x.bad ? "bad" : "flag"} needline">${esc(x.t)}</span>${dup ? "" : `<button class="btn ghost sm" ${A(x)}${cls ? ' tabindex="-1"' : ""}>${esc(label(x))}</button>`}</div>`; };
+  const also = keep.map(x => needRow(x)).join("") + (peek ? needRow(peek, " peek") : "");
+  const more = rest.length > PT_NEEDS - 1 ? `<button class="btn mute sm needmore" data-act="ptNeeds" aria-expanded="${all}">${all ? "Show fewer" : `Show all ${n.length} needs`}</button>` : "";
   const quiet = N.filter(x => x.quiet).map(x => `<span class="tag">${esc(x.t)}</span>`).join("");
   const meta = [p.provider && `Dr. ${p.provider}`, `${d.txDone} of ${d.total} done`, p.status].filter(Boolean).join(" · ");
-  const sect = { sched: ptSched, proto: ptProto, ben: ptBen, fin: ptFin };
+  const sect = { sched: ptSched, course: ptCourse, proto: ptProto, meas: ptMeas, ben: ptBen, fin: ptFin };
   return `<div class="pvh"><div><h2 id="pvTitle">${esc(p.tab)} <span class="mrn">MRN ${esc(p.mrnRaw || "not entered")}</span></h2><p class="meta">${esc(meta)}</p></div>
       <div class="pvr"><button class="x" data-act="ptClose" aria-label="Close">×</button></div></div>
     ${ptToday(p, v)}
     <p class="lead ${first ? (first.bad ? "late" : "soon") : ""}">${first ? esc(first.t) : d.active ? "On track" : esc(p.status || "No status")}</p>${quiet ? `<div class="tags">${quiet}</div>` : ""}
-    ${first && first.act ? `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>` : ""}
-    ${also ? `<div class="section"><div class="h"><h2>Also needs</h2><span>${n.length - 1} more</span></div>${also}</div>` : ""}
-    <div class="pvgrid"><nav class="pvnav" aria-label="Sections">${PT_SECT.map(([k, l]) => `<button data-ptshow="${k}" aria-current="${on === k}">${l}</button>`).join("")}
-      <div class="pvacts">${[["Edit availability", "avail"], ["Change status", "statuspick"]].map(([l, a]) => btn(a, p.tab, "", l)).join("")}</div></nav>
+    ${first && first.act ? (first.act[1] === "ext" ? finLine(p) : `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>`) : ""}
+    ${also ? `<div class="section needs${all ? "" : " clipped"}"><div class="h"><h2>Also needs</h2><span>${n.length - 1} more</span></div>${also}${more}</div>` : ""}
+    <div class="pvgrid"><nav class="pvnav" aria-label="Sections">${PT_SECT.map(([k, l]) => `<button data-ptshow="${k}" aria-current="${on === k}">${l}</button>`).join("")}</nav>
       <div class="pvs" data-sect="${on}">${sect[on](p, fl)}</div></div>`;
 }
 /* today's visit, first thing in the patient view: when, where, its state, the next step, and the copay on the same band */
@@ -1126,10 +1159,10 @@ function ptToday(p, v) {
   const p2 = ph(v), K = `data-k="${esc(v.key)}" data-t="${esc(p.tab)}" data-row="${v.row}"`;
   const st = v.alt ? `At ${p.home || "another clinic"}` : p2 === "missed" ? "Missed" : p2 === "done" ? `Done${v.end != null ? ` ${clock(v.end)}` : ""}` : p2 === "running" ? `In session since ${clock(v.start)}` : v.checkin != null ? `Checked in ${clock(v.checkin)}` : "Booked";
   const go = v.alt || p2 === "missed" ? "" : p2 === "running" ? `<button class="btn ghost sm" data-act="${(v.type === "MT" || v.type === "MTR") && !v.mtDone ? "mt" : "end"}" ${K}>${(v.type === "MT" || v.type === "MTR") && !v.mtDone ? "Record motor threshold" : "Complete session"}</button>`
-    : p2 === "done" ? (v.r.delivered ? `<button class="btn ghost sm" data-act="editPulses" ${K}>Edit pulses</button>` : "")
+    : p2 === "done" ? (v.r.delivered ? `<button class="btn ghost sm" data-act="ptJump" ${K}>Edit pulses</button>` : "")
     : v.type === "F/U" ? `<button class="btn ghost sm" data-act="${v.r.measX ? "fumeas" : "fudone"}" ${K}>${v.r.measX ? "Enter PHQ-9 and GAD-7" : "Mark follow-up done"}</button>`
     : v.chair ? `<button class="btn ghost sm" data-act="start" ${K}>Start session</button>` : `<button class="btn ghost sm" data-act="move" ${K}>Choose a chair</button>`;
-  return `<div class="pvtoday"><span class="w">Today ${clock(v.time) || "no time"}</span><span>${esc(v.type === "F/U" ? "Follow-up" : `${typeName(v)}, ${sessNo(v)} of ${p.d.total}`)}</span><span class="muted">${esc(where(v))}</span><span class="grow">${esc(st)}</span>${go}<button class="btn mute sm" data-open="${esc(p.tab)}">On Today</button></div>${ptCopayToday(p)}`;
+  return `<div class="pvtoday"><span class="w">Today ${clock(v.time) || "no time"}</span><span>${esc(v.type === "F/U" ? "Follow-up" : `${typeName(v)}, ${sessNo(v)} of ${p.d.total}`)}</span><span class="muted">${esc(where(v))}</span><span class="grow">${esc(st)}</span>${go}<button class="btn mute sm" data-open="${esc(p.tab)}">On Today</button></div>${schedBand(v.r)}${ptCopayToday(p)}`;
 }
 
 /* today's copay: the payment from column A on today's row, the answer from its Notes, and who answered. Answering here also
@@ -1147,6 +1180,28 @@ function ptCopayToday(p) {
   }
   const b = (k, l, dis) => `<button class="btn ghost sm" data-act="copayToday" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="${k}" aria-pressed="${!!c && c.kind === k}"${dis ? " disabled" : ""}>${l}</button>`;
   return `<div class="copay line"><span>Copay today</span><span class="amt">${pay != null ? esc(money(pay)) : '<span class="flag">Not set</span>'}</span>${b("collected", "Collected", pay == null)}${b("not", "Not collected")}${by}</div>`;
+}
+/* a note on a visit: the typed part of Notes (past or today), or a scheduled note for a later visit, shown on its day */
+function mPtNote(tab, row, kind) {
+  const [, r] = findPR(tab, row); if (!r) return; state.mctx = { t: tab, row, kind };
+  const sched = kind === "sched", cur = sched ? schedNote(r.note) : ownNote(r.note);
+  showModal(`<h2 id="mtitle">${sched ? (cur ? "Edit scheduled note" : "Add scheduled note") : cur ? "Edit note" : "Add note"}: ${esc(tab)}, ${fmtDay(r.date)}</h2>
+    <p class="sub">${sched ? "Shows at the top of this visit on its day, on Today and in the patient view." : "Saved to Notes on this visit's row. Copay, freebie and NextGen entries stay as they are."}</p>
+    ${fld("Note", `<textarea id="mPtNote" rows="3" maxlength="400">${esc(cur)}</textarea>`)}${mfoot(cur ? "Save note" : "Add note", "doPtNote")}`);
+  const ta = $("mPtNote"); if (ta) ta.focus();
+}
+async function savePtNote(tab, row, kind, s) {
+  const [, r] = findPR(tab, row); if (!r) return;
+  const note = kind === "sched" ? withSchedNote(r.note, s) : withOwnNote(r.note, s);
+  if (note === r.note) return;
+  try { await writeCells(tab, [[`S${row}`, note]], at(r)); patchRow(tab, row, { note }); toast(cleanNote(s) ? "Note saved." : "Note removed."); } catch (e) { fail(e); }
+}
+/* Edit pulses on today's band goes down to that visit in Past visits */
+function ptJump(row) {
+  state.ptPast = true; setPtShow("sched");
+  const tr = $(`pvrow-${row}`); if (!tr) return;
+  tr.scrollIntoView({ block: "center" }); tr.classList.add("hl");
+  const b = tr.querySelector('[data-act="editPulses"]'); if (b) b.focus({ preventScroll: true });
 }
 async function copayToday(tab, row, kind) {
   const [p, r] = findPR(tab, row); if (!r) return;
@@ -1170,16 +1225,37 @@ function ptProto(p) {
   if (!L.length) return head + `<p class="body">Protocol not confirmed. Select the one ordered from the Protocols table and confirm it; its values fill in.</p>${protoPick(p)}`;
   const names = [...new Set(L.map(l => l.m ? l.m.name : "Custom"))].join(" + ");
   const mtRow = p.rows.filter(r => (r.type === "MT" || r.type === "MTR") && /mt %:/i.test(r.note)).sort(cmp).pop(), mt = mtRow && (mtRow.note.match(/mt %:\s*([^;]+)/i) || [])[1];
-  const recheck = d.sched.find(r => r.type === "MTR"), tot = Math.max(1, d.total), taper = tot >= 12 ? 6 : 0, len = protoLen(p);
-  const auth = `${p.authStart != null ? fmtMon(p.authStart) : "No start"} to ${p.authExp != null ? fmtMon(p.authExp) : "no end"}, ${Math.max(0, d.total - d.txDone)} of ${d.total} left`;
+  const recheck = d.sched.find(r => r.type === "MTR"), len = protoLen(p);
   const rows = [["Treatment", `${L.length > 1 ? `Bilateral, ${L.map(l => l.site).join(" then ")}` : "Unilateral"}${len ? `, ${Math.round(len)} min` : ""}`],
     ["MT", `${mt ? mt.trim() : "Not recorded"}${recheck ? `, recheck ${fmtMon(recheck.date)}` : ""}`],
     ["Device", device() === "Brainsway" ? "BrainsWay" : "MagVenture"],
-    ["Course", `${tot} treatments: ${tot - taper} daily${taper ? ` + ${taper} taper` : ""}`],
-    ["Authorization", auth, p.authExp == null || p.authExp < t ? "bad" : p.authExp - t <= state.cfg.authDays ? "flag" : ""],
     ["Update protocol by", p.updateBy != null ? fmtMon(p.updateBy) : "Not set", d.protoFlags.length ? "flag" : ""]];
   return head + `<p class="pname">${esc(names)}</p>${L.map(l => `<p class="prow">${esc(l.text)}${l.ch.length ? `<small>${esc(l.ch.join("; "))}</small>` : ""}</p>`).join("")}
     <dl class="facts">${rows.map(([k, v, cls]) => `<dt>${k}</dt><dd class="${cls || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+}
+/* ---------- Course: progress, the authorization and everything about it, and Add extension ---------- */
+function ptCourse(p, fl) {
+  const d = p.d, t = todaySerial(), tot = Math.max(1, d.total), taper = tot >= 12 ? 6 : 0, left = Math.max(0, d.total - d.txDone);
+  const authCls = p.authExp == null || p.authExp < t ? "bad" : p.authExp - t <= state.cfg.authDays ? "flag" : "";
+  const rows = [["Course", `${tot} treatments: ${tot - taper} daily${taper ? ` + ${taper} taper` : ""}`],
+    ["Authorization", `${left} of ${d.total} left${p.authExp != null ? `, ${p.authExp < t ? "expired" : "ends"} ${fmtMon(p.authExp)}` : ", no end date"}`, authCls],
+    ["Auth dates", `${p.authStart != null ? fmtMon(p.authStart) : "No start"} to ${p.authExp != null ? fmtMon(p.authExp) : "no end"}`],
+    ["Extensions added", p.ben.ext ? `${p.ben.ext} daily visits` : "None"],
+    ["MT redos", p.mtRedos ? `${p.mtRedos}${p.mtrAuth ? ", approved" : ", not approved"}` : p.mtrAuth ? "Approved, none used" : "None"],
+    ["Auth assessment", p.authAssess || "Not entered"],
+    ["Final TMS visit", d.grad != null ? fmtMon(d.grad) : "Not booked"], ["Freebies", `${d.left} left`, d.left <= 1 ? "flag" : ""]];
+  const flags = d.authFlags.map(x => `<p class="${/expired|past auth|authorized \(D2\)/i.test(x) ? "flag bad" : "warnline"}">${esc(x)}</p>`).join("");
+  return `<div class="h"><h2>Course</h2><span>${p.status === "Tapering" ? "Tapering" : `${left} left`}</span></div>
+    <p class="sub">${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</p>${strip(p, fl.visits.some(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}
+    ${factList(rows)}${flags}
+    <button class="btn ${d.authFlags.length ? "primary" : "ghost"} wide" data-act="ext" data-t="${esc(p.tab)}">Add extension</button>`;
+}
+/* ---------- Measures: PHQ-9 and GAD-7 recorded, and the visits they're due on ---------- */
+function ptMeas(p, fl) {
+  const t = todaySerial(), v = fl.visits.find(x => x.tab === p.tab && x.r.measX && !x.r.measVal), due = p.rows.filter(r => r.date != null && r.date >= t && r.measX && !r.measVal).sort(cmp);
+  const enter = v && (v.type === "F/U" || ph(v) === "running") ? `<button class="btn ghost sm" data-act="${v.type === "F/U" ? "fumeas" : "end"}" data-k="${esc(v.key)}" data-t="${esc(p.tab)}" data-row="${v.row}">Enter scores</button>` : "";
+  return `<div class="h"><h2>Measures</h2>${enter}</div>${scores(p, !!v)}
+    <div class="sub2">Due</div>${due.length ? due.slice(0, 6).map(r => `<div class="srow"><span class="p">${fmtDay(r.date)}</span><span>${clock(r.time) || "no time"}</span><span></span><span>${typeof r.tx === "number" ? `#${r.tx}` : esc(apptTypeName(r))}</span><span class="nt">${visitMarks(p, r)}</span><span></span></div>`).join("") : '<p class="body">None placed on upcoming visits.</p>'}`;
 }
 /* no protocol yet: the dropdown, with the values greyed until one is chosen */
 function protoPick(p) {
@@ -1248,14 +1324,18 @@ function payRow(p) {
 function ptSched(p, fl) {
   const d = p.d, t = todaySerial(), up = d.sched.slice(0, 8), av = availText(p);
   const vt = fl.visits.filter(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting"].includes(ph(v)));
+  /* a future visit takes a scheduled note, shown on its day; today's visit takes a plain note */
   const line = r => {
-    const v = r.date === t && vt.find(x => x.row === r.row);
-    return `<div class="srow"><span class="p">${fmtDay(r.date)}</span><span>${clock(r.time) || "no time"}</span><span>${esc(r.type === "F/U" ? (r.tele ? "Telehealth" : p.provider || "Provider") : chairLbl(chairFor(p, r)))}</span><span>${typeof r.tx === "number" ? `#${r.tx}` : esc(apptTypeName(r))}</span><span class="muted">${esc(visitNote(r.note))}</span>${v ? `<button class="btn ghost sm" data-act="move" data-k="${esc(v.key)}">Move</button>` : "<span></span>"}</div>`;
+    const v = r.date === t && vt.find(x => x.row === r.row), sn = schedNote(r.note), own = visitNote(r.note), fut = r.date > t;
+    const nb = `<button class="btn mute sm" data-act="ptNote" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="${fut ? "sched" : "own"}">${fut ? (sn ? "Edit scheduled note" : "Add scheduled note") : own ? "Edit note" : "Add note"}</button>`;
+    return `<div class="srow${sn ? " hasnote" : ""}"><span class="p">${fmtDay(r.date)}</span><span>${clock(r.time) || "no time"}</span><span>${esc(r.type === "F/U" ? (r.tele ? "Telehealth" : p.provider || "Provider") : chairLbl(chairFor(p, r)))}</span><span>${typeof r.tx === "number" ? `#${r.tx}` : esc(apptTypeName(r))}</span><span class="nt">${visitMarks(p, r)}${sn ? `<span class="snl">Note: ${esc(sn)}</span>` : ""}${own ? `<span class="muted">${esc(own)}</span>` : ""}</span><span class="ra">${nb}${v ? `<button class="btn ghost sm" data-act="move" data-k="${esc(v.key)}">Move</button>` : ""}</span></div>`;
   };
-  return `<div class="h"><h2>Schedule</h2><button class="btn ghost sm" data-act="print" data-t="${esc(p.tab)}" data-v="14">Print schedule</button></div>
-    <p class="sub">${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</p>${strip(p, fl.visits.some(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}
-    <div class="sub2">Measures</div>${scores(p, fl.visits.some(v => v.tab === p.tab && v.r.measX && !v.r.measVal))}
-    <div class="sub2">Next visits <span class="muted">${d.sched.length} booked</span></div>${up.length ? up.map(line).join("") : '<p class="body">Nothing booked.</p>'}
+  /* the auth end on a day with no visit gets its own marker line among the visits */
+  const authLine = p.authExp != null && p.authExp >= t && up.length && p.authExp < up[up.length - 1].date && !up.some(r => r.date === p.authExp) ? `<div class="srow"><span class="p">${fmtDay(p.authExp)}</span><span></span><span></span><span></span><span class="nt"><span class="mk mk-auth">Auth ends</span></span><span></span></div>` : "";
+  const lines = up.map(r => ({ d: r.date, h: line(r) })).concat(authLine ? [{ d: p.authExp, h: authLine }] : []).sort((a, b) => a.d - b.d).map(x => x.h).join("");
+  return `<div class="h"><h2>Schedule</h2><button class="btn pill" data-act="print" data-t="${esc(p.tab)}" data-v="14">Print schedule</button></div>
+    <div class="hacts">${btn("avail", p.tab, "", "Edit availability")}${btn("statuspick", p.tab, "", "Change status")}</div>
+    <div class="sub2">Next visits <span class="muted">${d.sched.length} booked</span></div>${up.length ? lines : '<p class="body">Nothing booked.</p>'}
     ${av ? `<p class="hint">Availability: ${esc(av)}</p>` : ""}
     <div class="actions"><button class="btn ghost sm" data-act="ptSchedView" data-t="${esc(p.tab)}">Open in Schedule</button><button class="btn ghost sm" data-act="goimport">Book the rest of the course</button>${p.status === "Paused" ? "" : `<button class="btn ghost sm" data-act="status" data-t="${esc(p.tab)}" data-v="Paused">Pause course</button>`}</div>
     <p class="hint">Book the rest in NextGen, then import the appointment list. The planner comes later.</p>
@@ -1266,7 +1346,7 @@ function pastVisits(p) {
   const t = todaySerial(), all = p.rows.filter(r => r.date != null && r.date <= t && (r.delivered || r.miss || r.alt || r.type === "F/U")).sort(cmp).reverse();
   if (!all.length) return '<p class="body">No visits logged yet.</p>';
   const cp = r => { const c = TmsCore.copayOf(r.note); return !c ? "" : c.kind === "collected" ? `${money(c.amt)}${c.by ? `, ${c.by}` : ""}` : c.kind === "not" ? "Not collected" : c.kind === "oopm" ? "$0, OOPM met" : c.kind === "waived" ? "Waived" : c.line; };
-  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Chair</th><th>Pulses L / R / O</th><th class="num">PR</th><th>Copay</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Note</th><th></th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${r.miss ? "Missed" : esc(r.type)}${r.tele ? " tele" : ""}</td><td>${esc(r.type === "F/U" || r.alt ? "" : chairLbl(chairFor(p, r)))}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(money(r.pr))}</td><td>${esc(cp(r))}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${esc(visitNote(r.note))}</td><td>${r.delivered ? `<button class="btn mute sm" data-act="editPulses" data-t="${esc(p.tab)}" data-row="${r.row}" aria-label="Edit pulses for ${fmtMon(r.date)}">Edit</button>` : ""}</td></tr>`).join("")}</table>`;
+  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Chair</th><th>Pulses L / R / O</th><th class="num">PR</th><th>Copay</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Note</th><th></th></tr>${all.map(r => `<tr id="pvrow-${r.row}"><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${r.miss ? "Missed" : esc(r.type)}${r.tele ? " tele" : ""}${visitMarks(p, { ...r, measX: false })}</td><td>${esc(r.type === "F/U" || r.alt ? "" : chairLbl(chairFor(p, r)))}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(money(r.pr))}</td><td>${esc(cp(r))}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${esc(visitNote(r.note))}</td><td><div class="ra"><button class="btn mute sm" data-act="ptNote" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="own" aria-label="${ownNote(r.note) ? "Edit" : "Add"} note for ${fmtMon(r.date)}">${ownNote(r.note) ? "Edit note" : "Add note"}</button>${r.delivered ? `<button class="btn mute sm" data-act="editPulses" data-t="${esc(p.tab)}" data-row="${r.row}" aria-label="Edit pulses for ${fmtMon(r.date)}">Edit pulses</button>` : ""}</div></td></tr>`).join("")}</table>`;
 }
 
 /* ---------- Benefits (the Benefits row; an OOPM met is entered here as 0 remaining) and Financial (the copay tally against
@@ -3680,7 +3760,9 @@ Office.onReady(info => {
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openCourse(t), course: () => openCourse(t),
       /* Patients */
       status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProtoEdit(t), avail: () => mAvail(t),
-      ptClose: () => closePt(), ptPast: () => { state.ptPast = !state.ptPast; renderPt(); }, ptSchedView: () => { const p = state.patients.find(y => y.tab === t), nx = p && p.d.next; closePt(); state.dash = "day"; show("schedule"); if (nx) toast(`${t}'s next visit: ${fmtDay(nx.date)}, ${clock(nx.time) || "no time"}.`); },
+      ptClose: () => closePt(), ptPast: () => { state.ptPast = !state.ptPast; renderPt(); }, ptNeeds: () => { state.ptNeedsAll = !state.ptNeedsAll; renderPt(); },
+      ptJump: () => ptJump(row), ptNote: () => mPtNote(t, row, v), doPtNote: () => { const s = mval("mPtNote"); closeModal(); savePtNote(m.t, m.row, m.kind, s); },
+      ptSchedView: () => { const p = state.patients.find(y => y.tab === t), nx = p && p.d.next; closePt(); state.dash = "day"; show("schedule"); if (nx) toast(`${t}'s next visit: ${fmtDay(nx.date)}, ${clock(nx.time) || "no time"}.`); },
       copayToday: () => copayToday(t, row, v), copayMark: () => copayMark(t, v),
       pvProtoSave: () => { const name = ($("pvProto") || {}).value, site = ($("pvSite") || {}).value; if (!name) return toast("Select the protocol to confirm.", true); saveProtocol(t, [{ name, site: TmsCore.SITE_CELL[site] || "Left" }]); },
       pastpulses: () => mPastPulses(t, row), editPulses: () => mEditPulses(t, row), doEditPulses, copayChange: () => { state.copayEdit = `${t}|${row}`; renderPt(); },

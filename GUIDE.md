@@ -97,7 +97,7 @@ Moving in the tracker doesn't move the appointment in NextGen, so every move ask
 
 Each patient row shows its two most urgent needs. Red is for what blocks care or billing: an expired or overrun authorization, no visit in the recent-visit window, 3 missed in a row. Amber is everything else that needs doing. Muted labels such as Tapering don't count.
 
-Select a patient, or press **Open** anywhere in the add-in, to open them over the list. Esc or × closes it. The header shows the tab name, the MRN, the provider and how many treatments are done. The big button resolves the top need; **Also needs** lists the rest, each with its own button. The sidebar picks the section (Schedule, Protocol, Benefits, Financial); your choice is saved on this computer.
+Select a patient, or press **Open** anywhere in the add-in, to open them over the list. Esc or × closes it. The header shows the tab name, the MRN, the provider and how many treatments are done. The big button resolves the top need; **Also needs** lists the next three, each with its own button, and **Show all** opens the rest. If the top need is the authorization, you see what the patient owes instead; add the extension in **Course**. The sidebar picks the section (Schedule, Course, Protocol, Measures, Benefits, Financial); your choice is saved on this computer. In Schedule, **Add scheduled note** on a later visit puts the note at the top of that visit on its day; past notes are edited in Past visits.
 
 | Need | Action |
 |---|---|
