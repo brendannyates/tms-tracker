@@ -1953,17 +1953,23 @@ async function saveGuestLink(mrn, url) {
   } catch (e) { fail(e); }
 }
 
-/* ---------- first launch: a workbook without New Template gets the blank one shipped with the add-in (assets/templates), and the
-   Active Patients and Guest Patients sheets are made. Inserting sheets from a file needs ExcelApi 1.13 (Excel on the web has it). ---------- */
+/* ---------- first launch: a workbook's own New Template is used as it is; one without it gets the blank one shipped with the add-in
+   (assets/templates). Active Patients and Guest Patients are made. Inserting sheets from a file needs ExcelApi 1.13 (Excel on the web has it). ---------- */
 const TEMPLATE_FILE = () => `assets/templates/${device() === "Brainsway" ? "BrainsWay" : "MagV"} Template.xlsx`;
 const TEMPLATE_SHEETS = ["New Template", "Protocols"];   // inserted when the workbook doesn't have them
+const sheetKey = n => String(n).trim().replace(/\s+/g, " ").toLowerCase();
 async function firstLaunch() {
   if (POPOUT || state.setupRan) return; state.setupRan = true;
-  const made = [];
+  const made = [], renamed = [];
   try {
     let have = [];
-    await Excel.run(async ctx => { ctx.workbook.load("name"); const s = ctx.workbook.worksheets; s.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || ""; have = s.items.map(x => x.name.toLowerCase()); });
-    const want = TEMPLATE_SHEETS.filter(n => !have.includes(n.toLowerCase()));
+    await Excel.run(async ctx => {
+      ctx.workbook.load("name"); const s = ctx.workbook.worksheets; s.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
+      /* the workbook's own template under a slightly different name ("New template", "New Template ") is named New Template, so the add-in uses it */
+      for (const n of TEMPLATE_SHEETS) { const near = s.items.find(x => x.name !== n && sheetKey(x.name) === sheetKey(n)); if (near && !s.items.some(x => x.name === n)) { renamed.push(`"${near.name}" to ${n}`); near.name = n; } }
+      await ctx.sync(); have = s.items.map(x => sheetKey(x.name));
+    });
+    const want = TEMPLATE_SHEETS.filter(n => !have.includes(sheetKey(n)));
     if (want.includes("New Template")) {
       if (!Office.context.requirements.isSetSupported("ExcelApi", "1.13")) throw new Error("This version of Excel can't add sheets from a file. Copy New Template in from the clinic's template workbook.");
       const res = await fetch(TEMPLATE_FILE(), { cache: "no-store" });
@@ -1981,7 +1987,7 @@ async function firstLaunch() {
       await ctx.sync();
     });
   } catch (e) { console.error(e); }
-  if (made.length) toast(`Set up this workbook: added ${made.join(", ")}.`);
+  if (made.length || renamed.length) toast(`Set up this workbook: ${[made.length && `added ${made.join(", ")}`, renamed.length && `renamed ${renamed.join(", ")}`].filter(Boolean).join("; ")}.`);
 }
 /* ---------- Benefits tab: one row per MRN (BEN_COLS). Rows are found by MRN; a new patient gets the next empty row. ---------- */
 function readBen(vals) {
