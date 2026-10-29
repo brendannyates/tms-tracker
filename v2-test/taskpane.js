@@ -7,7 +7,7 @@
    W5 OOP max, W6 MTR approved, W7 extensions, W8 last schedule, X12:Y16 cost by code) as keys, and applyOps sends those there.
    Tabs in the previous layout (freebies in N7, benefits in V1:Y16) are still read; Match New Template moves them over.
    PHI: MRNs are read into memory to match NextGen rows; they are never sent anywhere. Names typed in Add patient become LASFIR.
-   v2 screens (Today chair board, Schedule, Courses, Chairs) follow the MHS tracker design. core.js holds the floor rules; check-in,
+   v2 screens (Today chair board, Schedule, Patients, Chairs) follow the MHS tracker design. core.js holds the floor rules; check-in,
    session times and chair moves live on the Sessions sheet, not on the patient tabs. */
 "use strict";
 
@@ -44,6 +44,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
+const D4_FMT = "0";                                              // # of MT redos (D4) is a count, never a date
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
 const isTxRow = r => !r.miss && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // a numbered row in C (Tx #)
@@ -67,8 +68,8 @@ const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "San Rafael", openTab: "on", cutoff: CUTOFF_DEFAULT },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
-  view: "today", ptAll: false, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
-  dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
+  view: "today", ptOpen: null, ptPast: false, ptPick: null, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
+  dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, apptBy: new Map(), apptTo: null, edits: [], elogOpen: false, elogTab: "", chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
 };
 try { state.chair = localStorage.getItem("tms_chair") || "all"; } catch { /* storage unavailable */ }
 /* Discontinued patients are left off the schedules, Attention and the roster (except its Discontinued filter) */
@@ -194,11 +195,14 @@ const isNA = v => /^n\/?a$/i.test(String(v ?? "").trim());
 /* layout 3 (current): Time in T8 and Freebie Count in J6, benefits on the Benefits tab. Layout 2: Time in T8 and the cost table
    header in V11 (freebies in N7, benefits on the tab). Anything else is an earlier layout, rebuilt from New Template. */
 const layoutOf = (t8, j6, v11) => String(t8).trim().toLowerCase() !== "time" ? 0 : /^freebie count/i.test(String(j6).trim()) ? 3 : String(v11).trim().toLowerCase() === "code" ? 2 : 0;
-function parseLog(vals) {
+/* vt: the log's A:D value types, when read. "Empty" there means the cell lost its formula (PR in A, Tx left in D): a formula
+   that shows nothing still reads as String */
+function parseLog(vals, vt) {
   const blank = x => x === "" || x == null;
   return vals.map((v, i) => {
-    const note = String(v[C.note] || "");
+    const note = String(v[C.note] || ""), t = (vt && vt[i]) || [];
     return {
+      noA: t[0] === "Empty", noD: t[3] === "Empty",
       row: LOG_FIRST + i, pr: typeof v[C.pr] === "number" ? v[C.pr] : null, tx: v[C.tx], tech: String(v[C.tech] || "").trim(),
       date: isNum(v[C.date]) ? Math.floor(v[C.date]) : null, time: isNum(v[C.time]) ? Math.round(v[C.time] * 1440) : null,
       pulses: [v[C.L], v[C.R], v[C.O]].map(x => blank(x) ? null : x), delivered: [v[C.L], v[C.R], v[C.O]].some(x => !blank(x)),
@@ -224,6 +228,7 @@ async function refresh() {
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
       [prv, cs, bn, ss, sc].forEach(r => r && r.load("values")); await ctx.sync();
       readBen(bn ? bn.values : null); readSess(ss ? ss.values : null, sc ? sc.values : null);
+      await readElog(ctx);
       const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
       const live = x => x.name === "New Template" || (!/^(discontinued|complete)/i.test(String(x.d7.values[0][0]).trim()) && x.e.values.some(([v]) => (eDate(v) ?? 0) >= cut));
       state.stale = sg.filter(x => !live(x)).map(x => x.name); const stale = new Set(state.stale);
@@ -242,11 +247,16 @@ async function refresh() {
       const L = [];
       for (const s of sheets.items.filter(s => layout.get(s.name) >= 2)) {
         const g = (a, f) => { const r = s.getRange(a); r.load(f ? "formulas" : "values"); return r; };
-        L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O4"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
+        L.push({ name: s.name, layout: layout.get(s.name), hdr: g("A2:H7"), prot: g("J2:O5"), n67: g("N6:N7"), w18: g("W1:W8"), cost: g(`V11:Y${COST_FIRST + 4}`), a10: g("A10", true),
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") });
+        L[L.length - 1].vt = s.getRange(`A${LOG_FIRST}:D${LOG_FIRST + LOG_READ - 1}`); L[L.length - 1].vt.load("valueTypes");
+        L[L.length - 1].d4 = s.getRange("D4"); L[L.length - 1].d4.load("numberFormat");
         if (L.length % 8 === 0) await ctx.sync();
       }
       await ctx.sync();
+      /* # of MT redos (D4) is a count: a date or decimal format there gets "0" (finished tabs are left alone) */
+      const d4s = L.filter(l => !stale.has(l.name) && l.d4.numberFormat[0][0] !== D4_FMT);
+      if (d4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -279,13 +289,13 @@ async function refresh() {
           txEnd: isNum(H(7, 5)) ? H(7, 5) : null, txRem: typeof H(7, 7) === "number" ? H(7, 7) : null,
           authAssess: String((v3 ? n7 : n6) || ""), freebiesLeft: typeof fbv === "number" ? fbv : null,
           protoRows: [0, 1, 2].map(i => ({ n: i + 1, row: 2 + i, hz: pv[i][0], dur: pv[i][1], trains: pv[i][2], wait: pv[i][3], site: String(pv[i][5] || "") })),
-          protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null,
+          protoMin: mins.length ? mins.reduce((a, b) => a + b, 0) : null, protoTotal: typeof pv[3][4] === "number" && pv[3][4] > 0 ? pv[3][4] : null,   // N5
           home, external: !!home && !/^(srl|san rafael)$/i.test(home),
           ben: { bidf: money0(w[0]), dedNA: isNA(w[3]), dedRem: money0(w[3]), dedBlank: w[3] === "" || w[3] == null, oopNA: isNA(w[4]), oopRem: money0(w[4]),
             mtr: String(w[5] || ""), ext: typeof w[6] === "number" ? w[6] : 0, lastSched: isNum(w[7]) ? Math.floor(w[7]) : null },
           cost,
           canGrow: /LET\(/.test(a10),   // only a PR formula in A10 can say where a grown log ends
-          rows: parseLog(l.log.values.slice(0, end - LOG_FIRST + 1)),
+          rows: parseLog(l.log.values.slice(0, end - LOG_FIRST + 1), l.vt.valueTypes), end,
           week: Object.fromEntries([1, 2, 3, 4, 5].map(d => { const v = l.wk.values[d - 1] || []; return [d, { from: isNum(v[0]) ? Math.round(v[0] * 1440) : null, to: isNum(v[1]) ? Math.round(v[1] * 1440) : null }]; })),
           avail: l.av.values.filter(v => AV_TYPE.includes(v[0]) && isNum(v[1])).map(v => ({ type: v[0], from: Math.floor(v[1]), to: isNum(v[2]) ? Math.floor(v[2]) : Math.floor(v[1]), note: String(v[3] || "") }))
         };
@@ -311,11 +321,11 @@ async function refresh() {
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
-    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true }))); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
+    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
     /* every approved treatment done (36 of 36, 15 of 15): the course is Complete. Paused and Discontinued tabs are left alone. */
     const fin = state.patients.filter(p => p.d.suggest === "Complete");
     if (fin.length) try {
-      await applyOps(fin.map(p => ({ tab: p.tab, a: "D7", v: [["Complete"]], quiet: true }))); fin.forEach(p => { p.status = "Complete"; p.d = derive(p); });
+      await applyOps(fin.map(p => ({ tab: p.tab, a: "D7", v: [["Complete"]], quiet: true })), null, { kind: "auto", what: "Status set to Complete: every approved treatment is done" }); fin.forEach(p => { p.status = "Complete"; p.d = derive(p); });
       toast(`${fin.map(p => p.tab).join(", ")} marked Complete: every treatment is done.`);
     } catch (e) { console.error(e); }
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -346,7 +356,10 @@ function baselineOf(p) {
   return { sleep: g("sleep"), caffeine: g("caffeine"), date: mt.date };
 }
 const protoName = x => { const m = state.protocols.find(q => q.rep === x.hz && q.pulses === x.dur && q.trains === x.trains && q.iti === x.wait); return m ? m.name.trim() : ""; };
-const protoText = p => p.protoRows.filter(x => isNum(x.hz)).map(x => `${x.site || "Protocol " + x.n}: ${protoName(x) || `${x.hz} Hz, ${x.dur}/train, ${x.trains} trains, ${x.wait}s`}`).join("; ") || "not entered";
+const siteRows = p => p.protoRows.filter(x => isNum(x.hz) && TmsCore.siteOf(x.site));   // protocol rows with a site in O
+const protoText = p => p.protoRows.filter(x => isNum(x.hz)).map(x => `${TmsCore.siteOf(x.site) || "Protocol " + x.n}: ${(TmsCore.protoMatch(x, state.protocols) || {}).name || `${x.hz} Hz, ${x.dur}/train, ${x.trains} trains, ${x.wait}s`}`).join("; ") || "not entered";
+const protoLen = p => p.protoTotal || p.protoMin;   // session minutes: N5, else N2:N4 added up
+const yearOf = s => serialToDate(s).getUTCFullYear();
 
 function derive(p) {
   const today = todaySerial(), cfg = state.cfg, rows = p.rows, rec = cfg.recentDays, total = p.txApproved || 36;
@@ -406,20 +419,30 @@ function derive(p) {
     if (p.updateBy != null) { if (p.updateBy < today) protoFlags.push(`Protocol update was due ${fmtMon(p.updateBy)}`); else if (bizDaysUntil(today, p.updateBy) <= cfg.protoDays) protoFlags.push(`Protocol update due ${fmtMon(p.updateBy)}`); }
     const pa = rows.filter(r => r.action === "Protocol" && !r.delivered && r.date != null && r.date >= today).sort(cmp).find(r => bizDaysUntil(today, r.date) <= cfg.protoDays);
     if (pa) protoFlags.push(`Protocol action at the ${fmtMon(pa.date)} visit`);
-    if (!p.protoRows.some(x => isNum(x.hz)) && rows.some(r => r.type === "MT" && r.delivered)) protoFlags.push("Protocol not entered (J2:M4) since the MT");
   }
+  /* no protocol row with a site in O: chosen at the MT, so asked for from the MT on (Choose a protocol) */
+  const noProto = active && !siteRows(p).length && rows.some(r => r.type === "MT" && (r.delivered || r.date === today));
   /* patient cost so far and projected, the BIDF estimate and out-of-pocket max */
-  const accrued = rows.filter(r => happened(r, today)).reduce((s, r) => s + (payOf(p, r) || 0), 0);
-  const futurePay = sched.filter(r => !r.alt).map(r => ({ r, v: payOf(p, r) || 0 }));
+  /* TMS Follow Ups keep their own PR in column A but stay out of the course cost, the BIDF estimate and the OOPM tally */
+  const accrued = rows.filter(r => happened(r, today) && r.type !== "F/U").reduce((s, r) => s + (payOf(p, r) || 0), 0);
+  const futurePay = sched.filter(r => !r.alt && r.type !== "F/U").map(r => ({ r, v: payOf(p, r) || 0 }));
   const projected = accrued + futurePay.reduce((s, x) => s + x.v, 0);
+  /* copays: the plan year is Last updated's year; logged copays are a floor (claims applied to the deductible count too) */
+  const planYear = yearOf(p.benUpdated ?? today), owes = TmsCore.owes(p.ben);
+  const tally = TmsCore.copayTally(rows, utcSerial(planYear, 1, 1), utcSerial(planYear, 12, 31));
+  const toConfirm = owes ? TmsCore.copaysToConfirm(rows, r => payOf(p, r), today) : [];
+  const todayRow = rows.find(r => r.date === today && !r.miss && !r.alt && r.type !== "F/U"), todayPay = todayRow && !TmsCore.copayOf(todayRow.note) ? payOf(p, todayRow) || 0 : 0;
+  const oopmLikely = owes && p.ben.oopRem != null && p.ben.oopRem > 0 && tally.sum + todayPay >= p.ben.oopRem - 0.005;
+  const oopmMet = p.ben.oopRem === 0 && !p.ben.oopNA ? planYear : null;
   const benFlags = [];
-  if (active) {
+  if (active && owes) {
     if (p.ben.bidf != null && projected > p.ben.bidf + 0.005) benFlags.push(`Projected ${money(projected)}, over the BIDF estimate ${money(p.ben.bidf)}`);
-    if (p.ben.oopRem != null) {
-      if (accrued >= p.ben.oopRem) benFlags.push("Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen");
-      else { let c = accrued; const hit = futurePay.find(x => (c += x.v) >= p.ben.oopRem); if (hit) benFlags.push(`Likely meets the out-of-pocket max around ${fmtMon(hit.r.date)}: verify the copay at pre-check`); }
-    }
+    if (oopmLikely) benFlags.push("Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen");
+    else if (p.ben.oopRem != null) { let c = tally.sum; const hit = futurePay.find(x => (c += x.v) >= p.ben.oopRem); if (hit) benFlags.push(`Likely meets the out-of-pocket max around ${fmtMon(hit.r.date)}: verify the copay at pre-check`); }
   }
+  const ro = p.benUpdated != null ? TmsCore.rollover({ updated: p.benUpdated, dec1: utcSerial(yearOf(p.benUpdated), 12, 1), jan1: utcSerial(yearOf(p.benUpdated) + 1, 1, 1) }, rows, today,
+    r => r.date === today && !!state.sess && [...state.sess.rows.values()].some(s => s.tab === p.tab && s.date === today && s.checkin != null)) : null;
+  const rollover = ro ? { ...ro, year: yearOf(p.benUpdated) + 1 } : null;
   const mdOnSite = /^y/i.test(p.mdReq);
   /* only dates the patient said they are away; weekday preferences are for scheduling, not flags */
   const awayConflicts = [];
@@ -431,7 +454,8 @@ function derive(p) {
   const lastRow = rows.filter(r => r.type !== "F/U" && r.date != null).sort(cmp).pop();
   const bidf = bidfMissing(p), todayVisit = rows.some(r => r.date === today && !r.miss && !r.alt);
   return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
-    authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && todayVisit && bidf.length > 0,
+    authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && owes && todayVisit && bidf.length > 0,
+    noProto, owes, planYear, tally, toConfirm, todayRow, oopmLikely, oopmMet, rollover,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
 }
 function availText(p) {
@@ -483,7 +507,7 @@ function renderBanners() {
 }
 const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button></div>`;
 
-/* ---------- v2 screens: Today (the chair board), Schedule, Courses and Chairs, on the design language ESK Tracker shares
+/* ---------- v2 screens: Today (the chair board), Schedule, Patients and Chairs, on the design language ESK Tracker shares
    (tokens and components live in taskpane.html). The reads and writes are the same as before; core.js holds the floor rules.
    On these screens times read 24-hour (9:05) and dates "Oct 21". ---------- */
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -637,7 +661,7 @@ function floor() {
       const v = { key, date: t, visit, p, r, tab: p.tab, row: r.row, type: r.type || "Daily", time: r.time, tele: r.tele, alt: r.alt, chairVisit: !fu && !r.alt, s, rc,
         chair: fu || r.alt ? "" : ms.chair, moved: ms.moved, settled: ms.settled, from: ms.from, offChair: "", miss: r.miss,
         done: fu ? !!(s && s.end != null) : r.delivered, checkin: s ? s.checkin : null, start: s ? s.start : null, end: s ? s.end : null,
-        len: p.protoMin || DEFAULT_LEN, mtDone: /\bmt %:/i.test(r.note) };
+        len: Math.round(protoLen(p) || DEFAULT_LEN), protoLen: protoLen(p), mtDone: /\bmt %:/i.test(r.note) };
       if (v.chairVisit && v.chair && !on.has(v.chair) && ["booked", "waiting"].includes(TmsCore.phase(v))) { v.offChair = v.chair; v.chair = ""; v.moved = false; }
       visits.push(v);
     }
@@ -698,7 +722,7 @@ function facts(p, short) {
 
 /* ---------- rail and header ---------- */
 function renderRail(fl) {
-  document.querySelectorAll(".rail [data-view]").forEach(b => { if (b.dataset.view === state.view || (state.view === "add" && b.dataset.view === "courses")) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+  document.querySelectorAll(".rail [data-view]").forEach(b => { if (b.dataset.view === state.view || (state.view === "add" && b.dataset.view === "patients")) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   const need = state.patients.filter(onSched).map(p => TmsCore.loud(courseNeeds(p, fl))).filter(n => n.length), cc = $("ccount");
   cc.textContent = need.length || ""; cc.className = "count" + (need.some(n => n.some(x => x.bad)) ? " bad" : "");
   cc.setAttribute("aria-label", need.length ? `${need.length} need attention` : "");
@@ -708,10 +732,11 @@ const head = (title, sub, withClock) => `<header class="top"><div><h1>${title}</
 function renderDash() {
   const fl = state.fl = floor();
   renderRail(fl);
-  if (!["today", "schedule", "courses", "chairs"].includes(state.view)) return;
+  if (!["today", "schedule", "patients", "chairs"].includes(state.view)) return;
   const el = $("v-" + state.view);
-  if (!state.patients.length && state.view !== "chairs") { el.innerHTML = head({ today: "Today", schedule: "Schedule", courses: "Courses" }[state.view], "") + `<div class="card list">${NO_TABS}</div>`; return; }
-  el.innerHTML = state.view === "today" ? viewToday(fl) : state.view === "schedule" ? viewSchedule(fl) : state.view === "courses" ? viewCourses(fl) : viewChairs(fl);
+  if (!state.patients.length && state.view !== "chairs") { el.innerHTML = head({ today: "Today", schedule: "Schedule", patients: "Patients" }[state.view], "") + `<div class="card list">${NO_TABS}</div>`; return; }
+  el.innerHTML = state.view === "today" ? viewToday(fl) : state.view === "schedule" ? viewSchedule(fl) : state.view === "patients" ? viewPatients(fl) : viewChairs(fl);
+  renderPt();
   refocus();
 }
 
@@ -853,6 +878,7 @@ function detailHtml(fl) {
       else if (v.time != null && lateMin > 5) { lead = `Not started, booked ${clock(v.time)} (${lateMin} min ago)`; cls = "soon"; } else lead = `Booked ${clock(v.time) || "with no set time"} in ${chairLbl(v.chair)}`;
       if (busy) { lead += `. ${chairLbl(v.chair)} in use by ${busy.tab} until ${clock(busy.start + busy.len)}`; primary = openChairs(v, fl).length ? ["Move to another chair", "move"] : [`Start session in ${chairLbl(v.chair)}`, "start", true]; }
       else primary = [`Start session in ${chairLbl(v.chair)}`, "start"];
+      lead += `. Projected to end ${clock(Math.max(fl.now, v.time ?? fl.now, busy ? busy.start + busy.len : 0) + v.len)}`;
     }
     if (v.chair && !(primary && primary[1] === "move")) ghosts.push(["Move to another chair", "move"]);
     ghosts.push(["Record missed", "miss"]);
@@ -862,7 +888,7 @@ function detailHtml(fl) {
   const bidf = p.d.bidfToday ? `<div class="notice"><p><b>BIDF info needed.</b> Enter the ${esc(p.d.bidf.join("; "))}.</p><div class="actions" style="margin:4px 0 6px"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Enter benefits</button></div></div>` : "";
   const priced = (p.cost[billIdx(v.r)] || {}).after != null, pay = payOf(p, v.r);
   const payline = v.alt || p2 === "missed" ? "" : `<div class="payline"><span>Payment today</span><span>${!priced && typeof v.r.pr !== "number" ? '<span class="flag">Not set</span>' : money(pay ?? 0) || "$0.00"}</span></div>`;
-  const meta = v.type === "F/U" ? `Follow-up, ${v.tele ? "telehealth" : "in office"}` : `${typeName(v)}, treatment ${sessNo(v)} of ${p.d.total}`;
+  const meta = v.type === "F/U" ? `Follow-up, ${v.tele ? "telehealth" : "in office"}` : `${typeName(v)}, treatment ${sessNo(v)} of ${p.d.total} · ${v.protoLen ? `protocol ${Math.round(v.protoLen)} min` : `no protocol time, ${DEFAULT_LEN} min assumed`}`;
   return `<div class="dh"><div><div class="name">${esc(v.tab)}<span class="loc">${esc(where(v) || "No chair")}</span></div><div class="meta">${esc(meta)}</div></div><button class="btn mute sm" data-act="opentab" ${K}>Open tab</button></div>
     <p class="lead ${cls}">${esc(lead)}</p>${tl}
     ${v.type === "F/U" || p2 === "missed" || v.alt ? "" : stepsFor(v, s, fl)}${moved}${bidf}
@@ -939,7 +965,7 @@ function dayVisits(day) {
 }
 function sl0(day, ent) { const h = state.clinic?.days[dow(day)]; if (!h || h.open == null || h.close == null) return ""; return ent.chair.filter(e => e.start < h.open || e.end > h.close).map(e => `${esc(e.p.tab)} ${clock(e.start)}`).join(", "); }
 
-/* ---------- Courses: one row per tab, sorted by what needs doing ---------- */
+/* ---------- Patients: one row per tab, sorted by what needs doing ---------- */
 const FILTERS = [
   ["needs", "Needs attention", (p, n) => onSched(p) && TmsCore.loud(n).length > 0],
   ["active", "All active", p => p.d.active],
@@ -948,25 +974,76 @@ const FILTERS = [
   ["taper", "Tapering", p => p.status === "Tapering"],
   ["paused", "Paused", p => p.status === "Paused"],
   ["complete", "Complete", p => p.status === "Complete"],
-  ["disc", "Discontinued", p => !onSched(p)]
+  ["disc", "Discontinued", p => !onSched(p)],
+  ["copay", "Copay unconfirmed", p => p.d.toConfirm.length > 0]
 ];
-function viewCourses(fl) {
+function viewPatients(fl) {
   const N = new Map(state.patients.map(p => [p.tab, courseNeeds(p, fl)])), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   const act = state.patients.filter(p => p.d.active).length, need = state.patients.filter(p => FILTERS[0][2](p, N.get(p.tab))).length;
   const chips = FILTERS.map(([k, l, fn]) => `<button class="chip" data-filter="${k}" aria-pressed="${k === f[0]}">${l} <span class="n">${state.patients.filter(p => fn(p, N.get(p.tab))).length}</span></button>`).join("");
   const rank = p => { const n = TmsCore.loud(N.get(p.tab)); return n.some(x => x.bad) ? 0 : n.length ? 1 : 2; };
   const list = state.patients.filter(p => f[2](p, N.get(p.tab))).sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code) || a.course - b.course);
-  if (!list.some(p => p.tab === state.ptTab)) state.ptTab = list[0] ? list[0].tab : null;
   const rows = list.map(p => {
     const n = N.get(p.tab), d = p.d;
     return `<button class="crow" data-course="${esc(p.tab)}" aria-pressed="${p.tab === state.ptTab}"><span class="p">${esc(p.tab)}<small>${esc(p.status || "No status")}</small></span><span class="proto">${esc(protoText(p))}</span>
       <span class="prog"><span class="pbar"><i style="width:${Math.min(100, d.txDone / Math.max(1, d.total) * 100).toFixed(1)}%"></i></span>${d.txDone}/${d.total}</span>
       <span class="flags">${needSummary(n)}</span></button>`;
-  }).join("") || `<p class="empty">Nothing here. Every course in this group is on track.</p>`;
-  return `<header class="top"><div><h1>Courses</h1><p class="sub">${act} active course${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
-    <div class="chips" role="group" aria-label="Filter courses">${chips}</div>
-    <div class="cols"><div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>
-      <aside class="card detail">${courseHtml(fl, N)}</aside></div>`;
+  }).join("") || `<p class="empty">Nothing here. Everyone in this group is on track.</p>`;
+  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
+    <div class="chips" role="group" aria-label="Filter patients">${chips}</div>
+    <div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>${elogHtml()}`;
+}
+/* the Edit log, collapsed at the bottom of Patients: what to check on each active tab, then what the add-in changed, newest first,
+   each with Undo. The pick narrows both to one patient. */
+const POOL_WORD = { TMS: "treatment", "F/U": "follow-up" };
+function elogHtml() {
+  const pick = state.elogTab, t = todaySerial(), rowBtn = (act, tab, row, label, v) => `<button class="btn ghost sm" data-act="${act}" data-t="${esc(tab)}" data-row="${row}"${v ? ` data-v="${esc(v)}"` : ""}>${esc(label)}</button>`;
+  const line = (tab, text, acts) => `<div class="row"><div class="rowmain static"><span class="p">${esc(tab)}</span><span class="f flag">${text}</span></div><span class="acts">${acts}</span></div>`;
+  /* "row 20", "rows 20 and 21", "rows 10–49", "12 rows, 36 to 58" */
+  const rowsTxt = rs => {
+    if (rs.length === 1) return `row ${rs[0]}`;
+    const runs = []; rs.slice().sort((a, b) => a - b).forEach(r => { const l = runs[runs.length - 1]; if (l && r === l[1] + 1) l[1] = r; else runs.push([r, r]); });
+    const parts = runs.map(([a, b]) => a === b ? String(a) : b === a + 1 ? `${a}, ${b}` : `${a}–${b}`);
+    return parts.length > 4 ? `${rs.length} rows, ${runs[0][0]} to ${runs[runs.length - 1][1]}` : `rows ${andList(parts)}`;
+  };
+  const P = state.patients.filter(p => p.d.active && !state.stale.includes(p.tab) && (!pick || p.tab === pick)), checks = [];
+  let nChecks = 0;
+  for (const p of P) {
+    const c = checksOf(p), tab = p.tab; if (!c.n) continue; nChecks += c.n;
+    c.dup.forEach(d => { const rs = p.rows.filter(r => d.rows.includes(r.row));
+      checks.push(line(tab, `${fmtMon(d.date)}: ${d.rows.length} ${POOL_WORD[d.pool]} rows (${rowsTxt(d.rows)})`, rs.filter(r => !r.delivered).map(r => rowBtn("elFix", tab, r.row, `Remove row ${r.row}`, "remove")).join("") + rowBtn("opentab", tab, d.rows[0], "Open tab"))); });
+    if (c.tx.length) checks.push(line(tab, `Tx # off on ${plural(c.tx.length, "row")}, first on row ${c.tx[0].row}: ${esc(c.tx[0].was || "blank")}, should be ${c.tx[0].want === "" ? "blank" : c.tx[0].want}`, rowBtn("elFix", tab, c.tx[0].row, "Renumber Tx #", "tx") + rowBtn("opentab", tab, c.tx[0].row, "Open tab")));
+    if (c.order.length) checks.push(line(tab, `Out of date order at ${rowsTxt(c.order)}`, rowBtn("elFix", tab, c.order[0], "Sort by date", "sort") + rowBtn("opentab", tab, c.order[0], "Open tab")));
+    if (c.formulas.length) checks.push(line(tab, `${rowsTxt(c.formulas.map(x => x.row))} lost ${c.formulas.some(x => x.a) && c.formulas.some(x => x.d) ? "the PR and Tx left formulas" : c.formulas.some(x => x.a) ? "the PR formula in A" : "the Tx left formula in D"}`, rowBtn("elFix", tab, c.formulas[0].row, "Put formulas back", "formulas")));
+    if (c.kaiser.length) checks.push(line(tab, `Template's Kaiser reminder on ${rowsTxt(c.kaiser)}`, rowBtn("elFix", tab, c.kaiser[0], "Remove the reminder", "kaiser")));
+    if (c.over.length) checks.push(line(tab, `Treatment ${c.over[0].n} on ${fmtMon(c.over[0].date)} is past the ${p.txApproved} approved. Add an extension or cancel it in NextGen`, rowBtn("opentab", tab, c.over[0].row, "Open tab")));
+    c.gaps.notOnTab.forEach(a => checks.push(line(tab, `On the list, not on the tab: ${fmtMon(a.date)} ${clock(a.time)} ${esc(apptTypeName(a))} (${a.status === "Kept" ? "kept" : "booked"})`, '<button class="btn ghost sm" data-act="reimport">Import again</button>')));
+    c.gaps.notOnList.forEach(row => { const r = p.rows.find(x => x.row === row); checks.push(line(tab, `On the tab, not on the list: ${fmtMon(r.date)} ${esc(apptTypeName(r))} (row ${row}). Check NextGen`, rowBtn("opentab", tab, row, "Open tab"))); });
+  }
+  const E = state.edits.filter(e => !pick || e.tab === pick), today = state.edits.filter(e => Math.floor(e.when) === t && e.kind !== "undo").length;
+  const edits = E.slice(0, 80).map(e => `<div class="row erow${e.st && e.st !== "No undo" ? " past" : ""}"><div class="rowmain static"><span class="w">${esc(whenText(e.when))}</span><span class="p">${esc(e.tab)}</span><span class="what">${esc(e.what)}${e.by ? ` <span class="muted">${esc(e.by)}</span>` : ""}</span></div>
+    <span class="acts">${e.kind === "undo" ? "" : e.st === "No undo" ? '<span class="muted">No undo</span>' : e.st ? `<span class="muted">${esc(e.st)}</span>` : `<button class="btn ghost sm" data-act="elUndo" data-v="${esc(e.id)}" aria-label="Undo ${esc(e.tab)}: ${esc(e.what)}">Undo</button>`}</span></div>`).join("");
+  const tabs = [...new Set([...state.patients.filter(p => p.d.active).map(p => p.tab), ...state.edits.map(e => e.tab)])].sort();
+  const sub = [`${plural(today, "edit")} today`, nChecks ? `<span class="flag">${plural(nChecks, "thing")} to check</span>` : ""].filter(Boolean).join(", ");
+  return `<details class="card elog" data-elog ${state.elogOpen ? "open" : ""}><summary><span class="t">Edit log</span><span class="sub">${sub}</span></summary>
+    <div class="ebar"><label>Patient <select data-elf><option value="">All patients</option>${tabs.map(x => `<option${x === pick ? " selected" : ""}>${esc(x)}</option>`).join("")}</select></label>
+    <span class="muted">Every change the add-in makes to a tab. Undo works while the cells still hold what the edit left.</span></div>
+    <h3>To check</h3>${checks.join("") || `<p class="empty">Nothing to check${pick ? ` on ${esc(pick)}` : ""}. Every log matches its Tx # rule, formulas and the appointment list.</p>`}
+    <h3>Changes</h3>${edits || '<p class="empty">No changes logged yet.</p>'}</details>`;
+}
+/* an import, sort or removed row puts the whole visit log back, so it names that first; a cell edit undoes straight away */
+function elUndoAsk(id) {
+  const e = state.edits.find(x => x.id === id); if (!e) return;
+  if (!["import", "sort", "rows"].includes(e.kind)) return undoEdit(id);
+  state.mctx = { id };
+  showModal(`<h2 id="mtitle">Undo ${esc(e.tab)}'s ${e.kind === "import" ? "import" : "change"} from ${esc(whenText(e.when))}?</h2><p class="body">${esc(e.what)}.</p>
+    <p class="body">The visit log goes back to how it was before${e.kind === "import" ? ": rows the import created are removed and every date, type and note it wrote is put back" : ""}. It only runs if nothing on the log changed since.</p>${mfoot(e.kind === "import" ? "Undo the import" : "Undo the change", "elUndoGo")}`);
+}
+function elRemoveAsk(tab, row) {
+  const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); if (!r) return;
+  state.mctx = { t: tab, row };
+  showModal(`<h2 id="mtitle">Remove row ${row} from ${esc(tab)}?</h2><p class="body">${r.date != null ? fmtMon(r.date) : "No date"}, ${esc(r.type || "no type")}${r.miss ? ", missed" : ""}, no pulses${r.note ? `. Notes: ${esc(r.note)}` : ""}.</p>
+    <p class="body">The rows below move up one. The Edit log can put it back.</p>${mfoot(`Remove row ${row}`, "elFixGo")}`);
 }
 /* a course row names its two most urgent needs and counts the rest; quiet labels show only when nothing needs doing */
 function needSummary(n) {
@@ -974,31 +1051,234 @@ function needSummary(n) {
   if (!L.length) return q.length ? esc(q.map(x => x.t).join(", ")) : "On track";
   return L.slice(0, 2).map(x => `<span class="f${x.bad ? " bad" : ""}">${esc(x.t)}</span>`).join(", ") + (L.length > 2 ? ` <span class="muted">and ${L.length - 2} more</span>` : "");
 }
-function courseHtml(fl, N) {
-  const p = state.patients.find(x => x.tab === state.ptTab); if (!p) return '<p class="body">Select a course.</p>';
-  const n = TmsCore.loud(N.get(p.tab)), first = n[0], d = p.d, tv = fl.visits.filter(v => v.tab === p.tab);
+/* ---------- the patient view: an overlay over Patients (in the task pane it fills the pane). The Show bar picks the sections,
+   saved on this computer like the Today view. The list row stays selected behind it. ---------- */
+const PT_SECT = [["proto", "Protocol"], ["sched", "Schedule"], ["money", "Copay and benefits"]];
+function ptShow() {
+  try { const v = JSON.parse(localStorage.getItem("tms_ptshow") || "null"); if (Array.isArray(v)) return v; } catch { /* storage unavailable */ }
+  return state.ptShowMem || PT_SECT.map(s => s[0]);
+}
+function setPtShow(k) {
+  const cur = ptShow(), nx = cur.includes(k) ? cur.filter(x => x !== k) : PT_SECT.map(s => s[0]).filter(x => cur.includes(x) || x === k);
+  state.ptShowMem = nx; try { localStorage.setItem("tms_ptshow", JSON.stringify(nx)); } catch { /* this session only */ }
+  renderPt();
+}
+let ptFrom = null;
+function openPt(tab) {
+  state.ptTab = tab; state.ptOpen = tab; state.ptPick = new Set(); state.ptPast = false; ptFrom = document.activeElement; renderDash();
+  const x = $("pvBody").querySelector("[data-act=ptClose]"); if (x) x.focus();
+}
+function closePt() {
+  state.ptOpen = null; $("ptView").hidden = true; $("pvBody").innerHTML = ""; renderDash();
+  const back = document.querySelector(`#v-patients [data-course="${CSS.escape(state.ptTab || "")}"]`) || ptFrom; if (back && document.contains(back)) back.focus(); ptFrom = null;
+}
+/* re-drawn with the dashboard (the 30 s tick, every save); scroll, focus and the ticked copays are kept */
+function renderPt() {
+  const box = $("ptView"), body = $("pvBody"), p = state.ptOpen && state.patients.find(x => x.tab === state.ptOpen);
+  if (!p) { if (!box.hidden) { box.hidden = true; body.innerHTML = ""; state.ptOpen = null; } return; }
+  const top = body.scrollTop, fk = document.activeElement && body.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+  const by = $("pvBy") ? $("pvBy").value : null;
+  body.innerHTML = ptHtml(p, state.fl || floor()); box.hidden = false; body.scrollTop = top;
+  if (by != null && $("pvBy")) $("pvBy").value = by;
+  if (fk) { const el = body.querySelector(fk); if (el) el.focus(); }
+}
+const ptVisit = (p, fl) => { const tv = fl.visits.filter(v => v.tab === p.tab && !v.miss); return tv.find(v => v.chairVisit) || tv[0] || null; };
+const chairFor = (p, r) => { const s = state.sess && [...state.sess.rows.values()].find(x => x.tab === p.tab && x.date === r.date && x.chair); return s ? s.chair : chairOf(p, r); };
+const visitNote = note => String(note || "").split("; ").filter(x => x && !TmsCore.copayOf(x)).join("; ");
+function ptHtml(p, fl) {
+  const N = courseNeeds(p, fl), n = TmsCore.loud(N), first = n[0], d = p.d, v = ptVisit(p, fl), on = ptShow();
   const A = x => `data-act="${x.act[1]}" data-t="${esc(p.tab)}"${x.row ? ` data-row="${x.row}"` : ""}${x.key ? ` data-k="${esc(x.key)}"` : ""}${x.v ? ` data-v="${esc(x.v)}"` : ""}`;
-  const used = new Set(n.map(x => x.act && x.act[1]));
-  const ghosts = [["Print schedule", "print"], ["Edit benefits", "ben"], ["Add extension", "ext"], ["Edit availability", "avail"], ["Edit protocol", "proto"], ["Change status", "statuspick"]].filter(([, a]) => !used.has(a));
   const shown = new Set([first && first.act[1]]);
   const also = n.slice(1).map(x => { const dup = shown.has(x.act[1]) && !x.row && !x.key; shown.add(x.act[1]); return `<div class="row"><span class="f ${x.bad ? "bad" : "flag"} needline">${esc(x.t)}</span>${dup ? "" : `<button class="btn ghost sm" ${A(x)}>${esc(x.act[0])}</button>`}</div>`; }).join("");
-  const up = d.sched.slice(0, 8);
-  return `<div class="dh"><div><div class="name">${esc(p.tab)}</div><div class="meta">${esc([p.status || "No status", p.insurance, p.provider].filter(Boolean).join(", "))}</div></div><button class="btn mute sm" data-act="opentab" data-t="${esc(p.tab)}">Open tab</button></div>
-    <p class="lead ${first ? (first.bad ? "late" : "soon") : ""}">${first ? esc(first.t) : d.active ? "On track" : esc(p.status || "No status")}</p>
-    ${first ? `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>` : ""}
-    <div class="actions">${tv.length ? `<button class="btn ghost sm" data-open="${esc(p.tab)}">Open today's visit</button>` : ""}${ghosts.map(([l, a]) => btn(a, p.tab, a === "print" ? "14" : "", l)).join("")}</div>
+  const quiet = N.filter(x => x.quiet).map(x => `<span class="tag">${esc(x.t)}</span>`).join("");
+  const meta = [p.provider && `Dr. ${p.provider}`, v && v.chairVisit && `Session ${sessNo(v)} of ${d.total} today`, v && v.start != null && ph(v) === "running" && `in chair since ${clock(v.start)}`].filter(Boolean).join(" · ");
+  const sect = { proto: ptProto, sched: ptSched, money: ptMoney };
+  return `<div class="pvh"><div><h2 id="pvTitle">${esc(p.tab)} <span class="mrn">MRN ${esc(p.mrnRaw || "not entered")}</span></h2><p class="meta">${esc(meta || p.status || "No status")}</p></div>
+      <div class="pvr">${v && v.chair ? `<span class="chairname">${esc(chairLbl(v.chair))}</span>` : ""}<button class="x" data-act="ptClose" aria-label="Close">×</button></div></div>
+    <p class="lead ${first ? (first.bad ? "late" : "soon") : ""}">${first ? esc(first.t) : d.active ? "On track" : esc(p.status || "No status")}</p>${quiet ? `<div class="tags">${quiet}</div>` : ""}
+    ${first && first.act ? `<button class="btn primary" ${A(first)}>${esc(first.act[0])}</button>` : ""}
     ${also ? `<div class="section"><div class="h"><h2>Also needs</h2><span>${n.length - 1} more</span></div>${also}</div>` : ""}
-    <div class="section"><div class="h"><h2>Treatments</h2><span>${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</span></div>${strip(p, tv.some(v => v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}</div>
-    <div class="section"><div class="h"><h2>Measures</h2><span>Lower is better</span></div>${scores(p, tv.some(v => v.r.measX && !v.r.measVal))}</div>
-    <div class="section"><div class="h"><h2>Details</h2></div>${facts(p, false)}</div>
-    <div class="section"><div class="h"><h2>Upcoming</h2><span>${d.sched.length} booked</span></div>${up.length ? up.map(r => `<div class="row"><button class="rowmain" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="p">${fmtMon(r.date)}</span><span class="w">${DAYS[dow(r.date)]}</span><span>${clock(r.time) || "no time"}</span><span class="f muted">${esc(apptTypeName(r))}${r.measX ? ", measures" : ""}</span></button></div>`).join("") : '<p class="body">Nothing booked.</p>'}</div>
-    <div class="section"><div class="h"><h2>Every visit</h2><button class="btn ghost sm" data-act="ptAll">${state.ptAll ? "Hide" : "Show all visits and scores"}</button></div>${state.ptAll ? allVisits(p) : ""}</div>`;
+    <div class="actions">${v ? `<button class="btn ghost sm" data-open="${esc(p.tab)}">Open today's visit</button>` : ""}${[["Add extension", "ext"], ["Edit availability", "avail"], ["Change status", "statuspick"]].map(([l, a]) => btn(a, p.tab, "", l)).join("")}<button class="btn mute sm" data-act="opentab" data-t="${esc(p.tab)}">Open tab</button></div>
+    ${ptCopayToday(p)}
+    <div class="showbar" role="group" aria-label="Show sections"><span class="lbl">Show</span>${PT_SECT.map(([k, l]) => `<button class="chip" data-ptshow="${k}" aria-pressed="${on.includes(k)}">${l}</button>`).join("")}<span class="saved">Saved for you</span></div>
+    ${PT_SECT.filter(([k]) => on.includes(k)).map(([k]) => `<div class="section pvs" data-sect="${k}">${sect[k](p, fl)}</div>`).join("")}`;
 }
 
-/* the whole visit log with pulses and scores, as the earlier patient view had it */
-function allVisits(p) {
-  const t = todaySerial(), all = p.rows.filter(r => r.date != null).sort(cmp);
-  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Pulses L / R / O</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Status</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${esc(r.type)}${r.tele ? " tele" : ""}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${r.miss ? "Missed" : r.delivered ? "Done" : r.alt ? "Other clinic" : r.date < t ? "Not entered" : "Booked"}</td></tr>`).join("")}</table>`;
+/* today's copay: the payment from column A on today's row, the answer from its Notes, and who answered. Answering here also
+   answers it in Complete session, and the other way round. */
+function ptCopayToday(p) {
+  const t = todaySerial(), r = p.rows.find(x => x.date === t && !x.miss && !x.alt && x.type !== "F/U") || p.rows.find(x => x.date === t && !x.miss && !x.alt);
+  if (!r) return "";
+  const c = TmsCore.copayOf(r.note), pay = payOf(p, r);
+  if (!p.d.owes && !c) return `<div class="payline"><span>Copay today</span><span class="muted">${p.d.oopmMet ? `None: ${p.d.oopmMet} OOPM met` : "None: the BIDF quote is $0"}</span></div>`;
+  const st = !c ? "Not logged yet" : c.kind === "collected" ? `Collected ${money(c.amt)}${c.by ? ` · ${c.by}${c.at ? `, ${c.at}` : ""}` : ""}` : c.kind === "not" ? "Not collected" : c.kind === "oopm" ? "$0, OOPM met" : c.kind === "waived" ? "Waived" : c.line;
+  const b = (k, l, dis) => `<button class="btn ghost sm" data-act="copayToday" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="${k}" aria-pressed="${!!c && c.kind === k}"${dis ? " disabled" : ""}>${l}</button>`;
+  return `<div class="copay"><div class="payline"><span>Copay today${pay != null ? ` ${money(pay)}` : ""}</span><span>${esc(st)}</span></div>
+    <div class="actions">${b("collected", pay != null ? `Collected ${money(pay)}` : "Collected", pay == null)}${b("not", "Not collected")}${b("oopm", "$0, OOPM met")}
+      <label class="by">By <input id="pvBy" value="${esc(state.techName || lastTech(p))}" autocomplete="off"></label></div></div>`;
+}
+async function copayToday(tab, row, kind) {
+  const [p, r] = findPR(tab, row); if (!r) return;
+  const by = (($("pvBy") || {}).value || "").trim(); if (!by) return toast("Enter who answered the copay (By).", true);
+  const note = withCopay(r.note, copayLine(kind, payOf(p, r), by));
+  try { await writeCells(tab, [[`S${row}`, note]], at(r)); state.techName = by; patchRow(tab, row, { note }); toast("Copay saved to Notes."); } catch (e) { fail(e); }
+}
+
+/* ---------- Protocol: J2:O4 against the Protocols table; sites read F3 (left) and F4 (right) ---------- */
+const pctMt = v => typeof v === "number" ? `${v <= 3 ? Math.round(v * 100) : v}% MT` : String(v || "").trim() ? `${String(v).trim()} MT` : "";
+function protoLines(p) {
+  return siteRows(p).map(x => {
+    const m = TmsCore.protoMatch(x, state.protocols), site = TmsCore.siteOf(x.site), q = m && m.base, tot = x.dur * x.trains;
+    const ch = !q ? [] : [...(m.diffs.some(dd => dd.k !== "wait") ? [`${tot.toLocaleString()} pulses (standard ${(q.pulses * q.trains).toLocaleString()})`] : []), ...(m.diffs.some(dd => dd.k === "wait") ? [`${x.wait} s wait (standard ${q.iti} s)`] : [])];
+    return { x, m, site, text: [TmsCore.SITE_LABEL[site], `${x.hz} Hz`, q && pctMt(q.inten), `${tot.toLocaleString()} pulses`].filter(Boolean).join(" · "), ch };
+  });
+}
+function ptProto(p) {
+  const L = protoLines(p), d = p.d, t = todaySerial();
+  const head = `<div class="h"><h2>Protocol</h2><button class="btn ghost sm" data-act="proto" data-t="${esc(p.tab)}">Edit</button></div>`;
+  if (!L.length) return head + `<p class="body">No protocol chosen. Pick one from the Protocols table; its values fill in.</p>${protoPick(p)}`;
+  const names = [...new Set(L.map(l => l.m ? l.m.name : "Custom"))].join(" + ");
+  const mtRow = p.rows.filter(r => (r.type === "MT" || r.type === "MTR") && /mt %:/i.test(r.note)).sort(cmp).pop(), mt = mtRow && (mtRow.note.match(/mt %:\s*([^;]+)/i) || [])[1];
+  const recheck = d.sched.find(r => r.type === "MTR"), tot = Math.max(1, d.total), taper = tot >= 12 ? 6 : 0, len = protoLen(p);
+  const auth = `${p.authStart != null ? fmtMon(p.authStart) : "No start"} to ${p.authExp != null ? fmtMon(p.authExp) : "no end"}, ${Math.max(0, d.total - d.txDone)} of ${d.total} left`;
+  const rows = [["Treatment", `${L.length > 1 ? `Bilateral, ${L.map(l => l.site).join(" then ")}` : "Unilateral"}${len ? `, ${Math.round(len)} min` : ""}`],
+    ["MT", `${mt ? mt.trim() : "Not recorded"}${recheck ? `, recheck ${fmtMon(recheck.date)}` : ""}`],
+    ["Device", device() === "Brainsway" ? "BrainsWay" : "MagVenture"],
+    ["Course", `${tot} treatments: ${tot - taper} daily${taper ? ` + ${taper} taper` : ""}`],
+    ["Authorization", auth, p.authExp == null || p.authExp < t ? "bad" : p.authExp - t <= state.cfg.authDays ? "flag" : ""],
+    ["Update protocol by", p.updateBy != null ? fmtMon(p.updateBy) : "Not set", d.protoFlags.length ? "flag" : ""]];
+  return head + `<p class="pname">${esc(names)}</p>${L.map(l => `<p class="prow">${esc(l.text)}${l.ch.length ? `<small>${esc(l.ch.join("; "))}</small>` : ""}</p>`).join("")}
+    <dl class="facts">${rows.map(([k, v, cls]) => `<dt>${k}</dt><dd class="${cls || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+}
+/* no protocol yet: the dropdown, with the values greyed until one is chosen */
+function protoPick(p) {
+  return `<div class="g2p pick"><select id="pvProto" aria-label="Protocol"><option value="">Choose a protocol</option>${state.protocols.map(q => `<option>${esc(q.name.trim())}</option>`).join("")}</select>
+    <select id="pvSite" aria-label="Site">${["F3", "F4", "Other"].map(s => `<option value="${s}">${TmsCore.SITE_LABEL[s]}</option>`).join("")}</select>
+    <button class="btn ghost sm" data-act="pvProtoSave" data-t="${esc(p.tab)}">Save protocol</button></div>
+    <div class="g4 greyed" aria-hidden="true">${["Hz", "Pulses per train", "Trains", "Wait (s)"].map(l => `<label class="fld"><span>${l}</span><input disabled tabindex="-1"></label>`).join("")}</div>`;
+}
+/* Edit: a protocol per row from the table (its values fill in and stay editable), the site, and the next expiration date (G2,
+   required). Saving also logs "Protocol renewed, next by m/d" in today's Notes. */
+function mProtoEdit(tab) {
+  const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
+  const opt = v => `<option value="">(none)</option>` + state.protocols.map(q => `<option${q.name.trim() === v ? " selected" : ""}>${esc(q.name.trim())}</option>`).join("");
+  const rowH = x => {
+    const m = TmsCore.protoMatch(x, state.protocols), base = m && m.base ? m.base.name.trim() : "", s = TmsCore.siteOf(x.site), has = isNum(x.hz);
+    return `<div class="per" data-pr="${x.n}"><select data-pk="name" aria-label="Protocol ${x.n}">${opt(base)}</select><select data-pk="site" aria-label="Site ${x.n}"><option value="">Site</option>${["F3", "F4", "Other"].map(k => `<option value="${k}"${k === s ? " selected" : ""}>${TmsCore.SITE_LABEL[k]}</option>`).join("")}</select>
+      ${[["hz", "Hz"], ["dur", "Pulses per train"], ["trains", "Trains"], ["wait", "Wait (s)"]].map(([k, l]) => `<input type="number" min="0" step="any" data-pk="${k}" aria-label="${l}, row ${x.n}" value="${has && typeof x[k] === "number" ? x[k] : ""}"${has || base ? "" : " disabled"}>`).join("")}</div>`;
+  };
+  showModal(`<h2 id="mtitle">Protocol: ${esc(tab)}</h2><p class="sub">Choose from the Protocols table; a changed value reads Custom. One row with a site is unilateral, two are bilateral, in order. Saved to J2:O4; N calculates the minutes.</p>
+    <div class="per hdr" aria-hidden="true"><span>Protocol</span><span>Site</span><span>Hz</span><span>Pulses/train</span><span>Trains</span><span>Wait (s)</span></div>${p.protoRows.map(rowH).join("")}
+    ${fld("Next expiration date (update protocol by, G2)", `<input type="date" id="mProtoBy" value="${p.updateBy != null && p.updateBy > todaySerial() ? serialToInput(p.updateBy) : ""}" required>`)}
+    ${mfoot("Save protocol", "doProtoEdit")}`, true);
+}
+function protoEditRead() {
+  return [...$("modalBody").querySelectorAll(".per[data-pr]")].map(el => { const g = k => el.querySelector(`[data-pk="${k}"]`).value.trim(); return { n: +el.dataset.pr, name: g("name"), site: g("site"), hz: g("hz"), dur: g("dur"), trains: g("trains"), wait: g("wait") }; });
+}
+async function doProtoEdit() {
+  const tab = state.mctx.t, rows = protoEditRead(), by = inputToSerial(mval("mProtoBy")), t = todaySerial();
+  const used = rows.filter(r => r.site || r.hz || r.name);
+  if (!used.some(r => r.site)) return merr("Choose a site for at least one protocol row.");
+  const bad = used.find(r => !r.site || !["hz", "dur", "trains", "wait"].every(k => r[k] !== "" && !isNaN(+r[k]) && +r[k] >= 0) || !(+r.hz > 0));
+  if (bad) return merr(`Row ${bad.n}: choose a site and fill Hz, pulses per train, trains and wait.`);
+  if (by == null || by <= t) return merr("Choose the next expiration date, after today.");
+  const pairs = [];
+  rows.forEach(r => {
+    const row = r.n + 1, u = used.includes(r);
+    [["J", "hz"], ["K", "dur"], ["L", "trains"], ["M", "wait"]].forEach(([c, k]) => pairs.push([`${c}${row}`, u ? +r[k] : ""]));
+    pairs.push([`O${row}`, u ? TmsCore.SITE_CELL[r.site] : ""]);
+  });
+  pairs.push(["G2", by]);
+  const p = state.patients.find(x => x.tab === tab), lr = p && p.rows.find(r => r.date === t && !r.miss);
+  if (lr) pairs.push([`S${lr.row}`, [...String(lr.note || "").split("; ").filter(x => x && !/^protocol renewed/i.test(x)), `Protocol renewed, next by ${fmtDate(by)}`].join("; ")]);
+  closeModal();
+  try { await writeCells(tab, pairs, lr ? at(lr) : null); toast(lr ? "Protocol saved. The renewal is noted on today's visit." : "Protocol saved. There's no visit today, so the renewal isn't in the log."); await refresh(); } catch (e) { fail(e); }
+}
+/* choosing a protocol in the Edit dialog fills its values (they stay editable) */
+function protoEditPick(sel) {
+  const el = sel.closest(".per"), q = state.protocols.find(x => x.name.trim() === sel.value); if (!el) return;
+  [["hz", "rep"], ["dur", "pulses"], ["trains", "trains"], ["wait", "iti"]].forEach(([k, f]) => { const i = el.querySelector(`[data-pk="${k}"]`); if (q) { i.value = q[f]; i.disabled = false; } else i.value = ""; });
+}
+
+/* ---------- Schedule: the course with its payments, what's booked, and every past visit ---------- */
+function payRow(p) {
+  const tot = Math.max(1, p.d.total), taper = tot >= 12 ? 6 : 0, daily = tot - taper, cols = taper ? `repeat(${daily},1fr) 10px repeat(${taper},1fr)` : `repeat(${tot},1fr)`;
+  const un = new Set(p.d.toConfirm.map(r => r.row)), done = p.rows.filter(r => TmsCore.isTreatment(r) && r.delivered).sort(cmp);
+  let cells = "";
+  for (let i = 1; i <= tot; i++) {
+    if (taper && i === daily + 1) cells += "<span></span>";
+    const r = done[i - 1], c = r && TmsCore.copayOf(r.note);
+    cells += `<span class="${!r ? "" : un.has(r.row) ? "un" : c && c.kind !== "not" ? "pd" : ""}"></span>`;
+  }
+  const n = un.size;
+  return `<div class="payrow" style="grid-template-columns:${cols}" role="img" aria-label="${n ? `${n} copay${n > 1 ? "s" : ""} to confirm` : "Copays logged"}">${cells}</div>
+    <p class="hint">${!p.d.owes ? "No copays to log: " + (p.d.oopmMet ? `${p.d.oopmMet} OOPM met` : "the BIDF quote is $0") : n ? `${n} copay${n > 1 ? "s" : ""} to confirm` : "Every copay due is logged"}</p>`;
+}
+function ptSched(p, fl) {
+  const d = p.d, t = todaySerial(), up = d.sched.slice(0, 8), av = availText(p);
+  const vt = fl.visits.filter(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting"].includes(ph(v)));
+  const line = r => {
+    const v = r.date === t && vt.find(x => x.row === r.row);
+    return `<div class="srow"><span class="p">${fmtDay(r.date)}</span><span>${clock(r.time) || "no time"}</span><span>${esc(r.type === "F/U" ? (r.tele ? "Telehealth" : p.provider || "Provider") : chairLbl(chairFor(p, r)))}</span><span>${typeof r.tx === "number" ? `#${r.tx}` : esc(apptTypeName(r))}</span><span class="muted">${esc(visitNote(r.note))}</span>${v ? `<button class="btn ghost sm" data-act="move" data-k="${esc(v.key)}">Move</button>` : "<span></span>"}</div>`;
+  };
+  return `<div class="h"><h2>Schedule</h2><button class="btn ghost sm" data-act="print" data-t="${esc(p.tab)}" data-v="14">Print schedule</button></div>
+    <p class="sub">${d.txDone} of ${d.total} done${p.mtRedos ? `, ${p.mtRedos} MT redo${p.mtRedos > 1 ? "s" : ""}` : ""}</p>${strip(p, fl.visits.some(v => v.tab === p.tab && v.chairVisit && ["booked", "waiting", "running"].includes(ph(v))))}${payRow(p)}
+    <div class="sub2">Measures</div>${scores(p, fl.visits.some(v => v.tab === p.tab && v.r.measX && !v.r.measVal))}
+    <div class="sub2">Next visits <span class="muted">${d.sched.length} booked</span></div>${up.length ? up.map(line).join("") : '<p class="body">Nothing booked.</p>'}
+    ${av ? `<p class="hint">Availability: ${esc(av)}</p>` : ""}
+    <div class="actions"><button class="btn ghost sm" data-act="ptSchedView" data-t="${esc(p.tab)}">Open in Schedule</button><button class="btn ghost sm" data-act="goimport">Book the rest of the course</button>${p.status === "Paused" ? "" : `<button class="btn ghost sm" data-act="status" data-t="${esc(p.tab)}" data-v="Paused">Pause course</button>`}</div>
+    <p class="hint">Book the rest in NextGen, then import the appointment list. The planner comes later.</p>
+    <div class="h"><h2>Past visits</h2><button class="btn ghost sm" data-act="ptPast" aria-expanded="${!!state.ptPast}">${state.ptPast ? "Hide" : "Show"}</button></div>${state.ptPast ? pastVisits(p) : ""}`;
+}
+/* every logged visit, newest first: Tx #, chair, pulses, PR, the copay and who logged it, the note */
+function pastVisits(p) {
+  const t = todaySerial(), all = p.rows.filter(r => r.date != null && r.date <= t && (r.delivered || r.miss || r.alt || r.type === "F/U")).sort(cmp).reverse();
+  if (!all.length) return '<p class="body">No visits logged yet.</p>';
+  const cp = r => { const c = TmsCore.copayOf(r.note); return !c ? "" : c.kind === "collected" ? `${money(c.amt)}${c.by ? `, ${c.by}` : ""}` : c.kind === "not" ? "Not collected" : c.kind === "oopm" ? "$0, OOPM met" : c.kind === "waived" ? "Waived" : c.line; };
+  return `<table class="tbl"><tr><th>Date</th><th class="num">Tx #</th><th>Visit</th><th>Chair</th><th>Pulses L / R / O</th><th class="num">PR</th><th>Copay</th><th class="num">PHQ-9</th><th class="num">GAD-7</th><th>Note</th></tr>${all.map(r => `<tr><td>${fmtMon(r.date)}</td><td class="num">${typeof r.tx === "number" ? r.tx : ""}</td><td>${r.miss ? "Missed" : esc(r.type)}${r.tele ? " tele" : ""}</td><td>${esc(r.type === "F/U" || r.alt ? "" : chairLbl(chairFor(p, r)))}</td><td>${r.pulses.map(x => esc(x ?? "")).join(" / ")}</td><td class="num">${esc(money(r.pr))}</td><td>${esc(cp(r))}</td><td class="num">${esc(r.phq)}</td><td class="num">${esc(r.gad)}</td><td>${esc(visitNote(r.note))}</td></tr>`).join("")}</table>`;
+}
+
+/* ---------- Copay and benefits: the Benefits row, the copay tally against what's left, and copays to confirm ---------- */
+function ptMoney(p) {
+  const b = p.ben, d = p.d, amt = (na, v) => na ? "N/A" : v != null ? money(v) : "Not entered", daily = (p.cost[1] || {}).after, Y = d.planYear;
+  const ro = d.rollover ? `Re-verify for ${d.rollover.year}` : p.benUpdated != null ? `Current for ${yearOf(p.benUpdated)}` : "Not verified";
+  const facts1 = [["Insurance", p.insurance || "Not entered"], ["Copay per treatment visit", daily != null ? `${money(daily)} (90868 Daily)` : "Not entered"],
+    ["Deductible remaining", amt(b.dedNA, b.dedRem)], ["OOPM remaining", amt(b.oopNA, b.oopRem)], ["BIDF estimate", b.bidf != null ? `${money(b.bidf)}, projected ${money(d.projected) || "$0.00"}` : "Not entered"],
+    ["Last updated", p.benUpdated != null ? fmtDateY(p.benUpdated) : "Never"], ["Plan year", ro, d.rollover ? (d.rollover.bad ? "bad" : "flag") : ""]];
+  const dl = rows => `<dl class="facts">${rows.map(([k, v, cls]) => `<dt>${k}</dt><dd class="${cls || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+  const col1 = `<div><div class="sub2">Benefits</div>${dl(facts1)}<div class="actions"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Update BIDF</button><button class="btn ghost sm" data-act="goimport">Re-run eligibility</button></div><p class="hint">Re-run eligibility in the Sohar tool, then Import > Import Sohar benefits.</p></div>`;
+  let col2;
+  if (d.oopmMet) col2 = `<div><div class="sub2">Copay tally</div><p><span class="tag">${d.oopmMet} OOPM met</span></p><p class="hint">No copay checks for this patient until the plan year ends.</p></div>`;
+  else if (!d.owes) col2 = `<div><div class="sub2">Copay tally</div><p class="body">The BIDF quote is $0, so there are no copays to track.</p></div>`;
+  else col2 = `<div><div class="sub2">Copay tally ${Y}</div>${dl([["Logged collected", `${money(d.tally.sum) || "$0.00"} over ${d.tally.n} visit${d.tally.n === 1 ? "" : "s"}`], ["OOPM remaining", amt(b.oopNA, b.oopRem)], ["Deductible remaining", amt(b.dedNA, b.dedRem)]])}
+      ${d.oopmLikely ? `<p class="warnline">Out-of-pocket max likely met: set the copay to $0 at pre-check and update Insurance Maintenance in NextGen.</p><p class="hint">Logged copays are a floor: claims applied to the deductible after adjudication count too. Confirm in NextGen or re-run eligibility first.</p>` : ""}
+      <div class="actions"><button class="btn ghost sm" data-act="oopmMet" data-t="${esc(p.tab)}">Mark ${Y} OOPM met</button></div></div>`;
+  return `<div class="h"><h2>Copay and benefits</h2></div><div class="g3c">${col1}${col2}<div><div class="sub2">Copays to confirm</div>${toConfirmHtml(p)}</div></div>`;
+}
+function toConfirmHtml(p) {
+  const L = p.d.toConfirm, pick = state.ptPick || new Set();
+  if (!p.d.owes) return '<p class="body">None needed.</p>';
+  if (!L.length) return '<p class="body">Every copay due is logged.</p>';
+  return `${L.map(r => `<label class="chk"><input type="checkbox" data-pick="${r.row}"${pick.has(r.row) ? " checked" : ""}> ${fmtMon(r.date)}${typeof r.tx === "number" ? `, #${r.tx}` : ""}: ${money(payOf(p, r))}</label>`).join("")}
+    <div class="actions"><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="sel">Mark selected paid</button><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="all">Mark all paid</button><button class="btn ghost sm" data-act="copayMark" data-t="${esc(p.tab)}" data-v="waive">Waive</button></div>`;
+}
+/* "Copay $X collected (confirmed m/d by Name)" or "Copay waived by Name m/d" on each visit's Notes */
+async function copayMark(tab, how) {
+  const p = state.patients.find(x => x.tab === tab); if (!p) return;
+  const pick = state.ptPick || new Set(), L = p.d.toConfirm.filter(r => how === "all" || pick.has(r.row));
+  if (!L.length) return toast("Tick the visits first.", true);
+  const by = firstName((($("pvBy") || {}).value || "").trim() || state.techName); if (!by) return toast("Enter your name in By on today's copay line, or complete a session first.", true);
+  const t = fmtDate(todaySerial()), ops = L.map(r => [r, withCopay(r.note, how === "waive" ? `Copay waived by ${by} ${t}` : `Copay ${money(payOf(p, r))} collected (confirmed ${t} by ${by})`)]);
+  try {
+    await applyOps(ops.map(([r, note]) => ({ tab, a: `S${r.row}`, v: [[note]] })), ops.map(([r]) => ({ tab, ...at(r) })));
+    ops.forEach(([r, note]) => { r.note = note; }); p.d = derive(p); state.ptPick = new Set(); renderDash();
+    toast(`${L.length} copay${L.length > 1 ? "s" : ""} ${how === "waive" ? "waived" : "marked paid"}.`);
+  } catch (e) { fail(e); }
+}
+/* OOPM met: 0 remaining on the Benefits row (Last updated follows); the copay flags stop for this patient */
+async function oopmMet(tab) {
+  if (!state.patients.some(x => x.tab === tab)) return;
+  try { await applyOps([{ tab, a: "W5", v: [[0]] }]); toast(`${tab}: ${yearOf(todaySerial())} OOPM met. Copay checks stop until the plan year ends.`); await refresh(); } catch (e) { fail(e); }
 }
 
 /* ---------- Chairs: devices, chair hours and protocols ---------- */
@@ -1183,7 +1463,7 @@ const techInput = cur => `<input id="mTech" list="mTechs" value="${esc(cur || ""
 /* what the protocol calls for, per site (J:M rows with a site in O) */
 function wantPulses(p) {
   const want = { Left: 0, Right: 0, Other: 0 };
-  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES.includes(x.site) ? x.site : "Left"] += x.dur * x.trains; });
+  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES[TmsCore.pulseCol(TmsCore.siteOf(x.site) || "F3")]] += x.dur * x.trains; });
   return want;
 }
 function pulseFields(p) {
@@ -1200,13 +1480,18 @@ const measUp = (p, r) => p.rows.filter(x => x.date != null && r.date != null && 
 const measPick = (p, r, dest) => `<select id="mMeasTo" aria-label="Move the measures to">${measUp(p, r).slice(0, 20).map(x => `<option value="${x.row}"${x === dest ? " selected" : ""}>${fmtDay(x.date)}, ${esc(apptTypeName(x))}</option>`).join("")}</select>`;
 
 /* "Copay $25.00 collected" (or not collected) in the visit's Notes; a later answer replaces it */
-const withCopay = (note, line) => [...String(note || "").split("; ").filter(x => x && !/^copay .* (not )?collected/i.test(x)), ...(line ? [line] : [])].join("; ");
+const withCopay = TmsCore.withCopayLine;
+const firstName = s => String(s || "").trim().split(/[\s,]+/)[0] || "";
+/* the copay line with who answered and when: "Copay $25.00 collected by Priya 11:32 AM" */
+const copayLine = (kind, amt, by) => (kind === "oopm" ? "Copay $0, OOPM met" : `Copay ${money(amt)} ${kind === "not" ? "not collected" : "collected"}`) + (by ? ` by ${firstName(by)} ${clock(nowMin())}` : "");
 function mEnd(v) {
-  const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r), pay = payOf(p, v.r);
+  const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r);
+  /* the copay asked here is the patient view's copay line too: an answer there is already chosen (OOPM met: not asked) */
+  const cl = TmsCore.copayOf(v.r.note), pay = cl && cl.kind === "oopm" || !p.d.owes ? 0 : payOf(p, v.r);
   state.mctx = { k: v.key, pay: pay > 0 ? pay : null };
   showModal(`<h2 id="mtitle">Complete ${esc(v.tab)}'s session</h2><p class="sub">Treatment ${sessNo(v)} of ${p.d.total}. Protocol: ${esc(protoText(p))}. Pulses are filled from the protocol; change them if delivery differed.</p>
     ${pulseFields(p)}${fld("Treating technician", techInput(v.r.tech || state.techName || lastTech(p)))}
-    ${pay > 0 ? `<h3>Copay today: ${esc(money(pay))}</h3><div class="opts"><label class="opt"><input type="radio" name="copay" value="collected"><span>Collected</span></label><label class="opt"><input type="radio" name="copay" value="not collected"><span>Not collected</span></label></div>` : ""}
+    ${pay > 0 ? `<h3>Copay today: ${esc(money(pay))}</h3><div class="opts"><label class="opt"><input type="radio" name="copay" value="collected"${cl && cl.kind === "collected" ? " checked" : ""}><span>Collected</span></label><label class="opt"><input type="radio" name="copay" value="not"${cl && cl.kind === "not" ? " checked" : ""}><span>Not collected</span></label></div>` : ""}
     <h3>Side effects</h3>
     <div class="qrow"><span>Any pain or discomfort during treatment?</span><select id="mPain"><option${dr.a.pain === "Yes" ? "" : " selected"}>No</option><option${dr.a.pain === "Yes" ? " selected" : ""}>Yes</option></select><input id="mPainD" class="sp" placeholder="What and where (needed if yes)" value="${esc(dr.d.pain || "")}"${dr.a.pain === "Yes" ? "" : " hidden"}></div>
     <div class="qrow"><span>Involuntary muscle movements?</span><select id="mMus">${["Yes (normal)", "No"].map(o => `<option${dr.a.mus === o ? " selected" : ""}>${o}</option>`).join("")}</select></div>
@@ -1231,7 +1516,7 @@ async function doEnd() {
   }
   const dr = draftOf(v.p, v.r); dr.a.pain = pain; dr.d.pain = painD; dr.a.mus = mval("mMus"); if (!dr.initials) dr.initials = state.initials || initialsOf(tech);
   closeModal();
-  if (!await markPulses(v.tab, v.row, { vals, tech, note: cp ? withCopay(v.r.note, `Copay ${money(pay)} ${cp}`) : null })) return;
+  if (!await markPulses(v.tab, v.row, { vals, tech, note: cp ? withCopay(v.r.note, copayLine(cp, pay, tech)) : null })) return;
   if (meas && meas.move) await moveMeasures(v.tab, v.row, meas.move.row); else if (meas) await saveMeasures(v.tab, v.row, meas);
   if (!await sessWrite(v, { end: nowMin(), ...(v.start == null ? { start: v.checkin ?? nowMin() } : {}) }, `Treatment ${sessNo(v)} saved to ${v.tab}.`)) return;
   const nv = findVisit(v.key); if (nv && !state.copied.has(nv.key)) mNote(nv);   // the drafted note, ready to copy into NextGen
@@ -1265,7 +1550,7 @@ function mMiss(v) {
     <h3>Freebie</h3>
     <div class="opts"><label class="opt"><input type="radio" name="fb" value="Used"${left <= 0 ? " disabled" : ""}><span>Use freebie${warn ? `<small class="warnline">${warn}</small>` : ""}</span></label>
       <label class="opt"><input type="radio" name="fb" value="Waived"><span>Waived</span></label>
-      <label class="opt"><input type="radio" name="fb" value="" checked><span>Decide later<small>Stays on Courses until it's decided</small></span></label></div>
+      <label class="opt"><input type="radio" name="fb" value="" checked><span>Decide later<small>Stays on Patients until it's decided</small></span></label></div>
     ${mfoot("Record missed visit", "doMiss")}`);
 }
 async function doMiss() {
@@ -1282,7 +1567,7 @@ async function recordMiss(tab, row, kind, fb) {
     await writeCells(tab, pairs, at(r)); if (fb === "Used") p.freebiesLeft = Math.max(0, left - 1);
     patchRow(tab, row, { miss: true, note, freebie: fb || "" });
     const n = TmsCore.missStreak(p.rows, todaySerial());
-    toast(n >= 3 ? `${tab}: ${n} missed in a row. Call to reschedule is on Courses.` : fb === "Used" && left - 1 <= 1 ? `${kind} recorded. ${tab} has ${Math.max(0, left - 1)} freebie${left - 1 === 1 ? "" : "s"} left.` : `${kind} recorded for ${tab}.`);
+    toast(n >= 3 ? `${tab}: ${n} missed in a row. Call to reschedule is on Patients.` : fb === "Used" && left - 1 <= 1 ? `${kind} recorded. ${tab} has ${Math.max(0, left - 1)} freebie${left - 1 === 1 ? "" : "s"} left.` : `${kind} recorded for ${tab}.`);
   } catch (e) { fail(e); }
 }
 function freebieModal(tab, row) {
@@ -1318,7 +1603,7 @@ async function doMove() {
 }
 async function setNgTick(k, on) {
   const s = state.sess && state.sess.rows.get(k); if (!s) return;
-  await sessWrite({ key: k, date: s.date, tab: s.tab, visit: s.visit }, { tick: on }, on ? `Noted: ${s.tab} moved in NextGen.` : "Unticked. Courses will remind you.");
+  await sessWrite({ key: k, date: s.date, tab: s.tab, visit: s.visit }, { tick: on }, on ? `Noted: ${s.tab} moved in NextGen.` : "Unticked. Patients will remind you.");
 }
 function mNote(v) {
   const p = v.p, r = v.r, dr = draftOf(p, r), bl = baselineOf(p), sel = (dk, opts, val) => `<select data-dk="${dk}">${opts.map(o => `<option${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
@@ -1357,7 +1642,7 @@ async function doFuMeas() {
   if (!(isInt(P, 0, 27) && isInt(Q, 0, 21))) return merr("Enter PHQ-9 (0 to 27) and GAD-7 (0 to 21).");
   closeModal(); await saveMeasures(v.tab, v.row, { P: +P, Q: +Q });
 }
-/* Courses: the needs' own dialogs, for one tab (and a log row where the need is about one visit) */
+/* Patients: the needs' own dialogs, for one tab (and a log row where the need is about one visit) */
 function mPastPulses(tab, row) {
   const [p, r] = findPR(tab, row); if (!r) return; state.mctx = { t: tab, row };
   showModal(`<h2 id="mtitle">Pulses for ${fmtDay(r.date)}: ${esc(tab)}</h2><p class="sub">No pulses on the row and it isn't marked missed. Enter what was delivered, or record it as missed.</p>
@@ -1390,11 +1675,6 @@ function mExt(tab) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
   showModal(`<h2 id="mtitle">Add extension: ${esc(tab)}</h2><p class="sub">${p.d.total} treatments authorized (D2)${p.authExp != null ? `, ${p.authExp < todaySerial() ? "expired" : "ends"} ${fmtMon(p.authExp)}` : ""}. Adds daily visits to D2 and Extensions added on the ${p.layout === 3 ? BEN_SHEET + " tab" : "tab (W7)"}.</p>
     <div class="g2">${fld("Daily visits to add", '<input type="number" min="1" id="mExtN" value="15">')}${fld("New auth end (optional)", '<input type="date" id="mExtD">')}</div>${mfoot("Add extension", "doExt")}`);
-}
-function mProto(tab) {
-  const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
-  showModal(`<h2 id="mtitle">Protocol: ${esc(tab)}</h2><p class="sub">Now: ${esc(protoText(p))}. ${p.d.protoFlags.length ? esc(p.d.protoFlags.join("; ")) + "." : ""}</p>
-    ${protoEditor(p, "pm").replace(/<button[^>]*data-act="protoSave"[^>]*>[^<]*<\/button>/, "")}${mfoot("Save protocol", "doProto")}`, true);
 }
 function mAvail(tab, keep) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return; state.mctx = { t: tab };
@@ -1470,13 +1750,13 @@ const AP_SHEET = "Active Patients", AP_SHOW = [...ACTIVE, "Paused"], AP_HEAD = 4
 const AP_FILL = { MT: "#dcffff", MTR: "#e6f3d6", "F/U": "#ffe6f1", Alt: "#ffeccc" };
 function activeSheetModel() {
   const t = todaySerial(), ws = weekStart(t), days = [1, 2, 3, 4, 5].map(i => ws + i);
-  const P = state.patients.filter(p => p.status === "" || AP_SHOW.includes(p.status)), blank = Array(6).fill("");
-  const head = ["Patient", "MRN", "Status", ...days.map(d => `${DAYS[dow(d)]} ${fmtDate(d)}${d === t ? " (today)" : ""}`), "Next F/U", "Graduation", "Auth exp", "Tx left", "MD on-site", "Schedule given"];
+  const P = state.patients.filter(p => p.status === "" || AP_SHOW.includes(p.status)), blank = Array(7).fill("");
+  const head = ["Patient", "MRN", "Status", ...days.map(d => `${DAYS[dow(d)]} ${fmtDate(d)}${d === t ? " (today)" : ""}`), "Next F/U", "Graduation", "Auth exp", "Tx left", "MD on-site", "Schedule given", "Copays unconfirmed"];
   const vs = days.map(variances);
   const treated = ["Treated", "", "", ...vs.map(v => v.expected ? `${v.actual} of ${v.expected}` : ""), ...blank];
   const notes = ["Variances", "", "", ...vs.map((v, i) => [state.closures.has(days[i]) ? `Closed: ${state.closures.get(days[i])}` : "", ...Object.entries(v.groups).filter(([, a]) => a.length).map(([k, a]) => `${a.length} ${k.toLowerCase()}`)].filter(Boolean).join(", ")), ...blank];
   const rows = P.map(p => [p.tab, p.mrnRaw, p.status || "(blank)", ...days.map(d => dayCode(p, d)), p.d.fuNext ? p.d.fuNext.date : "", p.d.grad ?? "", p.authExp ?? "",
-    p.txRem ?? Math.max(0, p.d.total - p.d.txDone), p.d.mdOnSite ? "Yes" : "", p.ben.lastSched ?? ""]);
+    p.txRem ?? Math.max(0, p.d.total - p.d.txDone), p.d.mdOnSite ? "Yes" : "", p.ben.lastSched ?? "", p.d.toConfirm.length || ""]);
   return { t, days, P, head, sum: [treated, notes], rows, sig: JSON.stringify([t, head, treated, notes, rows]) };
 }
 async function syncActiveSheet(force) {
@@ -1499,15 +1779,15 @@ async function syncActiveSheet(force) {
       ws.getRange("A1").values = [[AP_SHEET]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
       ws.getRange("A2").values = [[`Week of ${fmtDateY(m.days[0])}. Rebuilt by the TMS Tracker add-in ${stamp}. View only: change things on the patient tabs or in the add-in.`]];
       ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
-      const hd = ws.getRange(`A${AP_HEAD}:N${AP_HEAD}`); hd.values = [m.head];
+      const hd = ws.getRange(`A${AP_HEAD}:O${AP_HEAD}`); hd.values = [m.head];
       hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true; hd.format.wrapText = true; hd.format.verticalAlignment = "Center"; hd.format.rowHeight = 30;
-      const sm = ws.getRange(`A${AP_HEAD + 1}:N${AP_HEAD + 2}`); sm.values = m.sum; sm.format.fill.color = "#f3f6f8"; sm.format.verticalAlignment = "Top";
+      const sm = ws.getRange(`A${AP_HEAD + 1}:O${AP_HEAD + 2}`); sm.values = m.sum; sm.format.fill.color = "#f3f6f8"; sm.format.verticalAlignment = "Top";
       ws.getRange(`A${AP_HEAD + 1}:A${AP_HEAD + 2}`).format.font.bold = true;
       ws.getRange(`D${AP_HEAD + 1}:H${AP_HEAD + 1}`).format.font.bold = true;
       const vr = ws.getRange(`D${AP_HEAD + 2}:H${AP_HEAD + 2}`); vr.format.wrapText = true; vr.format.font.size = 9; vr.format.font.color = "#5b6b75";
       ws.getRange(`D${AP_HEAD}:H${end}`).format.horizontalAlignment = "Center";
       if (n) {
-        const body = ws.getRange(`A${AP_FIRST}:N${last}`); body.values = m.rows;
+        const body = ws.getRange(`A${AP_FIRST}:O${last}`); body.values = m.rows;
         ["I", "J", "K", "N"].forEach(c => ws.getRange(`${c}${AP_FIRST}:${c}${last}`).numberFormat = m.rows.map(() => ["m/d/yyyy"]));
         const b = body.format.borders.getItem("InsideHorizontal"); b.style = "Continuous"; b.color = "#dde3e8";
         const bb = body.format.borders.getItem("EdgeBottom"); bb.style = "Continuous"; bb.color = "#dde3e8";
@@ -1533,8 +1813,8 @@ async function syncActiveSheet(force) {
       ws.getRange(`A${legend}`).format.font.bold = true;
       [["B", AP_FILL.MT], ["C", AP_FILL.MTR], ["D", AP_FILL["F/U"]], ["E", AP_FILL.Alt], ["F", "#fbe9e7"]].forEach(([c, f]) => { const x = ws.getRange(`${c}${legend}`); x.format.fill.color = f; x.format.horizontalAlignment = "Center"; });
       ws.getRange(`F${legend}`).format.font.color = "#b3261e";
-      [72, 62, 82, 64, 64, 64, 64, 64, 66, 66, 66, 48, 58, 70].forEach((w, i) => ws.getRange(`${col(i)}:${col(i)}`).format.columnWidth = w);
-      ws.getRange(`A${AP_HEAD + 2}:N${AP_HEAD + 2}`).format.autofitRows();
+      [72, 62, 82, 64, 64, 64, 64, 64, 66, 66, 66, 48, 58, 70, 70].forEach((w, i) => ws.getRange(`${col(i)}:${col(i)}`).format.columnWidth = w);
+      ws.getRange(`A${AP_HEAD + 2}:O${AP_HEAD + 2}`).format.autofitRows();
       ws.freezePanes.freezeAt(ws.getRange(`A1:A${AP_HEAD + 2}`));
       ws.protection.protect({ allowFormatColumns: true, allowFormatRows: true });
       await ctx.sync();
@@ -1594,9 +1874,11 @@ async function writeBen(ctx, entries) {
 const benTarget = tab => state.patients.find(p => p.tab === tab && p.layout === 3);
 /* every simple write goes through applyOps: { tab, a, v (2-D values) } or { tab, a, clear: true }. Benefits keys (W4, X12 ...)
    on a current-layout tab go to that patient's Benefits row; { tab, a: BEN_STAMP } only stamps Last updated. */
-async function applyOps(ops, guard) {
-  if (POPOUT) return callPane("applyOps", [ops, guard]);
-  const ben = [], cells = [];
+/* log: { what, kind } names the change in the Edit log (what defaults to the cells' meaning, see describeCells); false leaves it
+   out, for writes that are part of a larger logged change (an import). An op with f: true writes a formula. */
+async function applyOps(ops, guard, log) {
+  if (POPOUT) return callPane("applyOps", [ops, guard, log]);
+  const ben = [], cells = []; let unlogged = false;
   for (const o of ops) {
     const p = isBenKey(o.a) && benTarget(o.tab);
     if (p) ben.push({ mrn: p.mrn, mrnVal: p.mrnVal, tab: p.tab, key: o.a, v: o.clear ? "" : o.v && o.v[0][0], quiet: !!o.quiet });
@@ -1604,13 +1886,283 @@ async function applyOps(ops, guard) {
   }
   await Excel.run(async ctx => {
     const g = (guard || []).filter(x => x.date != null).map(x => ({ ...x, r: ctx.workbook.worksheets.getItem(x.tab).getRange(`E${x.row}:L${x.row}`) }));   // E date, L type
-    if (g.length) { g.forEach(x => x.r.load("values")); await ctx.sync(); }
+    /* what each cell held before, so the Edit log can put it back */
+    const rs = log === false ? [] : cells.map(o => { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); r.load("formulas"); return { o, r }; });
+    /* and which visit each visit-log row held (E date, L type), so an undo can tell the row still holds that visit */
+    const ats = log === false ? [] : [...new Set(cells.map(o => logRowOf(o.a) && `${o.tab}|${logRowOf(o.a)}`).filter(Boolean))]
+      .map(k => { const [tab, row] = k.split("|"), r = ctx.workbook.worksheets.getItem(tab).getRange(`E${row}:L${row}`); r.load("values"); return { tab, row: +row, r }; });
+    g.forEach(x => x.r.load("values"));
+    if (g.length || rs.length) await ctx.sync();
+    const was = rs.map(({ o, r }) => ({ o, b: r.formulas.map(x => x.slice()) }));   // copied now, before anything is written
+    const atWas = ats.map(x => {
+      const a = { tab: x.tab, row: x.row, date: dayOf(x.r.values[0][0]), type: String(x.r.values[0][7] ?? "").trim() };
+      cells.forEach(o => { if (o.tab !== a.tab || o.clear || !o.v) return; if (o.a === `E${a.row}`) a.date = dayOf(o.v[0][0]); if (o.a === `L${a.row}`) a.type = String(o.v[0][0] ?? "").trim(); });   // what the edit leaves there
+      return a;
+    });
     const moved = g.find(x => Math.floor(Number(x.r.values[0][0]) || 0) !== x.date || (x.type != null && String(x.r.values[0][7] ?? "").trim() !== String(x.type).trim()));   // both sides trimmed: "Daily " on the tab is still Daily
     if (moved) throw new Error(`${moved.tab}: the visit on row ${moved.row} has moved on the tab (an import may have re-sorted it). Nothing was saved. Select Refresh and try again.`);
-    for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else r.values = o.v; }
+    const benWas = log === false ? [] : ben.filter(e => e.key !== BEN_STAMP).map(e => ({ e, b: ((state.ben.rows.get(e.mrn) || {}).v || [])[colIndex(BEN_COLS[e.key])] ?? "" }));   // Last updated stamps aren't undone
+    for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else if (o.f) r.formulas = o.v; else r.values = o.v; }
     await writeBen(ctx, ben);
+    /* the save stands even if the Edit log can't record it (for example a protected workbook structure); it says so instead */
+    if (log !== false) try { await addEdits(ctx, editsFromOps(was, benWas, atWas, log || {})); } catch (e) { console.error(e); unlogged = true; }
     await ctx.sync();
   });
+  if (unlogged) toast("Saved, but the Edit log couldn't record it, so it can't be undone from there.", true);
+}
+const dayOf = v => Math.floor(Number(v)) || null;
+/* a single visit-log cell (A:T), not availability in V:Y on the same rows */
+const logRowOf = a => { const m = String(a).match(/^[A-T](\d+)$/), r = m && +m[1]; return r >= LOG_FIRST && r < LOG_FIRST + LOG_READ ? r : null; };
+/* ---------- Edit log: every change the add-in makes to a patient tab or the Benefits tab, one row each on the Edit Log sheet
+   (hidden; it travels with the workbook, so every computer sees the same list). A Id, B when, C tab, D what, E kind, F by,
+   G state ("" can be undone, "Undone ...", "No undo"), H on: what undo needs, as JSON in 30,000-character parts. An undo only
+   runs when the cells still hold what the edit left; a later edit on the same cells has to be undone first.
+   Not logged: the Sessions sheet (check-in, chair moves), formatting, and the Appt List tab, which each import replaces. ---------- */
+const ELOG_SHEET = "Edit Log", ELOG_HDR = ["Id", "When", "Tab", "What", "Kind", "By", "State", "Undo data"], ELOG_PART = 30000, ELOG_PARTS = 20, ELOG_SHOW = 300, ELOG_KEEP = 2000;
+/* what a cell means, for the log's wording: visit-log columns, then header cells */
+const LOG_WORDS = { A: "PR formula", B: "technician", C: "Tx #", D: "Tx left formula", E: "date", F: "pulses", G: "pulse total", H: "pulses", I: "pulse total", J: "pulses", K: "pulse total",
+  L: "visit type", M: "missed mark", N: "taper", O: "action", P: "PHQ-9", Q: "GAD-7", R: "other clinic", S: "notes", T: "time" };
+const HDR_WORDS = { A4: "MRN", D2: "# of TXs", D4: "# of MT redos", D6: "MD on site", D7: "status", E2: "provider", E4: "TAS", E6: "insurance", F4: "auth start", G4: "auth expiry",
+  G2: "update protocol by", G6: "progress note sent", N6: "freebies left", N7: "auth assessment", S9: "home clinic" };
+const sentence = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+const andList = a => a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`;
+const plural = (n, w, ws) => `${n} ${n === 1 ? w : ws || w + "s"}`;
+/* Excel hands formulas back in its own spacing and numbers back as numbers, so cells are compared on a normal form */
+const normCell = v => { const s = String(v ?? "").trim(); if (s.startsWith("=")) return s.replace(/\s+/g, "").toUpperCase(); return s !== "" && isFinite(+s) ? String(Math.round(+s * 1e6) / 1e6) : s; };
+const sameGrid = (a, b) => JSON.stringify((a || []).map(r => r.map(normCell))) === JSON.stringify((b || []).map(r => r.map(normCell)));
+/* "Pulses, technician and notes on Oct 27 (row 29); status" */
+function describeCells(tab, addrs) {
+  const p = state.patients.find(x => x.tab === tab), end = (p && p.end) || LOG_LAST, byRow = new Map(), other = [];
+  for (const a of addrs) {
+    if (isBenKey(a)) { other.push("benefits"); continue; }
+    const m = String(a).match(/^([A-Z]+)(\d+)/); if (!m) continue;
+    const col = m[1], row = +m[2];
+    if (row >= LOG_FIRST && row <= end && LOG_WORDS[col]) { if (!byRow.has(row)) byRow.set(row, []); byRow.get(row).push(LOG_WORDS[col]); continue; }
+    other.push(HDR_WORDS[col + row] || (row >= 2 && row <= 4 && "JKLMO".includes(col) ? "protocol" : row >= WK_FIRST - 1 && "VWXY".includes(col) ? "availability" : `${col}${row}`));
+  }
+  const rows = [...byRow].sort((a, b) => a[0] - b[0]).map(([row, w]) => { const r = p && p.rows.find(x => x.row === row); return `${andList([...new Set(w)])} on ${r && r.date != null ? `${fmtMon(r.date)} (row ${row})` : `row ${row}`}`; });
+  return sentence([...rows, ...new Set(other)].join("; ")) || "Cells changed";
+}
+/* applyOps' writes as Edit log entries, one per tab */
+function editsFromOps(was, benWas, atWas, log) {
+  const by = new Map(), get = tab => by.get(tab) || by.set(tab, { tab, cells: [], ben: [], at: [] }).get(tab);
+  atWas.forEach(a => get(a.tab).at.push({ row: a.row, date: a.date, type: a.type }));
+  was.forEach(({ o, b }) => get(o.tab).cells.push({ a: o.a, b, f: o.clear ? b.map(x => x.map(() => "")) : o.v }));
+  benWas.forEach(({ e, b }) => get(e.tab).ben.push({ a: e.key, b, f: e.v }));
+  return [...by.values()].filter(x => x.cells.length || x.ben.length).map(x => ({ tab: x.tab, kind: log.kind || "edit", what: log.what || describeCells(x.tab, [...x.cells, ...x.ben].map(c => c.a)), undo: { cells: x.cells, ben: x.ben, at: x.at } }));
+}
+async function elogSheet(ctx) {
+  let ws = ctx.workbook.worksheets.getItemOrNullObject(ELOG_SHEET); await ctx.sync();
+  if (!ws.isNullObject) return ws;
+  ws = ctx.workbook.worksheets.add(ELOG_SHEET);
+  const hd = ws.getRange("A1:H1"); hd.values = [ELOG_HDR]; hd.format.font.bold = true;
+  ws.visibility = Excel.SheetVisibility.hidden;
+  return ws;
+}
+let elogSeq = 0;
+const nowSerial = () => { const d = new Date(); return todaySerial() + (d.getHours() * 60 + d.getMinutes()) / 1440; };
+const whenText = s => { const d = Math.floor(s), t = clock(Math.round((s - d) * 1440)); return d === todaySerial() ? t : `${fmtMon(d)}, ${t}`; };
+/* entries: { tab, kind, what, undo (null: nothing to put back) }, written after the sheet's last row (read now, since another
+   computer may have written since). The oldest 200 go once the log passes ELOG_KEEP. */
+async function addEdits(ctx, entries) {
+  if (!entries.length) return;
+  const ws = await elogSheet(ctx), u = ws.getUsedRange(true); u.load("rowCount"); await ctx.sync();
+  let row = Math.max(2, u.rowCount + 1); const when = nowSerial(), by = state.techName || "";
+  for (const e of entries) {
+    const id = `${Date.now().toString(36)}${(elogSeq++).toString(36)}`, data = e.undo ? JSON.stringify(e.undo) : "";
+    const parts = []; for (let i = 0; i < data.length; i += ELOG_PART) parts.push(data.slice(i, i + ELOG_PART));
+    const st = data && parts.length <= ELOG_PARTS ? "" : "No undo";
+    const line = ws.getRange(`A${row}:G${row}`); line.numberFormat = [["@", "m/d/yyyy h:mm AM/PM", "@", "@", "@", "@", "@"]]; line.values = [[id, when, e.tab, e.what, e.kind, by, st]];
+    if (!st) { const c = ws.getRange(`H${row}:${colLetter(7 + parts.length - 1)}${row}`); c.numberFormat = [parts.map(() => "@")]; c.values = [parts]; }
+    state.edits.unshift({ id, row, when, tab: e.tab, what: e.what, kind: e.kind, by, st });
+    row++;
+  }
+  state.edits.length = Math.min(state.edits.length, ELOG_SHOW);
+  if (row - 2 > ELOG_KEEP + 200) { ws.getRange("2:201").delete(Excel.DeleteShiftDirection.up); state.edits.forEach(x => { x.row -= 200; }); }
+}
+async function readElog(ctx) {
+  const ws = ctx.workbook.worksheets.getItemOrNullObject(ELOG_SHEET); await ctx.sync();
+  if (ws.isNullObject) { state.edits = []; return; }
+  const u = ws.getUsedRange(true); u.load("rowCount"); await ctx.sync();
+  const last = u.rowCount, first = Math.max(2, last - ELOG_SHOW + 1);
+  if (last < 2) { state.edits = []; return; }
+  const r = ws.getRange(`A${first}:G${last}`); r.load("values"); await ctx.sync();
+  state.edits = r.values.map((v, i) => ({ id: String(v[0]), row: first + i, when: Number(v[1]) || 0, tab: String(v[2]), what: String(v[3]), kind: String(v[4]), by: String(v[5]), st: String(v[6]) }))
+    .filter(e => e.id).reverse();
+}
+/* each tab's log, read in the current Excel.run: where it ends, B:T formulas (F) and A:T values (V) */
+async function readLogs(ctx, tabs) {
+  /* six tabs per read, like refresh's batches: Excel on the web caps what one sync can return */
+  if (tabs.length > 6) { const out = new Map(); for (let i = 0; i < tabs.length; i += 6) for (const [k, v] of await readLogs(ctx, tabs.slice(i, i + 6))) out.set(k, v); return out; }
+  const G = tabs.map(tab => { const ws = ctx.workbook.worksheets.getItem(tab), a10 = ws.getRange(`A${LOG_FIRST}`), b = ws.getRange(`B${LOG_FIRST}:B${LOG_FIRST + LOG_READ - 1}`); a10.load("formulas"); b.load("values"); return { tab, ws, a10, b }; });
+  await ctx.sync();
+  G.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.r = g.ws.getRange(`B${LOG_FIRST}:T${g.end}`); g.r.load("formulas"); g.v = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.v.load("values"); });
+  await ctx.sync();
+  return new Map(G.map(g => [g.tab, { end: g.end, F: g.r.formulas, V: g.v.values }]));
+}
+/* a log's typed cells: B:T without the formula columns D, G, I, K */
+const logHash = F => TmsCore.hashRows(F.map(r => r.map((v, j) => LOG_FORMULA_COLS.has(j + 1) ? "" : normCell(v))));
+/* the log as a plan saw it (parseLog's reading), so applyPlan can tell whether a tab changed after the preview was made */
+const logSig = rows => TmsCore.hashRows(rows.map(r => [r.row, r.date, r.time, r.type, r.miss, r.delivered, String(r.tx ?? "").trim(), r.note, r.alt, r.phq, r.gad, r.tech]));
+async function readUndo(ctx, e) {
+  const r = ctx.workbook.worksheets.getItem(ELOG_SHEET).getRange(`A${e.row}:${colLetter(7 + ELOG_PARTS - 1)}${e.row}`); r.load("values"); await ctx.sync();
+  const v = r.values[0]; if (String(v[0]) !== e.id) throw new Error("The Edit log moved (another computer added to it). Select Refresh and try again.");
+  return JSON.parse(v.slice(7).join("") || "null");
+}
+/* puts a log back: rows the edit added are deleted (ins), rows it removed come back (del), then B:T's typed cells are written as
+   they were. The formula columns (D, G, I, K, and A) stay on their rows. A row comes back inside the log (never on its first row or
+   the TX SUMMARY row, where the PR and header ranges wouldn't take it in), copying the row below; B:T is rewritten anyway.
+   One batch: the deletes and inserts and the B:T write go to Excel together, so a failed sync leaves nothing half done. */
+async function restoreLog(ctx, tab, L) {
+  const ws = ctx.workbook.worksheets.getItem(tab);
+  let n = L.nAfter;
+  (L.ins || []).slice().sort((a, b) => b - a).forEach(row => { ws.getRange(`A${row}:T${row}`).delete(Excel.DeleteShiftDirection.up); n--; });
+  for (const row of (L.del || []).slice().sort((a, b) => a - b)) {
+    const at = Math.min(Math.max(row, L.first + 1), L.first + n - 1);
+    ws.getRange(`A${at}:T${at}`).insert(Excel.InsertShiftDirection.down);
+    ws.getRange(`A${at}:T${at}`).copyFrom(ws.getRange(`A${at + 1}:T${at + 1}`), Excel.RangeCopyType.all);
+    n++;
+  }
+  const last = L.first + L.before.length - 1;
+  [["B", "C", 0], ["E", "F", 3], ["H", "H", 6], ["J", "J", 8], ["L", "T", 10]].forEach(([c1, c2, j]) => {
+    const w = colIndex(c2) - colIndex(c1) + 1;
+    ws.getRange(`${c1}${L.first}:${c2}${last}`).formulas = L.before.map(r => r.slice(j, j + w));
+  });
+}
+async function undoEdit(id) {
+  if (POPOUT) return callPane("undoEdit", [id]);
+  const e = state.edits.find(x => x.id === id); if (!e) return toast("That edit is no longer in the log. Select Refresh.", true);
+  if (e.st) return toast(e.st === "No undo" ? "This edit can't be undone from here." : "Already undone.", true);
+  let relog = false;
+  try {
+    failStep = "Undoing the edit";
+    await Excel.run(async ctx => {
+      const u = await readUndo(ctx, e); if (!u) throw new Error("This edit has nothing saved to undo.");
+      const later = state.edits.slice(0, state.edits.indexOf(e)).filter(x => x.tab === e.tab && !x.st && x.kind !== "undo").length;
+      const changed = `${e.tab} changed after this edit${later ? ` (${plural(later, "later edit")} on it in the log)` : ""}. Undo the later edits first, or fix the tab by hand. Nothing was changed.`;
+      const ws = ctx.workbook.worksheets.getItem(e.tab), cells = (u.cells || []).map(c => { const r = ws.getRange(c.a); r.load("formulas"); return { c, r }; });
+      const ats = (u.at || []).map(a => { const r = ws.getRange(`E${a.row}:L${a.row}`); r.load("values"); return { a, r }; });
+      const logs = u.log ? await readLogs(ctx, [e.tab]) : (await ctx.sync(), null);
+      /* the row must still hold the same visit: pulses and a technician look alike from day to day, so matching cells alone isn't enough */
+      const gone = ats.find(({ a, r }) => dayOf(r.values[0][0]) !== a.date || String(r.values[0][7] ?? "").trim() !== a.type);
+      if (gone) throw new Error(`${e.tab} changed after this edit: row ${gone.a.row} no longer holds the ${gone.a.date != null ? fmtMon(gone.a.date) + " " : ""}visit (a sort, import or removed row moved it). Nothing was changed; fix the cells by hand.`);
+      if (cells.some(({ c, r }) => !sameGrid(r.formulas, c.f))) throw new Error(changed);
+      if (u.log) { const now = logs.get(e.tab); if (now.F.length !== u.log.nAfter || logHash(now.F) !== u.log.hash) throw new Error(changed); }
+      const bp = benTarget(e.tab), benNow = (u.ben || []).map(c => ({ c, v: bp ? ((state.ben.rows.get(bp.mrn) || {}).v || [])[colIndex(BEN_COLS[c.a])] ?? "" : "" }));
+      if (benNow.some(x => normCell(x.v) !== normCell(x.c.f))) throw new Error(changed);
+      if (u.log) { await restoreLog(ctx, e.tab, u.log); relog = true; }
+      cells.forEach(({ c, r }) => { r.formulas = c.b; });
+      if (benNow.length && bp) await writeBen(ctx, benNow.map(({ c }) => ({ mrn: bp.mrn, mrnVal: bp.mrnVal, tab: bp.tab, key: c.a, v: c.b, quiet: true })));
+      const st = `Undone ${fmtDate(todaySerial())} ${clock(Math.round((nowSerial() % 1) * 1440))}`;
+      ctx.workbook.worksheets.getItem(ELOG_SHEET).getRange(`G${e.row}`).values = [[st]]; e.st = st;
+      await addEdits(ctx, [{ tab: e.tab, kind: "undo", what: `Undid: ${e.what}`, undo: null }]);
+      await ctx.sync();
+    });
+    failStep = "";
+    await refresh();
+    if (relog) { const p = state.patients.find(x => x.tab === e.tab); if (p) await formatLogs([{ tab: p.tab, touched: p.rows.map(r => r.row) }]); }
+    toast(`Undone: ${e.what}`);
+  } catch (err) { if (/changed after this edit|no longer|moved|nothing saved/i.test(err.message)) { failStep = ""; toast(err.message, true, true); } else fail(err); }
+}
+
+/* ---------- import bookkeeping: applyPlan checks each tab against its preview first, and logs one entry per tab when done ---------- */
+const imp = { busy: 0, snaps: new Map() };
+/* list: { tab, sig, cells } per changed tab. Returns { id }, or { stale: [tabs] } when a tab no longer matches the preview (nothing
+   is held then). One import at a time through this pane, whichever window asked. */
+async function importStart(list) {
+  if (POPOUT) return callPane("importStart", [list]);
+  if (imp.busy && Date.now() - imp.busy < 10 * 60e3) throw new Error("An import is already being applied. Wait for it to finish, then check the preview again.");
+  imp.busy = Date.now();
+  try {
+    const stale = [], snap = new Map();
+    await Excel.run(async ctx => {
+      const logs = await readLogs(ctx, list.map(x => x.tab));
+      const cells = list.map(x => x.cells.map(a => { const r = ctx.workbook.worksheets.getItem(x.tab).getRange(a); r.load("formulas"); return { a, r }; }));
+      await ctx.sync();
+      list.forEach((x, i) => {
+        const L = logs.get(x.tab);
+        if (logSig(parseLog(L.V.slice(0, LOG_READ))) !== x.sig) stale.push(x.tab);   // refresh reads LOG_READ rows at most
+        snap.set(x.tab, { before: L.F, cells: cells[i].map(({ a, r }) => ({ a, b: r.formulas })) });
+      });
+    });
+    if (stale.length) { imp.busy = 0; return { stale }; }
+    const id = String(Date.now()); imp.snaps.set(id, snap); return { id, stale: [] };
+  } catch (e) { imp.busy = 0; throw e; }
+}
+/* done: { tab, what, ins } per tab; stopped names the step that failed, if one did. Each tab's entry can put its log back, unless
+   the row count says rows were added or lost some other way (then it's logged without an undo). */
+async function importEnd(id, done, stopped) {
+  if (POPOUT) return callPane("importEnd", [id, done, stopped]);
+  const snap = imp.snaps.get(id); imp.snaps.delete(id); imp.busy = 0; if (!snap || !done.length) return;
+  await Excel.run(async ctx => {
+    const logs = await readLogs(ctx, done.map(x => x.tab));
+    const cells = done.map(x => snap.get(x.tab).cells.map(c => { const r = ctx.workbook.worksheets.getItem(x.tab).getRange(c.a); r.load("formulas"); return { c, r }; }));
+    await ctx.sync();
+    await addEdits(ctx, done.map((x, i) => {
+      const s = snap.get(x.tab), L = logs.get(x.tab), what = `${stopped ? `Import stopped at "${stopped}"` : "Import"}: ${x.what}`;
+      if (L.F.length - s.before.length !== x.ins.length) return { tab: x.tab, kind: "import", what, undo: null };
+      return { tab: x.tab, kind: "import", what, undo: { log: { first: LOG_FIRST, before: s.before, ins: x.ins, nAfter: L.F.length, hash: logHash(L.F) }, cells: cells[i].map(({ c, r }) => ({ a: c.a, b: c.b, f: r.formulas })) } };
+    }));
+    await ctx.sync();
+  });
+}
+/* "Created 2 new rows, set 5 dates, marked 1 missed, re-sorted by date" */
+function importWhat(p) {
+  const w = [p.added && `created ${plural(p.added, "new row")}`, p.set && `set ${plural(p.set, "date")}`, p.types && `changed ${plural(p.types, "visit type")}`,
+    p.cleared && `cleared ${plural(p.cleared, "date")}`, p.miss && `marked ${p.miss} missed`, p.unmissed && `undid ${plural(p.unmissed, "miss", "misses")} NextGen corrected`,
+    p.resorted && "re-sorted by date", p.renum && !p.resorted && "renumbered Tx #", p.e2 && `provider set to ${p.e2}`].filter(Boolean);
+  return sentence(w.join(", ")) || "Checked against the list";
+}
+
+/* ---------- the Edit log's checks: what's off on each active tab, from its own log and from the saved appointment list ---------- */
+function checksOf(p) {
+  const c = TmsCore.logChecks(p.rows, { pr: p.canGrow, approved: p.txApproved }), appts = state.apptBy.get(p.tab);
+  c.gaps = appts ? TmsCore.apptGaps(p.rows, appts, { from: todaySerial(), to: state.apptTo ?? todaySerial() }) : { notOnTab: [], notOnList: [] };
+  c.n += c.gaps.notOnTab.length + c.gaps.notOnList.length;
+  return c;
+}
+/* the log in date order, as an import leaves it (undated treated or missed rows stay after the visit above them) */
+function sortOrder(rows) {
+  let lk = -Infinity, lt = 0;
+  return rows.map((r, i) => { if (r.date != null) { lk = r.date; lt = r.time ?? 0; } return r.date != null || r.delivered || r.miss ? { i, k: lk, t: lt } : { i, k: Infinity, t: 0 }; })
+    .sort((a, b) => a.k - b.k || a.t - b.t || a.i - b.i).map(x => x.i);
+}
+/* a logged change to the whole log (sort, remove a row): fn(ctx, ws) makes it; the entry can put the log back */
+async function logChange(tab, what, kind, fn, del) {
+  await Excel.run(async ctx => {
+    const before = (await readLogs(ctx, [tab])).get(tab), ws = ctx.workbook.worksheets.getItem(tab);
+    await fn(ctx, ws); await ctx.sync();
+    const after = (await readLogs(ctx, [tab])).get(tab);
+    try { await addEdits(ctx, [{ tab, kind, what, undo: { log: { first: LOG_FIRST, before: before.F, ins: [], del: del || [], nAfter: after.F.length, hash: logHash(after.F) } } }]); await ctx.sync(); }
+    catch (e) { console.error(e); toast("Done, but the Edit log couldn't record it, so it can't be undone from there.", true); }
+  });
+}
+/* the checks' Fix buttons. kind: tx (renumber C), formulas (A and D back), kaiser (drop the reminder), sort, remove (a row) */
+async function fixCheck(tab, kind, row) {
+  if (POPOUT) return callPane("fixCheck", [tab, kind, row]);
+  const p = state.patients.find(x => x.tab === tab); if (!p) return;
+  const c = checksOf(p);
+  try {
+    /* the rows as this pane read them: a guard on each dated row stops the write if the tab was re-sorted since */
+    const g = rows => rows.map(n => p.rows.find(r => r.row === n)).filter(r => r && r.date != null).map(r => ({ tab, ...at(r) }));
+    if (kind === "tx") await applyOps(c.tx.map(x => ({ tab, a: `C${x.row}`, v: [[x.want]] })), g(c.tx.map(x => x.row)), { kind: "txnum", what: `Renumbered Tx # on ${plural(c.tx.length, "row")}: the MT is 1, each treatment after it one more` });
+    else if (kind === "formulas") await applyOps(c.formulas.flatMap(x => [x.a && { tab, a: `A${x.row}`, v: [[prF(x.row, p.end)]], f: true }, x.d && { tab, a: `D${x.row}`, v: [[ROW_F.D(x.row)]], f: true }].filter(Boolean)), g(c.formulas.map(x => x.row)),
+      { kind: "formulas", what: `Put back the formulas on ${plural(c.formulas.length, "row")} (${andList([c.formulas.some(x => x.a) && "PR in A", c.formulas.some(x => x.d) && "Tx left in D"].filter(Boolean))})` });
+    else if (kind === "kaiser") await applyOps(c.kaiser.map(r => ({ tab, a: `S${r}`, v: [[TmsCore.dropKaiser(p.rows.find(x => x.row === r).note)]] })), g(c.kaiser), { kind: "notes", what: `Removed the template's Kaiser reminder from ${plural(c.kaiser.length, "row")}` });
+    else if (kind === "sort") {
+      const order = sortOrder(p.rows), tx = TmsCore.txNumbers(order.map(i => p.rows[i]));
+      await logChange(tab, "Sorted the visit log by date and renumbered Tx #", "sort", () => arrangeLogs([{ tab, order, tx, dates: p.rows.map(r => r.date) }]));
+    } else if (kind === "remove") {
+      const r = p.rows.find(x => x.row === row); if (!r || r.delivered) return toast("Only a row without pulses can be removed.", true);
+      await logChange(tab, `Removed row ${row} (${r.date != null ? fmtMon(r.date) + " " : ""}${r.type || "no type"}${r.miss ? ", missed" : ""}), a second row for that day`, "rows", async (ctx, ws) => {
+        const e = ws.getRange(`E${row}:L${row}`); e.load("values"); await ctx.sync();
+        if ((Math.floor(Number(e.values[0][0])) || null) !== r.date || String(e.values[0][7] ?? "").trim() !== r.type) throw new Error(`${tab}: row ${row} has changed. Nothing was removed. Select Refresh and try again.`);
+        ws.getRange(`A${row}:T${row}`).delete(Excel.DeleteShiftDirection.up);
+      }, [row]);
+    }
+    toast("Fixed. The Edit log at the bottom of Patients can undo it.");
+    await refresh();
+  } catch (e) { fail(e); }
 }
 /* new visit-log rows, in A:T only so the benefits block beside the log stays put. Each goes inside the log (planTab never puts one
    past the last row), so Excel stretches the PR formulas, header counts and rules over it. It takes everything from a row of the
@@ -1644,8 +2196,15 @@ async function arrangeLogs(list) {
   if (!list.length) return;
   if (POPOUT) return callPane("arrangeLogs", [list]);
   await Excel.run(async ctx => {
-    const got = list.map(({ tab, order }) => { const r = ctx.workbook.worksheets.getItem(tab).getRange(`B${LOG_FIRST}:T${LOG_FIRST + order.length - 1}`); r.load("formulas"); return r; });
+    const got = list.map(({ tab, order }) => { const r = ctx.workbook.worksheets.getItem(tab).getRange(`B${LOG_FIRST}:T${LOG_FIRST + order.length - 1}`); r.load("formulas,values"); return r; });
     await ctx.sync();
+    /* the order is a move of rows, so it is only right on the rows it was planned from: every E must hold the date the plan wrote
+       there. Anything else (the log changed while the import ran) and nothing moves, on any tab. */
+    list.forEach(({ tab, dates }, n) => {
+      if (!dates) return;
+      const i = dates.findIndex((d, k) => dayOf(got[n].values[k][3]) !== (d ?? null));   // values: an E that is a formula (=E12+1) still reads as its date
+      if (i >= 0) throw new Error(`${tab}: row ${LOG_FIRST + i} changed while the import ran, so the visit log was not re-sorted. Undo this import from the Edit log at the bottom of Patients, then import again.`);
+    });
     list.forEach(({ tab, order, tx }, n) => {
       const F = got[n].formulas, ws = ctx.workbook.worksheets.getItem(tab);
       order.forEach((s, i) => {
@@ -1889,34 +2448,35 @@ function draftInput(el) {
 
 /* ---------- measures placeholders: the rule is TmsCore.planMeasures (core.js) ---------- */
 const planMeasures = p => TmsCore.planMeasures(p.rows, p.txApproved || 36, todaySerial());
-async function placeMeasures(patients, totalsDone) {
-  if (!totalsDone) await fixTotals(patients.map(p => p.tab));
+/* log: false when an import's own Edit log entry covers it */
+async function placeMeasures(patients, totalsDone, log) {
+  if (!totalsDone) await fixTotals(patients.map(p => p.tab), log);
   const plans = patients.map(p => ({ p, ops: planMeasures(p) })).filter(x => x.ops.length);
   if (!plans.length) return 0;
   const rowsOf = x => [...new Set(x.ops.map(([a]) => +a.slice(1)))].map(n => x.p.rows.find(r => r.row === n)).filter(Boolean);
-  await applyOps(plans.flatMap(x => x.ops.map(([a, v]) => ({ tab: x.p.tab, a, v: [[v]] }))), plans.flatMap(x => rowsOf(x).map(r => ({ tab: x.p.tab, ...at(r) }))));
+  await applyOps(plans.flatMap(x => x.ops.map(([a, v]) => ({ tab: x.p.tab, a, v: [[v]] }))), plans.flatMap(x => rowsOf(x).map(r => ({ tab: x.p.tab, ...at(r) }))), log === false ? false : { kind: "measures", what: "Measures (PHQ-9, GAD-7) re-planned" });
   return plans.length;
 }
 /* the running pulse totals (G, I, K: this row's pulses plus the total above, as on New Template). A row without the formula, such
    as an F/U row typed in by hand, breaks the chain and every total below it restarts from 0, so any empty G, I or K in the log gets
    it back. Cells with a value or a formula of their own are left alone. Returns the number of cells filled. */
 const TOTALS = [["F", "G"], ["H", "I"], ["J", "K"]];
-async function fixTotals(tabs) {
+async function fixTotals(tabs, log) {
   if (!tabs.length) return 0;
-  if (POPOUT) return callPane("fixTotals", [tabs]);
-  let n = 0;
+  if (POPOUT) return callPane("fixTotals", [tabs, log]);
+  const ops = [];
   await Excel.run(async ctx => {
     for (const tab of tabs) {
       const ws = ctx.workbook.worksheets.getItem(tab), end = await tabEnd(ctx, ws), r = ws.getRange(`G${LOG_FIRST}:K${end}`);
       r.load("formulas"); await ctx.sync();
       r.formulas.forEach((v, i) => TOTALS.forEach(([p, t]) => {
         const c = t.charCodeAt(0) - 71, row = LOG_FIRST + i;
-        if (v[c] === "" || v[c] == null) { ws.getRange(`${t}${row}`).formulas = [[`=${p}${row} + INDEX(${t}:${t}, ROW()-1)`]]; n++; }
+        if (v[c] === "" || v[c] == null) ops.push({ tab, a: `${t}${row}`, v: [[`=${p}${row} + INDEX(${t}:${t}, ROW()-1)`]], f: true });
       }));
     }
-    await ctx.sync();
   });
-  return n;
+  if (ops.length) await applyOps(ops, null, log === false ? false : { kind: "formulas", what: `Put back ${plural(ops.length, "pulse total")} (G, I, K)` });
+  return ops.length;
 }
 async function placeMeasuresClick() {
   try {
@@ -2012,6 +2572,7 @@ async function matchTab(ctx, name) {
     if (layout === 2) ws.getRange("N6:N7").values = [[typeof at("N7") === "number" ? at("N7") : 3], [at("N6") ?? ""]];
     ws.getRange("J6:J7").values = tl.values;
   }
+  ws.getRange("D4").numberFormat = [[D4_FMT]];
   /* 3. visit log: the PR formula over the whole log, and the template's formulas on rows that lost them */
   const F = lg.formulas;
   ws.getRange(`A${LOG_FIRST}:A${end}`).formulas = F.slice(0, end - LOG_FIRST + 1).map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, end) : v[0]]);
@@ -2038,6 +2599,7 @@ async function rebuildTab(ctx, name) {
   const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
   const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); }, ben = {};
   ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
+  ws.getRange("D4").numberFormat = [[D4_FMT]];
   for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
   const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N7", assess);
   /* visit log: typed entries only, so the template's formulas (A, D, G, I, K) stay */
@@ -2092,6 +2654,7 @@ async function setupColumns(force) {
       if (force || state.fix.has("New Template")) await matchTab(ctx, "New Template");
       for (const n of state.old) res.push(await rebuildTab(ctx, n));
       for (const n of names) matched.push((await matchTab(ctx, n)).name);
+      await addEdits(ctx, [...state.old.map(n => ({ tab: n, kind: "tab", what: "Rebuilt from New Template (earlier layout)", undo: null })), ...matched.map(n => ({ tab: n, kind: "tab", what: "Matched New Template (formats, PR formula, dropdowns)", undo: null }))]);
       /* the Benefits tab lists every tracker: finished ones in the previous layout keep their own cells, and get a copy here */
       const rest = state.patients.filter(p => p.layout === 2 && stale.has(p.tab) && p.mrn && !state.ben.rows.has(p.mrn)).sort((a, b) => b.course - a.course)
         .filter((p, i, a) => a.findIndex(q => q.mrn === p.mrn) === i);
@@ -2168,7 +2731,7 @@ async function addPatient(d) {
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
       set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N7", d.apAssess);
       set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
-      ws.getRange("D7").values = [["Pending Start"]];
+      ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("D7").values = [["Pending Start"]];
       if (d.apHome) ws.getRange("S9").values = [[`Home Clinic: ${d.apHome}`]];
       /* benefits and cost by code go on the patient's Benefits row */
       const mrn = normMrn(d.apMrn), bv = { W1: bidf, W4: ded, W5: oop, W6: d.apMtr, W7: 0 };
@@ -2177,6 +2740,7 @@ async function addPatient(d) {
       d.week.forEach(([f, t], i) => { if (f || t) ws.getRange(`W${WK_FIRST + i}:X${WK_FIRST + i}`).values = [[tf(f), tf(t)]]; });
       const rg = d.ranges.map(w => ["Unavailable", inputToSerial(w.from), inputToSerial(w.to) || inputToSerial(w.from), w.note || ""]).slice(0, AV_LAST - AV_FIRST + 1);
       if (rg.length) ws.getRange(`V${AV_FIRST}:Y${AV_FIRST + rg.length - 1}`).values = rg;
+      await addEdits(ctx, [{ tab: name, kind: "tab", what: "Created the tab from New Template", undo: null }]);
       ws.activate(); await ctx.sync();
     });
     state.pendingNew = state.pendingNew.filter(x => x.mrn !== normMrn(d.apMrn));
@@ -2325,7 +2889,7 @@ async function loadList() {
 }
 function planTab(p, appts, from, to, o) {
   const R = p.rows.map(r => ({ ...r, _o: r }));
-  const st = { cleared: 0, miss: 0, none: 0, unrecorded: 0, exempt: 0, unclass: 0, types: 0, sameCancel: 0, early: 0, earlyNew: 0, noMod: 0, elsewhere: 0, unmissed: 0, dup: 0 };
+  const st = { cleared: 0, miss: 0, none: 0, unrecorded: 0, exempt: 0, unclass: 0, types: 0, sameCancel: 0, early: 0, earlyNew: 0, noMod: 0, elsewhere: 0, unmissed: 0, dup: 0, treated: 0 };
   const tag = (r, t) => { if (!r.note.split("; ").includes(t)) r.note = r.note ? `${r.note}; ${t}` : t; };
   const untag = (r, t) => { r.note = r.note.split("; ").filter(x => x !== t).join("; "); };
   const kindOf = a => a.status === "No-show" ? "No-show" : (a.status === "Cancelled" && a.mod != null && a.mod >= a.date) ? "Same-day cancel" : null;
@@ -2350,6 +2914,9 @@ function planTab(p, appts, from, to, o) {
       }
       continue;
     }
+    // a day already treated (pulses in) for this kind of visit: the no-show is a second booking NextGen kept, not a missed visit,
+    // so it never takes a free row and dates it as a miss beside the treatment
+    if (R.some(x => x.date === a.date && x.delivered && lpool(x.type) === lpool(a.type))) { st.treated++; continue; }
     // that day's row for the same kind of visit (a follow-up no-show never lands on the treatment row), else one with no type
     const day = R.filter(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
     let r = day.find(x => x.type !== "" && lpool(x.type) === lpool(a.type)) || day.find(x => x.type === "");
@@ -2398,7 +2965,7 @@ function planTab(p, appts, from, to, o) {
         if (e.date < from && rows.some(r => poolOf(r) === pool && r.date === e.date)) continue;
         const r = free.shift(); if (!r) { left.push(e); continue; }
         if (e.date < from) f.past++;
-        r.date = e.date; r.time = e.time; r.miss = false; r.freebie = "";
+        r.date = e.date; r.time = e.time; r.miss = false; r.freebie = ""; r.note = TmsCore.dropKaiser(r.note);
         if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; f.types++; }
         if (e.type === "F/U") { if (e.tele) tag(r, TELE_TAG); else untag(r, TELE_TAG); }
         if (o.ps) { r.alt = !o.ours(e.loc); if (r.alt) f.elsewhere++; }
@@ -2446,10 +3013,11 @@ function planTab(p, appts, from, to, o) {
   let lk = -Infinity, lt = 0;
   const order = rows.map((r, i) => { if (r.date != null) { lk = r.date; lt = r.time ?? 0; } return r.date != null || r.delivered || r.miss ? { i, k: lk, t: lt } : { i, k: Infinity, t: 0 }; })
     .sort((a, b) => a.k - b.k || a.t - b.t || a.i - b.i).map(x => x.i);
-  let n = 0; const txNo = order.map(i => isTxRow(rows[i]) ? ++n : "");
+  const txNo = TmsCore.txNumbers(order.map(i => rows[i]));   // the MT is 1, each treatment after it one more
   const txWas = r => r._o && isNum(r._o.tx) ? r._o.tx : r._o && String(r._o.tx ?? "").trim() !== "" ? String(r._o.tx) : "";
   const resorted = order.some((s, i) => s !== i), renum = rows.filter((r, i) => txWas(r) !== txNo[i]).length;
-  const arrange = resorted || renum ? { order, tx: txNo } : null;
+  // dates: what each row's E holds once the ops are written, checked before anything moves
+  const arrange = resorted || renum ? { order, tx: txNo, dates: rows.map(r => r.date) } : null;
   // significant disruptions re-flow the measures: an MTR or F/U moved, or 2+ missed visits within a week
   const was = r => r._o || BLANK_ROW;
   const moved = rows.some(r => (r.type === "MTR" || r.type === "F/U") && was(r).date != null && was(r).date !== r.date) || rows.some(r => r.type === "MTR" && was(r).type !== "MTR");
@@ -2517,7 +3085,7 @@ async function buildPlan(quiet) {
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim() });
-    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}; c[pv] = (c[pv] || 0) + 1; clin.set(mrn, c); }
+    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   const latest = new Map(), latestCode = new Map();
@@ -2527,6 +3095,7 @@ async function buildPlan(quiet) {
   }
   const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, keptPast, ours: loc => !loc || loc.toLowerCase().includes(state.cfg.location.toLowerCase()) };
   const plans = [], disc = [];
+  if (!ps) { state.apptBy = new Map(); state.apptTo = maxDate; }   // each tab's visits on the ALL TMS list, for the Edit log's checks
   for (const [mrn, appts] of by) {
     let p = latest.get(mrn); const code = codes.get(mrn);
     if (!p && code) { const q = latestCode.get(code); if (q && !q.mrn) p = q; }
@@ -2534,7 +3103,8 @@ async function buildPlan(quiet) {
     // a Discontinued tab is left as it is; the preview and the Day view's list check name any visits NextGen still has booked
     if (!onSched(p)) { if (appts.some(a => a.status === "Scheduled" && a.date >= from)) disc.push(p.tab); continue; }
     const pl = planTab(p, appts, from, maxDate, { ...o, mrn, grow: p.canGrow });
-    // the report is the source of truth for the provider name, so E2 follows it even when something was typed there
+    pl.sig = logSig(p.rows); pl.fb = p.fbCell; if (!ps) state.apptBy.set(p.tab, appts);   // sig: the log this plan was made from (applyPlan checks it)
+    // the report is the source of truth for the provider, so E2 follows it (last name only) even when something was typed there
     const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
     plans.push(pl);
@@ -2572,13 +3142,31 @@ function renderPlan() {
   h += `<div class="actions"><button class="pri" data-act="apply">Apply</button></div>`;
   $("planBody").innerHTML = h; $("planBox").hidden = false;
 }
+/* An import plan addresses rows by number and moves them (growLogs, arrangeLogs), so it is only right on the logs it was made from.
+   Applying it twice, or after the tab changed (an edit, or the same list applied on another computer), added the rows again and
+   moved visits onto the wrong rows. So: one Apply at a time, every tab is checked against its preview before anything is written
+   (a changed tab rebuilds the preview instead), and each tab's import is one Edit log entry that can put the log back. */
+let applying = false;
 async function applyPlan() {
-  const plan = state.plan, ch = plan.plans.filter(p => p.changed), reflow = new Set(plan.plans.filter(p => p.reflow).map(p => p.name));
+  const plan = state.plan; if (applying || !plan) return;
+  const ch = plan.plans.filter(p => p.changed), reflow = new Set(plan.plans.filter(p => p.reflow).map(p => p.name));
+  const busy = on => { const b = document.querySelector("#planBody [data-act=apply]"); if (b) { b.disabled = on; b.textContent = on ? "Applying" : "Apply"; } };
+  applying = true; busy(true);
+  let held = null, stopped = "";
+  const done = ch.map(p => ({ tab: p.name, what: importWhat(p), ins: p.ins.map(x => x.row) }));
   try {
+    failStep = "Checking the tabs against the preview";
+    held = await importStart(ch.map(p => ({ tab: p.name, sig: p.sig, cells: ["E2", "D7", p.fb || "N6"] })));
+    if (held.stale.length) {
+      const tabs = held.stale; held = null; failStep = "";
+      await buildPlan();   // refreshes, then shows the preview made from the tabs as they are now
+      toast(`${andList(tabs)} changed after the preview was made (an edit, or this list applied on another computer). Nothing was written. The preview is rebuilt: check it, then select Apply again.`, true, true);
+      return;
+    }
     failStep = "Adding visit-log rows";
     await growLogs(ch.filter(p => p.ins.length).map(p => ({ tab: p.name, ins: p.ins })));   // rows first: the ops address the grown log
     failStep = "Writing visits";
-    await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))));
+    await applyOps(ch.flatMap(p => [...p.ops, ...(p.e2 ? [["E2", p.e2]] : [])].map(([a, v]) => ({ tab: p.name, a, v: [[v]] }))), null, false);
     failStep = "Putting the log in date order";
     await arrangeLogs(ch.filter(p => p.arrange).map(p => ({ tab: p.name, ...p.arrange })));   // it moves the rows the ops just wrote
     failStep = "Formatting the visit logs";
@@ -2589,12 +3177,22 @@ async function applyPlan() {
     await refresh();
     const sug = state.patients.filter(p => p.d.suggest);
     failStep = "Updating statuses and measures";
-    if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })));
-    const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab))) : 0;
-    toast(`Updated ${ch.length} tab${ch.length === 1 ? "" : "s"}${sug.length ? `, ${sug.length} status${sug.length > 1 ? "es" : ""}` : ""}${nx ? `, measures re-planned for ${reflow.size}` : ""}.`);
-    if (sug.length || reflow.size) await refresh();   // the refresh above is current unless statuses or measures were just written
+    const sugIn = sug.filter(p => done.some(d => d.tab === p.tab)), sugOut = sug.filter(p => !sugIn.includes(p));
+    if (sugIn.length) await applyOps(sugIn.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })), null, false);   // in that tab's import entry
+    for (const p of sugOut) await applyOps([{ tab: p.tab, a: "D7", v: [[p.d.suggest]] }], null, { kind: "auto", what: `Status set to ${p.d.suggest} after the import` });
+    const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab)), false, false) : 0;
+    sug.forEach(p => { const d = done.find(x => x.tab === p.tab); if (d) d.what += `, status set to ${p.d.suggest}`; });
+    if (nx) done.forEach(d => { if (reflow.has(d.tab)) d.what += ", measures re-planned"; });
+    failStep = "Saving the Edit log"; const id = held.id; held = null; await importEnd(id, done, "");
+    toast(`Updated ${ch.length} tab${ch.length === 1 ? "" : "s"}${sug.length ? `, ${sug.length} status${sug.length > 1 ? "es" : ""}` : ""}${nx ? `, measures re-planned for ${reflow.size}` : ""}. Each tab's import is in the Edit log on Patients.`);
+    await refresh();
     failStep = ""; show("today");
-  } catch (e) { fail(e); }
+  } catch (e) { stopped = failStep; fail(e); }
+  finally {
+    /* a failed import is still logged, so whatever it wrote can be put back from the Edit log */
+    if (held && held.id) await importEnd(held.id, done, stopped || "Import").then(() => refresh()).catch(e => console.error(e));
+    applying = false; busy(false);
+  }
 }
 
 /* ---------- patient schedule: opens in a dialog window (schedule.html) to print or save as PDF ---------- */
@@ -2653,8 +3251,9 @@ async function onSchedMessage(m) {
 }
 
 /* ---------- wiring ---------- */
-const VIEWS = ["today", "schedule", "courses", "chairs", "imp", "settings", "add"];
+const VIEWS = ["today", "schedule", "patients", "chairs", "imp", "settings", "add"];
 function show(view) {
+  if (view !== "patients" && state.ptOpen) { state.ptOpen = null; $("ptView").hidden = true; $("pvBody").innerHTML = ""; }
   state.view = view;
   VIEWS.forEach(v => $("v-" + v).hidden = v !== view);
   $("page").scrollTop = 0;
@@ -2666,7 +3265,7 @@ function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m))
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
-    sess: sessSnap() });
+    edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, sess: sessSnap() });
   sendParts("snap", s);
 }
 /* dialog messages are size-limited, so anything big goes in CHUNK-sized parts the window puts back together */
@@ -2675,7 +3274,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
-    sess: null }); setSessSnap(o.sess);
+    edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, sess: null }); setSessSnap(o.sess);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -2690,9 +3289,9 @@ function callPane(fn, args) {
 }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
-  refresh: () => refresh(), applyOps: (ops, g) => applyOps(ops, g), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
+  refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), fixTotals: t => fixTotals(t),
+  saveSetting: (k, v) => saveSetting(k, v), fixTotals: (t, log) => fixTotals(t, log),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -2764,11 +3363,11 @@ async function openTabName(tab, row) {
     });
   } catch (e) { fail(e); }
 }
-/* a course on Courses; it switches to All active when the current filter hides it */
+/* a course on Patients; it switches to All active when the current filter hides it */
 function openCourse(tab) {
   state.ptTab = tab; const p = state.patients.find(x => x.tab === tab), fl = state.fl || floor(), f = FILTERS.find(x => x[0] === state.cfilter) || FILTERS[0];
   if (p && !f[2](p, courseNeeds(p, fl))) state.cfilter = onSched(p) ? (p.d.active ? "active" : FILTERS.find(x => x[2](p, []))?.[0] || "active") : "disc";
-  show("courses");
+  show("patients"); if (p) openPt(tab);
 }
 /* appearance is per computer (localStorage), like the Today view; the pane and full screen share it */
 const themeOf = () => document.documentElement.dataset.theme || "light";
@@ -2808,7 +3407,7 @@ Office.onReady(info => {
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
     const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "San Rafael", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
-  $("apBack").onclick = () => show("courses");
+  $("apBack").onclick = () => show("patients");
   $("btnFull").onclick = fullScreen;
   $("popClose").onclick = closePopout;
   syncFs();
@@ -2831,15 +3430,16 @@ Office.onReady(info => {
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);
     const pq = el.closest("[data-prq]"); if (pq) { $("prFrom").value = serialToInput(todaySerial()); $("prTo").value = serialToInput(+pq.dataset.prq); document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", String(b === pq))); return prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); }
     const ap = el.closest("[data-apact]"); if (ap) { document.querySelectorAll("[data-apr]").forEach(i => { state.apRanges[+i.dataset.apr][i.dataset.k] = i.value; }); if (ap.dataset.apact === "add") state.apRanges.push({}); else state.apRanges.splice(+ap.dataset.v, 1); renderApRanges(); return; }
-    const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt]"); if (!x) return;
+    const x = el.closest("[data-act],[data-view],[data-mode],button[data-k],[data-chair],[data-course],[data-filter],[data-sv],[data-open],[data-sheet],[data-pt],[data-ptshow]"); if (!x) return;
     const d = x.dataset;
     if (d.act) return act(d.act, x, e);
-    if (d.view) { if (d.view === "courses" && state.view === "add") resetAddPatient(); return show(d.view); }
+    if (d.view) { if (d.view === "patients" && state.view === "add") resetAddPatient(); return show(d.view); }
     if (d.mode) { state.chair = d.mode; state.sel = null; try { localStorage.setItem("tms_chair", d.mode); } catch { /* this session only */ } return renderDash(); }
     /* selecting a visit also opens its tab at that row, unless Settings turns it off */
     if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") openTabName(v.tab, v.row); if (d.go) return show("today"); return renderDash(); }
     if (d.chair) { state.sel = { chair: d.chair }; return renderDash(); }
-    if (d.course) { state.ptTab = d.course; return renderDash(); }
+    if (d.course) return openPt(d.course);
+    if (d.ptshow) return setPtShow(d.ptshow);
     if (d.filter) { state.cfilter = d.filter; return renderDash(); }
     if (d.sv) { state.dash = d.sv; return renderDash(); }
     if (d.open) { const v = (state.fl || floor()).visits.find(y => y.tab === d.open && ["running", "waiting", "booked"].includes(ph(y))) || state.fl.visits.find(y => y.tab === d.open); if (v) { state.sel = { k: v.key }; state.chair = "all"; } return show("today"); }
@@ -2851,15 +3451,21 @@ Office.onReady(info => {
     const needV = fn => () => { if (!V) return toast("That visit isn't on today's list anymore. Refresh to see the latest.", true); return fn(V); };
     const acts = {
       /* import, banners, Match New Template, Clinic Schedule */
+      /* the Edit log on Patients: undo (whole-log changes ask first), and the checks' fixes (removing a row asks first) */
+      elUndo: () => elUndoAsk(v), elUndoGo: () => { const id = m.id; closeModal(); return undoEdit(id); },
+      elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
       apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v), reimport: () => { show("imp"); buildPlan(); }, goimport: () => show("imp"),
       mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(state.dash === "week" ? 7 * state.weekOffset : state.schedOffset), addPt: () => { resetAddPatient(); show("add"); },
       /* today's visits */
       start: needV(startSession), end: needV(mEnd), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),
       fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: () => setNgTick(k, true),
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openTabName(t, row), course: () => openCourse(t),
-      /* Courses */
-      status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProto(t), avail: () => mAvail(t),
-      ptAll: () => { state.ptAll = !state.ptAll; renderDash(); }, pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
+      /* Patients */
+      status: () => setStatus(t, v), statuspick: () => mStatus(t), call: () => mCall(t), ben: () => mBen(t), ext: () => mExt(t), proto: () => mProtoEdit(t), avail: () => mAvail(t),
+      ptClose: () => closePt(), ptPast: () => { state.ptPast = !state.ptPast; renderPt(); }, ptSchedView: () => { const p = state.patients.find(y => y.tab === t), nx = p && p.d.next; closePt(); state.dash = "day"; show("schedule"); if (nx) toast(`${t}'s next visit: ${fmtDay(nx.date)}, ${clock(nx.time) || "no time"}.`); },
+      copayToday: () => copayToday(t, row, v), copayMark: () => copayMark(t, v), oopmMet: () => oopmMet(t),
+      pvProtoSave: () => { const name = ($("pvProto") || {}).value, site = ($("pvSite") || {}).value; if (!name) return toast("Choose a protocol first.", true); saveProtocol(t, [{ name, site: TmsCore.SITE_CELL[site] || "Left" }]); },
+      pastpulses: () => mPastPulses(t, row), pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
       /* Chairs */
       chairOff: () => mChairOff(v), chairEdit: () => mChairEdit(v),
       chairOn: async () => { try { await writeSess([{ chairId: v, set: { off: false } }]); renderDash(); toast(`${chairLbl(v)} is available again.`); } catch (err) { fail(err); } },
@@ -2867,7 +3473,7 @@ Office.onReady(info => {
       prev: () => { state.weekOffset--; renderDash(); }, next: () => { state.weekOffset++; renderDash(); }, this: () => { state.weekOffset = 0; renderDash(); },
       sprev: () => skipWeekend("schedOffset", -1), snext: () => skipWeekend("schedOffset", 1), sthis: () => { state.schedOffset = 0; renderDash(); },
       /* dialog saves */
-      doEnd, doMt, doMiss, doMove, doCopyNote, doSaveNote, resetNote, doFuMeas,
+      doEnd, doProtoEdit, doMt, doMiss, doMove, doCopyNote, doSaveNote, resetNote, doFuMeas,
       doPrint: () => { const [f, to] = prRange(); if (!f || !to || to < f) return merr("Pick a valid date range."); closeModal(); openSchedule(t, f, to); },
       doPastPulses: () => { const vals = readPulses(), tech = mval("mTech"); if (!vals.some(n => n !== "" && n > 0)) return merr("Enter the pulses delivered."); if (!tech) return merr("Enter the treating technician."); closeModal(); markPulses(m.t, m.row, { vals, tech }).then(ok => ok && toast("Pulses saved.")); },
       pastMissed: () => { const [p, r] = findPR(m.t, m.row); if (!r) return closeModal(); mMiss({ p, r, tab: m.t, row: m.row, time: r.time, key: null }); },
@@ -2876,7 +3482,6 @@ Office.onReady(info => {
       doMoveMeas: () => { const to = +mval("mMeasTo") || m.dest; closeModal(); moveMeasures(m.t, m.row, to); },
       doBen: () => { const data = Object.fromEntries([...$("modalBody").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value])); if (!benOk(data)) return merr("Use amounts like 25 or 25.00. Only the deductible and out-of-pocket max can be N/A."); closeModal(); saveBenefits(m.t, data); },
       doExt: () => { const n = mval("mExtN"); if (!isInt(n, 1, 99)) return merr("Add 1 or more visits."); const exp = inputToSerial(mval("mExtD")); if (exp != null && exp <= todaySerial()) return merr("Choose an end date after today, or leave it blank."); closeModal(); addExtension(m.t, { n: +n, exp }); },
-      doProto: () => { const pe = $("modalBody").querySelector(".pe"), picks = [1, 2, 3].map(n => ({ name: pe.querySelector(`select[data-pname="${n}"]`).value, site: pe.querySelector(`select[data-psite="${n}"]`).value })); closeModal(); saveProtocol(m.t, picks); },
       doAvail: () => { const av = state.avDraft; if (!av || av.tab !== m.t) return closeModal(); readAvailEditor($("modalBody"), av); closeModal(); saveAvailability(m.t, av); },
       avAdd: () => { readAvailEditor($("modalBody"), state.avDraft); state.avDraft.ranges.push({ type: "Unavailable", from: null, to: null, note: "" }); mAvail(m.t, true); },
       avDel: () => { readAvailEditor($("modalBody"), state.avDraft); state.avDraft.ranges.splice(+v, 1); mAvail(m.t, true); },
@@ -2890,6 +3495,12 @@ Office.onReady(info => {
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !$("schedOverlay").hidden) return closeSchedOverlay();
     if (e.key === "Escape" && !$("modal").hidden) return closeModal();
+    if (e.key === "Escape" && !$("ptView").hidden) return closePt();
+    if (e.key === "Tab" && $("modal").hidden && !$("ptView").hidden) {   // and inside the patient view
+      const f = [...$("pvBody").querySelectorAll("button,input,select,textarea")].filter(x => !x.disabled && x.type !== "hidden" && x.offsetParent);
+      if (f.length && e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (f.length && !e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    }
     if (e.key === "Tab" && !$("modal").hidden) {   // keep focus inside the dialog
       const f = [...$("modalBody").querySelectorAll("button,input,select,textarea")].filter(x => !x.disabled && !x.hidden && x.type !== "hidden" && x.offsetParent);
       if (!f.length) return;
@@ -2901,6 +3512,9 @@ Office.onReady(info => {
     const el = e.target;
     if (el.dataset.ngk) { focusWant = el.closest("#modal") ? null : focusKey(el); return setNgTick(el.dataset.ngk, el.checked).then(refocus); }
     if (el.id === "mPain") { $("mPainD").hidden = el.value !== "Yes"; return; }
+    if (el.dataset.pick) { const n = +el.dataset.pick; state.ptPick = state.ptPick || new Set(); if (el.checked) state.ptPick.add(n); else state.ptPick.delete(n); return; }
+    if (el.dataset.pk === "name") return protoEditPick(el);
+    if (el.matches("[data-elf]")) { state.elogTab = el.value; return renderDash(); }
     if (el.dataset.dk) draftInput(el);
   });
   document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
@@ -2909,6 +3523,7 @@ Office.onReady(info => {
   $("cfgTheme").onchange = e => setTheme(e.target.value);
   window.addEventListener("storage", e => { if (e.key === "tms_theme") { document.documentElement.dataset.theme = e.newValue || "light"; syncTheme(); } });
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
+  document.addEventListener("toggle", e => { if (e.target.matches && e.target.matches("[data-elog]")) state.elogOpen = e.target.open; }, true);   // the Edit log stays open across redraws
   syncTheme();
   $("btnMatch").onclick = () => setupClick(true);
   ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });

@@ -1,6 +1,6 @@
 /* core.js: the TMS Tracker floor rules. Pure functions (no Office.js, no DOM), shared with tests/.
    A visit's phase, a chair's state on the Today board, chair moves against NextGen, missed-visit streaks, and the needs list
-   that Courses sorts by. taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
+   that Patients sorts by, and the visit log's own checks (Tx #, duplicate days, lost formulas, the appointment list). taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.TmsCore = factory();
@@ -97,13 +97,16 @@
     d.noTech.forEach(r => add("tech", `No technician on ${f(r.date)}`, ["Add technician", "pasttech"], { row: r.row }));
     /* earlier days' measures can't be collected now: one reminder to look in NextGen, only while the course is active */
     if (A && d.measDue.length) add("measures", "Check NextGen for PHQ-9 and GAD-7", ["Enter scores", "pastmeas"], { row: d.measDue.reduce((a, b) => b.date > a.date ? b : a).row });
+    if (A && d.noProto) add("noproto", "Choose a protocol", ["Choose a protocol", "proto"]);
     if (A) d.protoFlags.forEach(t => add("protocol", t, ["Update protocol", "proto"]));
+    if (A && d.rollover) add("rollover", `Re-verify benefits for ${d.rollover.year}`, ["Update BIDF", "ben"], { bad: d.rollover.bad });
     /* one line per absence, naming every visit booked inside it */
     if (A) [...new Set(d.awayConflicts.map(c => c.why))].forEach(why => { const cs = d.awayConflicts.filter(c => c.why === why); add("away", `Booked ${cs.map(c => f(c.r.date)).join(", ")} while ${why}`, ["Edit availability", "avail"], { row: cs[0].r.row }); });
     d.closedConflicts.forEach(c => add("closed", `Booked ${f(c.r.date)} on a closure (${c.why})`, ["Open tab", "opentab"], { row: c.r.row }));
     if (A && d.sameDay.length) add("sameday", `More than one visit on ${d.sameDay.map(f).join(", ")}`, ["Open tab", "opentab"]);
     if (A && x.mtToday && !x.schedGiven) add("sched", "Course schedule not given", ["Print course schedule", "print"], { v: "all" });
     if (A) d.benFlags.forEach(t => add("cost", t, ["Review benefits", "ben"]));
+    if (d.oopmMet) add("oopm", `${d.oopmMet} OOPM met`, null, { quiet: true });
     if (x.mtToday) add("start", "Starts today", null, { quiet: true });
     if (/^tapering$/i.test(p.status)) add("taper", "Tapering", null, { quiet: true });
     if (/^paused$/i.test(p.status)) add("paused", "Paused", null, { quiet: true });
@@ -112,6 +115,69 @@
     return n.map((y, i) => [y, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(a => a[0]);
   }
   const loud = list => list.filter(y => !y.quiet);
+
+  /* ---------- copays: the one "Copay ..." line the add-in keeps in a visit's Notes (S) ----------
+     "Copay $25.00 collected by Priya 11:32 AM", "Copay $25.00 not collected by ...", "Copay $0, OOPM met by ...",
+     "Copay $25.00 collected (confirmed 10/27 by Priya)", "Copay waived by Priya 10/27". A later answer replaces the line. */
+  const COPAY_RE = /^copay\b/i;
+  function copayOf(note) {
+    const s = String(note ?? "").split("; ").map(x => x.trim()).find(x => COPAY_RE.test(x));
+    if (!s) return null;
+    const m = s.match(/\$([\d,]+(?:\.\d+)?)/), amt = m ? +m[1].replace(/,/g, "") : null;
+    const kind = /oopm met/i.test(s) ? "oopm" : /waived/i.test(s) ? "waived" : /not collected/i.test(s) ? "not" : /collected/i.test(s) ? "collected" : "other";
+    return { line: s, kind, amt, by: (s.match(/\bby ([A-Za-z][\w'-]*)/) || [])[1] || "", at: (s.match(/\b(\d{1,2}:\d{2} ?[AP]M)\b/i) || [])[1] || "", confirmed: /confirmed/i.test(s) };
+  }
+  const withCopayLine = (note, line) => [...String(note ?? "").split("; ").filter(x => x && !COPAY_RE.test(x.trim())), ...(line ? [line] : [])].join("; ");
+  const isTreatment = r => !r.miss && !r.alt && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // TMS Follow Ups (F/U) never count
+  /* delivered treatment visits before today, with a payment due (pay(r) > 0) and no copay line yet */
+  const copaysToConfirm = (rows, pay, today) => rows.filter(r => isTreatment(r) && r.delivered && r.date != null && r.date < today && !copayOf(r.note) && (pay(r) ?? 0) > 0).sort((a, b) => a.date - b.date);
+  /* copays logged as collected on treatment visits dated from..to (the plan year) */
+  function copayTally(rows, from, to) {
+    let sum = 0, n = 0;
+    rows.forEach(r => { if (!isTreatment(r) || r.date == null || r.date < from || r.date > to) return; const c = copayOf(r.note); if (c && c.kind === "collected" && c.amt != null) { sum += c.amt; n++; } });
+    return { sum: Math.round(sum * 100) / 100, n };
+  }
+  /* benefits reminders only matter while copays are still being collected: not once the OOPM is met (0 remaining) or the BIDF quote is $0 */
+  const owes = ben => !(ben.oopRem === 0 && !ben.oopNA) && ben.bidf !== 0;
+  /* plan-year rollover: a visit booked after Dec 31 of Last updated's year needs benefits re-verified. Amber from Dec 1, red once a
+     new-year visit has happened (or checked in) without it. y: { updated, dec1, jan1 } serials for Last updated's year. */
+  function rollover(y, rows, today, checkedIn) {
+    if (y.updated == null || y.updated >= y.jan1) return null;
+    const ahead = rows.some(r => r.date != null && r.date >= y.jan1 && !r.miss);
+    if (!ahead || today < y.dec1) return null;
+    const late = rows.some(r => r.date != null && r.date >= y.jan1 && r.date <= today && (r.delivered || checkedIn(r)));
+    return { bad: late };
+  }
+
+  /* ---------- protocol ---------- */
+  /* site in O: F3 (left), F4 (right) or another site; the template's Left / Right / Other read the same */
+  const siteOf = o => { const s = String(o ?? "").trim(); return /^(f3|left)$/i.test(s) ? "F3" : /^(f4|right)$/i.test(s) ? "F4" : s ? "Other" : ""; };
+  const SITE_LABEL = { F3: "F3 (left)", F4: "F4 (right)", Other: "Other" };
+  const SITE_CELL = { F3: "Left", F4: "Right", Other: "Other" };     // what O holds (the template's dropdown)
+  const pulseCol = site => site === "F3" ? 0 : site === "F4" ? 1 : 2;  // F, H, J on the visit row
+  /* a protocol row (J:M) against the Protocols table: the same Hz and values is that protocol; the same Hz with other values is
+     "{name} (Custom)" with what changed; anything else "Custom" */
+  const PF = [["dur", "pulses", "pulses per train"], ["trains", "trains", "trains"], ["wait", "iti", "s wait"]];
+  function protoMatch(x, table) {
+    if (typeof x.hz !== "number") return null;
+    let best = null;
+    for (const q of table.filter(q => q.rep === x.hz)) {
+      const diffs = PF.filter(([a, b]) => x[a] !== q[b]).map(([a, b, label]) => ({ k: a, label, v: x[a], std: q[b] }));
+      if (!best || diffs.length < best.diffs.length) best = { q, diffs };
+    }
+    if (!best) return { name: "Custom", base: null, custom: true, diffs: [] };
+    const name = String(best.q.name).trim();
+    return { name: best.diffs.length ? `${name} (Custom)` : name, base: best.q, custom: best.diffs.length > 0, diffs: best.diffs };
+  }
+
+  /* the provider's last name for E2, from the report's name: "Smith, Jane MD" or "Dr. Jane Smith, PMHNP" both give "Smith".
+     With a comma, the part before it; otherwise the last word once credentials are dropped. */
+  const CRED = /^(md|do|np|pmhnp|pa-c|phd|psyd|dr)$/i;
+  function providerLast(name) {
+    const parts = String(name ?? "").split(",").map(x => x.trim().split(/\s+/).filter(t => t && !CRED.test(t.replace(/\./g, "")))).filter(a => a.length);
+    if (!parts.length) return "";
+    return parts.length > 1 ? parts[0].join(" ") : parts[0][parts[0].length - 1];
+  }
 
   /* "Castro MagV1" -> "MagV 1": the clinic's own name is dropped, a chair number gets a space */
   function chairLabel(name, location) {
@@ -170,5 +236,62 @@
     return ops;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures };
+  /* ---------- the visit log's own checks ---------- */
+  /* Tx # (column C), top to bottom: the MT is always 1, and each Daily, Taper or MTR that wasn't missed is one more than the
+     treatment above it. Follow-ups and missed visits have none. rows: { type, miss } in row order. */
+  const TX_TYPES = ["MT", "Daily", "Taper", "MTR"];
+  function txNumbers(rows) {
+    let n = 0;
+    return rows.map(r => { if (r.miss || !TX_TYPES.includes(r.type)) return ""; n = r.type === "MT" ? 1 : n + 1; return n; });
+  }
+  const txText = v => typeof v === "number" ? String(v) : String(v ?? "").trim();
+  /* New Template's last follow-up row carries this reminder. It isn't needed on a visit: it is template text that comes along
+     with the row when an import gives the row a date */
+  const KAISER_NOTE = "**Send final progress note/summary to Kaiser**";
+  const dropKaiser = note => String(note || "").split("; ").filter(x => x.trim() !== KAISER_NOTE).join("; ");
+  /* rows: the parsed log (row, date, type, miss, delivered, tx, note, noA, noD). o: { pr (the tab has the PR formula), approved (D2) }.
+     dup: the same day and kind of visit on two or more rows, unless every one was treated (an accelerated day).
+     tx: rows whose Tx # isn't the count. order: dated rows above an earlier date. formulas: rows that lost the PR formula in A
+     or the Tx-left formula in D. kaiser: dated rows still holding the template's Kaiser reminder. over: dated treatments numbered
+     past # of TXs (D2), for example a 37th booked on a 36-treatment course. */
+  function logChecks(rows, o = {}) {
+    const groups = new Map();
+    rows.forEach(r => { if (r.date == null) return; const k = `${r.date}|${pool(r.type)}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+    const dup = [...groups.values()].filter(g => g.length > 1 && g.filter(r => r.delivered).length < g.length).map(g => ({ date: g[0].date, pool: pool(g[0].type), rows: g.map(r => r.row) }));
+    const want = txNumbers(rows), tx = rows.map((r, i) => ({ row: r.row, was: txText(r.tx), want: want[i] })).filter(x => x.was !== String(x.want));
+    let last = -Infinity; const order = [];
+    rows.forEach(r => { if (r.date == null) return; if (r.date < last) order.push(r.row); else last = r.date; });
+    const formulas = rows.filter(r => (o.pr && r.noA) || r.noD).map(r => ({ row: r.row, a: !!(o.pr && r.noA), d: !!r.noD }));
+    const kaiser = rows.filter(r => r.date != null && dropKaiser(r.note) !== String(r.note || "")).map(r => r.row);
+    const over = o.approved > 0 ? rows.map((r, i) => ({ row: r.row, date: r.date, n: want[i] })).filter(x => x.date != null && typeof x.n === "number" && x.n > o.approved) : [];
+    return { dup, tx, order, formulas, kaiser, over, n: dup.length + (tx.length ? 1 : 0) + (order.length ? 1 : 0) + (formulas.length ? 1 : 0) + (kaiser.length ? 1 : 0) + (over.length ? 1 : 0) };
+  }
+  /* the saved appointment list against one tab. appts: { date, time, status (Scheduled, Kept, No-show, Cancelled), type } for this
+     patient. Booked from today on (o.from) and kept since the course's first dated row each need a row that day; an open row from
+     today through the list's last day (o.to) needs a booking. The same visit listed twice (day, type, time) counts once. */
+  function apptGaps(rows, appts, o) {
+    const dated = rows.filter(r => r.date != null), start = dated.length ? Math.min(...dated.map(r => r.date)) : o.from, seen = new Set(), want = new Map();
+    for (const a of appts) {
+      if (!(a.status === "Scheduled" && a.date >= o.from) && !(a.status === "Kept" && a.date >= start)) continue;
+      const k = `${a.date}|${a.type}|${a.time}`; if (seen.has(k)) continue; seen.add(k);
+      const g = `${a.date}|${pool(a.type)}`; if (!want.has(g)) want.set(g, []); want.get(g).push(a);
+    }
+    const on = (d, p) => rows.filter(r => r.date === d && pool(r.type) === p && !r.miss && !r.alt), notOnTab = [], notOnList = [];
+    for (const [g, list] of want) { const [d, p] = g.split("|"); list.slice(on(+d, p).length).forEach(a => notOnTab.push(a)); }
+    const days = new Set(dated.filter(r => r.date >= o.from && r.date <= o.to && !r.miss && !r.alt && !r.delivered).map(r => `${r.date}|${pool(r.type)}`));
+    for (const g of days) {
+      const [d, p] = g.split("|"), rs = on(+d, p).sort((x, y) => x.delivered - y.delivered), n = (want.get(g) || []).length;
+      rs.slice(0, Math.max(0, rs.length - n)).filter(r => !r.delivered).forEach(r => notOnList.push(r.row));
+    }
+    return { notOnTab: notOnTab.sort((a, b) => a.date - b.date), notOnList };
+  }
+  /* a short fingerprint of a log's typed cells, so a saved state can be recognised later (an undo only runs on the state it left) */
+  function hashRows(rows) {
+    const s = JSON.stringify(rows); let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return `${rows.length}:${(h >>> 0).toString(36)}`;
+  }
+
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast,
+    copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });
