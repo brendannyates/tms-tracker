@@ -479,7 +479,24 @@ function snoozed(id) {
 function snooze(id) {
   const until = Date.now() + SNOOZE_MS; state.snoozeMem[id] = until;
   try { const o = JSON.parse(localStorage.getItem("tms_snooze") || "{}"); o[id] = until; localStorage.setItem("tms_snooze", JSON.stringify(o)); } catch { /* memory only */ }
-  renderBanners();
+  renderBanners(); shareUi();
+}
+function dismiss(id) { state.dismissed.add(id); renderBanners(); shareUi(); }
+/* full screen may not share the pane's storage, so dismissed and snoozed banners travel with the snapshot and both ways after it */
+function uiSnap() {
+  const sn = { ...state.snoozeMem };
+  try { Object.entries(JSON.parse(localStorage.getItem("tms_snooze") || "{}")).forEach(([id, u]) => { if (!(sn[id] >= u)) sn[id] = u; }); } catch { /* memory only */ }
+  return { dismissed: [...state.dismissed], snooze: sn };
+}
+function mergeUi(o) {
+  if (!o) return;
+  (o.dismissed || []).forEach(id => state.dismissed.add(id));
+  Object.entries(o.snooze || {}).forEach(([id, u]) => { if (!(state.snoozeMem[id] >= u)) state.snoozeMem[id] = u; });
+  try { const st = JSON.parse(localStorage.getItem("tms_snooze") || "{}"); Object.entries(state.snoozeMem).forEach(([id, u]) => { if (!(st[id] >= u)) st[id] = u; }); localStorage.setItem("tms_snooze", JSON.stringify(st)); } catch { /* memory only */ }
+}
+function shareUi() {
+  const m = { k: "ui", ...uiSnap() };
+  if (POPOUT) { try { Office.context.ui.messageParent(JSON.stringify(m)); } catch { /* pane gone */ } } else toChild(m);
 }
 const bctl = id => `<span class="bctl"><button class="sm" data-banner="${id}" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="${id}" data-bact="dismiss" aria-label="Dismiss">Dismiss</button></span>`;
 function renderBanners() {
@@ -3475,7 +3492,7 @@ function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m))
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
-    edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap() });
+    edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
 /* dialog messages are size-limited, so anything big goes in CHUNK-sized parts the window puts back together */
@@ -3484,7 +3501,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, guests: o.guests || null, codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
-    edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess);
+    edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -3509,6 +3526,8 @@ async function onPopMessage(arg) {
   let m; try { m = JSON.parse(arg.message); } catch { return; }
   if (m.k === "ready") return sendSnap();
   if (m.k === "close") { closePopout(); return; }
+  if (m.k === "ui") { mergeUi(m); renderBanners(); return; }
+  if (window.DevUpdates && DevUpdates.receive(m)) return;
   if (m.k !== "call" || !PANE_FNS[m.fn]) return;
   pop.calls++; let ok = true, err = "", result = null;
   try { result = await PANE_FNS[m.fn](...(m.args || [])); } catch (e) { ok = false; err = e.message || String(e); }
@@ -3520,14 +3539,14 @@ function openPopout() {
   if (pop.dlg) return toast("Full screen is already open.");
   if (!Office.context.requirements.isSetSupported("DialogApi", "1.2")) return toast("This version of Excel can't open full screen.", true);
   const url = new URL(location.href); url.search = "?popout=1&full=1"; url.hash = "";
-  Office.context.ui.displayDialogAsync(url.href, { height: 95, width: 95, displayInIframe: true }, res => {
+  Office.context.ui.displayDialogAsync(window.DevUpdates ? DevUpdates.dialogUrl(url.href) : url.href, { height: 95, width: 95, displayInIframe: true }, res => {
     if (res.status !== Office.AsyncResultStatus.Succeeded) return toast(res.error.code === 12007 ? "Close the other add-in window first." : `Full screen couldn't open (${res.error.message}). Try again.`, true);
-    pop.dlg = res.value; $("popNote").hidden = false;
+    pop.dlg = res.value; $("popNote").hidden = false; if (window.DevUpdates) DevUpdates.setSend(toChild);
     pop.dlg.addEventHandler(Office.EventType.DialogMessageReceived, onPopMessage);
-    pop.dlg.addEventHandler(Office.EventType.DialogEventReceived, () => { pop.dlg = null; $("popNote").hidden = true; });
+    pop.dlg.addEventHandler(Office.EventType.DialogEventReceived, () => { pop.dlg = null; $("popNote").hidden = true; if (window.DevUpdates) DevUpdates.setSend(null); });
   });
 }
-function closePopout() { if (pop.dlg) { try { pop.dlg.close(); } catch { /* already closed */ } pop.dlg = null; } $("popNote").hidden = true; }
+function closePopout() { if (pop.dlg) { try { pop.dlg.close(); } catch { /* already closed */ } pop.dlg = null; } $("popNote").hidden = true; if (window.DevUpdates) DevUpdates.setSend(null); }
 /* the window side: snapshot and Sessions parts, answers to its calls, and toasts from the pane */
 function onPaneMessage(a) {
     let m; try { m = JSON.parse(a.message); } catch { return; }
@@ -3539,6 +3558,8 @@ function onPaneMessage(a) {
       const w = rpc.wait.get(m.id); if (!w) return; rpc.wait.delete(m.id);
       if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
     } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
+    else if (m.k === "ui") { mergeUi(m); renderBanners(); }
+    else if (window.DevUpdates) DevUpdates.receive(m);
 }
 function initPopout() {
   document.body.classList.add("popout");
@@ -3635,7 +3656,7 @@ Office.onReady(info => {
   });
   function onClick(e) {
     const el = e.target;
-    const bn = el.closest("[data-banner]"); if (bn) { if (bn.dataset.bact === "snooze") snooze(bn.dataset.banner); else { state.dismissed.add(bn.dataset.banner); renderBanners(); } return; }
+    const bn = el.closest("[data-banner]"); if (bn) { if (bn.dataset.bact === "snooze") snooze(bn.dataset.banner); else dismiss(bn.dataset.banner); return; }
     if (el.closest("[data-mclose]") || el.id === "modal") return closeModal();
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);
     const pq = el.closest("[data-prq]"); if (pq) { $("prFrom").value = serialToInput(todaySerial()); $("prTo").value = serialToInput(+pq.dataset.prq); document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", String(b === pq))); return prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); }
@@ -3754,5 +3775,7 @@ Office.onReady(info => {
   $("btnAdd").onclick = () => addPatient(collectAddPatient());
   $("btnFmt").onclick = formatLogsClick;
   fillAddPatientForm(); show("today");
+  /* Dev Update notices; full screen tells the pane what was dismissed (the pane tells full screen once it opens it) */
+  if (window.DevUpdates) DevUpdates.init({ app: "tms", send: POPOUT ? m => Office.context.ui.messageParent(JSON.stringify(m)) : null });
   if (POPOUT) initPopout(); else refresh();
 });
