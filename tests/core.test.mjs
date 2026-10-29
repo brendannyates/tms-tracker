@@ -265,3 +265,40 @@ test("needs: Choose a protocol, rollover, OOPM met is quiet", () => {
   assert.deepEqual(n.map(x => [x.k, !!x.bad, !!x.quiet]), [["rollover", true, false], ["noproto", false, false], ["oopm", false, true]]);
   assert.equal(n[0].t, "Re-verify benefits for 2027");
 });
+
+/* ---------- visit-log checks (synthetic rows) ---------- */
+const L = (row, o) => ({ row, date: null, type: "Daily", miss: false, delivered: false, tx: "", note: "", alt: false, noA: false, noD: false, ...o });
+
+test("Tx #: the MT is 1, each Daily, Taper or MTR one more, misses and F/U blank", () => {
+  const rows = [L(10, { type: "MT" }), L(11), L(12, { miss: true }), L(13, { type: "F/U" }), L(14, { type: "MTR" }), L(15, { type: "Taper" }), L(16, { type: "" })];
+  assert.deepEqual(T.txNumbers(rows), [1, 2, "", "", 3, 4, ""]);
+  assert.deepEqual(T.txNumbers([L(10), L(11, { type: "MT" }), L(12)]), [1, 1, 2]);   // a second course tab may start on a Daily
+});
+
+test("log checks: two rows on a day, Tx # off, order, lost formulas, Kaiser reminder, past # of TXs", () => {
+  const K = T.KAISER_NOTE, rows = [
+    L(10, { type: "MT", date: 100, tx: 1, delivered: true }), L(11, { date: 101, tx: 2, delivered: true }),
+    L(12, { type: "F/U", date: 104, miss: true, note: `${K}; No-show` }), L(13, { type: "F/U", date: 104, miss: true, note: `${K}; No-show` }),
+    L(14, { date: 103, tx: "", delivered: true, noA: true }), L(15, { date: 105, tx: 3, noD: true }), L(16, { date: 106, tx: 4 })];
+  const c = T.logChecks(rows, { pr: true, approved: 4 });
+  assert.deepEqual(c.dup, [{ date: 104, pool: "F/U", rows: [12, 13] }]);
+  assert.deepEqual(c.tx.map(x => [x.row, x.was, x.want]), [[14, "", 3], [15, "3", 4], [16, "4", 5]]);
+  assert.deepEqual(c.order, [14]);
+  assert.deepEqual(c.formulas, [{ row: 14, a: true, d: false }, { row: 15, a: false, d: true }]);
+  assert.deepEqual(c.kaiser, [12, 13]);
+  assert.deepEqual(c.over.map(x => [x.row, x.n]), [[16, 5]]);
+  assert.equal(T.dropKaiser(`${K}; Tele`), "Tele");
+  // every row treated that day (an accelerated day) is not a duplicate; no PR formula on the tab means A isn't checked
+  assert.equal(T.logChecks([L(10, { date: 1, delivered: true, tx: 1 }), L(11, { date: 1, delivered: true, tx: 2 })]).dup.length, 0);
+  assert.equal(T.logChecks([L(10, { date: 1, tx: 1, noA: true })], { pr: false }).formulas.length, 0);
+});
+
+test("appointment list against the tab: missing rows, open rows not booked, same visit listed twice", () => {
+  const rows = [L(10, { type: "MT", date: 90, delivered: true }), L(11, { date: 100 }), L(12, { date: 101 }), L(13, { type: "F/U" })];
+  const appts = [{ date: 90, time: 600, status: "Kept", type: "MT" }, { date: 100, time: 600, status: "Scheduled", type: "Daily" }, { date: 100, time: 600, status: "Scheduled", type: "Daily" },
+    { date: 102, time: 660, status: "Scheduled", type: "F/U" }, { date: 80, time: 600, status: "Kept", type: "Daily" }];
+  const g = T.apptGaps(rows, appts, { from: 95, to: 110 });
+  assert.deepEqual(g.notOnTab.map(a => [a.date, a.type]), [[102, "F/U"]]);   // kept on day 80 is before this course
+  assert.deepEqual(g.notOnList, [12]);
+  assert.notEqual(T.hashRows([["a"]]), T.hashRows([["b"]]));
+});
