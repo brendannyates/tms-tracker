@@ -2111,7 +2111,7 @@ function importWhat(p) {
   const w = [p.added && `created ${plural(p.added, "new row")}`, p.set && `set ${plural(p.set, "date")}`, p.types && `changed ${plural(p.types, "visit type")}`,
     p.cleared && `cleared ${plural(p.cleared, "date")}`, p.miss && `marked ${p.miss} missed`, p.unmissed && `undid ${plural(p.unmissed, "miss", "misses")} NextGen corrected`,
     p.resorted && "re-sorted by date", p.renum && !p.resorted && "renumbered Tx #", p.e2 && `provider set to ${p.e2}`].filter(Boolean);
-  return sentence(w.join(", ")) || "Checked against the list";
+  return sentence(w.join(", ")) || (p.ops.length ? `Updated ${plural(p.ops.length, "cell")} (times, notes or marks)` : "Checked against the list");
 }
 
 /* ---------- the Edit log's checks: what's off on each active tab, from its own log and from the saved appointment list ---------- */
