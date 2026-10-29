@@ -259,7 +259,7 @@ test("protocol: exact, custom with what changed, none; sites and pulse columns",
   assert.deepEqual(["F3", "F4", "Other"].map(T.pulseCol), [0, 1, 2]);
 });
 
-test("needs: Choose a protocol, rollover, OOPM met is quiet", () => {
+test("needs: Confirm protocol, rollover, OOPM met is quiet", () => {
   const d = { active: true, authFlags: [], decisions: [], overdue: [], noTech: [], measDue: [], protoFlags: [], awayConflicts: [], closedConflicts: [], sameDay: [], benFlags: [], noProto: true, rollover: { year: 2027, bad: true }, oopmMet: 2026 };
   const n = T.needs({ status: "In Progress", rows: [], d }, { today: 100, fmtDate: String, recentDays: 10 });
   assert.deepEqual(n.map(x => [x.k, !!x.bad, !!x.quiet]), [["rollover", true, false], ["noproto", false, false], ["oopm", false, true]]);
@@ -301,4 +301,27 @@ test("appointment list against the tab: missing rows, open rows not booked, same
   assert.deepEqual(g.notOnTab.map(a => [a.date, a.type]), [[102, "F/U"]]);   // kept on day 80 is before this course
   assert.deepEqual(g.notOnList, [12]);
   assert.notEqual(T.hashRows([["a"]]), T.hashRows([["b"]]));
+});
+
+test("clinicFromName: the clinic before the device or Tracker", () => {
+  assert.equal(T.clinicFromName("Castro MagV Patient Tracker.xlsx"), "Castro");
+  assert.equal(T.clinicFromName("Walnut Creek TMS Pt Tracker"), "Walnut Creek");
+  assert.equal(T.clinicFromName("Post MagV Tracker 2026"), "Post");
+  assert.equal(T.clinicFromName("Book1"), "");
+});
+
+test("clinicRole: majority of chair visits carries the tab, MT breaks a tie", () => {
+  const c = (here, where = "Post", type = "Daily") => ({ chair: true, here, where: here ? "" : where, type });
+  const mt = here => ({ chair: false, here, where: here ? "" : "Post", type: "MT" });
+  assert.equal(T.clinicRole([c(true), c(true), c(false)]).role, "home");
+  const g = T.clinicRole([c(true), c(false), c(false), c(false)]);
+  assert.deepEqual([g.role, g.home, g.here, g.homeCount], ["guest", "Post", 1, 3]);
+  assert.equal(T.clinicRole([c(false), c(false)]).role, "none");                 // no chair visit here
+  assert.equal(T.clinicRole([mt(false), c(true), c(false)]).role, "guest");      // tie, MT at Post
+  assert.equal(T.clinicRole([mt(true), c(true), c(false)]).role, "home");        // tie, MT here
+  assert.equal(T.clinicRole([mt(false), c(true), c(true), c(false)]).role, "home");   // MT at Post, most dailies here
+  assert.equal(T.clinicRole([mt(false)]).role, "none");                          // only an MT, at Post
+  assert.equal(T.clinicRole([mt(true)]).role, "home");                           // a new patient's MT here
+  assert.equal(T.clinicRole([{ chair: false, here: false, where: "Post", type: "F/U" }]).role, "none");
+  assert.equal(T.clinicRole([{ chair: false, here: null, where: "", type: "MT" }]).role, "home");   // the report doesn't say where
 });

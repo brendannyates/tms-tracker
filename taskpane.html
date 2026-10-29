@@ -400,6 +400,21 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 .copay .btn[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
 .copay .by{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
 .copay .by input{width:120px;min-height:36px}
+/* today's visit at the top of the patient view, and the copay on one line */
+.pvtoday{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:14px;padding:10px 14px;border-radius:12px;background:var(--accent-soft)}
+.pvtoday .w{font-weight:600}
+.pvtoday .grow{flex:1 1 auto}
+.copay.line{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:8px;padding:8px 14px}
+.copay.line .amt{font-weight:600}
+.copay.line .got{color:var(--accent);font-weight:600}
+/* the patient view's sidebar: one section at a time */
+.pvgrid{display:grid;grid-template-columns:170px minmax(0,1fr);gap:20px;margin-top:18px;align-items:start}
+.pvnav{display:flex;flex-direction:column;gap:2px;position:sticky;top:0}
+.pvnav button{text-align:left;min-height:40px;padding:0 12px;border-radius:10px;font-size:14px;font-weight:500;color:var(--ink)}
+.pvnav button:hover{background:var(--surface-3)}
+.pvnav button[aria-current="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.pvnav .pvacts{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.g2c{display:grid;grid-template-columns:repeat(2,1fr);gap:0 24px}
 .showbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:18px}
 .showbar .lbl{font-size:13px;color:var(--muted);margin-right:4px}
 .showbar .saved{font-size:12.5px;color:var(--faint);margin-left:6px}
@@ -429,6 +444,10 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
   #ptView{padding:0;place-items:stretch}
   .pv{width:100%;max-height:none;min-height:100%;border-radius:0;padding:16px}
   .g3c{grid-template-columns:1fr}
+.g2c{grid-template-columns:1fr}
+.pvgrid{grid-template-columns:1fr}
+.pvnav{flex-direction:row;flex-wrap:wrap;position:static}
+.pvnav .pvacts{flex-direction:row;margin-top:0}
   .srow{grid-template-columns:80px 64px 1fr auto}.srow span:nth-child(4),.srow span:nth-child(5){display:none}
   .per{grid-template-columns:1fr 1fr}
   .app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
@@ -500,6 +519,18 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       <b>New patients in NextGen need a tracker (<span id="newPtCount"></span>)</b>
       <div id="newPtList" style="margin-top:6px"></div>
       <span class="bctl"><button class="btn mute sm" data-banner="newPtBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="newPtBanner" data-bact="dismiss">Dismiss</button></span>
+    </div>
+    <div id="mrnBanner" class="banner" hidden>
+      <b>Active tabs with no MRN in A4 (<span id="mrnCount"></span>)</b>
+      <div class="sub">Without it, imports and benefits can't find the patient. Enter it from NextGen.</div>
+      <div id="mrnList" style="margin-top:6px"></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="mrnBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="mrnBanner" data-bact="dismiss">Dismiss</button></span>
+    </div>
+    <div id="guestBanner" class="banner" hidden>
+      <b>Guest patients need a link to their tab (<span id="guestCount"></span>)</b>
+      <div class="sub">Most of their chair visits are at another clinic, so that clinic carries the tab. Paste the link to their tab on that clinic's tracker: pulses, technician and measures are entered there. The list is on the Guest Patients sheet.</div>
+      <div id="guestList" style="margin-top:6px"></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="guestBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="guestBanner" data-bact="dismiss">Dismiss</button></span>
     </div>
     <div id="skipNote" class="banner" hidden>
       <span id="skipText"></span>
