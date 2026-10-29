@@ -1878,7 +1878,7 @@ const benTarget = tab => state.patients.find(p => p.tab === tab && p.layout === 
    out, for writes that are part of a larger logged change (an import). An op with f: true writes a formula. */
 async function applyOps(ops, guard, log) {
   if (POPOUT) return callPane("applyOps", [ops, guard, log]);
-  const ben = [], cells = [];
+  const ben = [], cells = []; let unlogged = false;
   for (const o of ops) {
     const p = isBenKey(o.a) && benTarget(o.tab);
     if (p) ben.push({ mrn: p.mrn, mrnVal: p.mrnVal, tab: p.tab, key: o.a, v: o.clear ? "" : o.v && o.v[0][0], quiet: !!o.quiet });
@@ -1888,18 +1888,31 @@ async function applyOps(ops, guard, log) {
     const g = (guard || []).filter(x => x.date != null).map(x => ({ ...x, r: ctx.workbook.worksheets.getItem(x.tab).getRange(`E${x.row}:L${x.row}`) }));   // E date, L type
     /* what each cell held before, so the Edit log can put it back */
     const rs = log === false ? [] : cells.map(o => { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); r.load("formulas"); return { o, r }; });
+    /* and which visit each visit-log row held (E date, L type), so an undo can tell the row still holds that visit */
+    const ats = log === false ? [] : [...new Set(cells.map(o => logRowOf(o.a) && `${o.tab}|${logRowOf(o.a)}`).filter(Boolean))]
+      .map(k => { const [tab, row] = k.split("|"), r = ctx.workbook.worksheets.getItem(tab).getRange(`E${row}:L${row}`); r.load("values"); return { tab, row: +row, r }; });
     g.forEach(x => x.r.load("values"));
     if (g.length || rs.length) await ctx.sync();
     const was = rs.map(({ o, r }) => ({ o, b: r.formulas.map(x => x.slice()) }));   // copied now, before anything is written
+    const atWas = ats.map(x => {
+      const a = { tab: x.tab, row: x.row, date: dayOf(x.r.values[0][0]), type: String(x.r.values[0][7] ?? "").trim() };
+      cells.forEach(o => { if (o.tab !== a.tab || o.clear || !o.v) return; if (o.a === `E${a.row}`) a.date = dayOf(o.v[0][0]); if (o.a === `L${a.row}`) a.type = String(o.v[0][0] ?? "").trim(); });   // what the edit leaves there
+      return a;
+    });
     const moved = g.find(x => Math.floor(Number(x.r.values[0][0]) || 0) !== x.date || (x.type != null && String(x.r.values[0][7] ?? "").trim() !== String(x.type).trim()));   // both sides trimmed: "Daily " on the tab is still Daily
     if (moved) throw new Error(`${moved.tab}: the visit on row ${moved.row} has moved on the tab (an import may have re-sorted it). Nothing was saved. Select Refresh and try again.`);
-    const benWas = log === false ? [] : ben.map(e => ({ e, b: ((state.ben.rows.get(e.mrn) || {}).v || [])[colIndex(BEN_COLS[e.key])] ?? "" }));
+    const benWas = log === false ? [] : ben.filter(e => e.key !== BEN_STAMP).map(e => ({ e, b: ((state.ben.rows.get(e.mrn) || {}).v || [])[colIndex(BEN_COLS[e.key])] ?? "" }));   // Last updated stamps aren't undone
     for (const o of cells) { const r = ctx.workbook.worksheets.getItem(o.tab).getRange(o.a); if (o.clear) r.clear("Contents"); else if (o.f) r.formulas = o.v; else r.values = o.v; }
     await writeBen(ctx, ben);
-    if (log !== false) await addEdits(ctx, editsFromOps(was, benWas, log || {}));
+    /* the save stands even if the Edit log can't record it (for example a protected workbook structure); it says so instead */
+    if (log !== false) try { await addEdits(ctx, editsFromOps(was, benWas, atWas, log || {})); } catch (e) { console.error(e); unlogged = true; }
     await ctx.sync();
   });
+  if (unlogged) toast("Saved, but the Edit log couldn't record it, so it can't be undone from there.", true);
 }
+const dayOf = v => Math.floor(Number(v)) || null;
+/* a single visit-log cell (A:T), not availability in V:Y on the same rows */
+const logRowOf = a => { const m = String(a).match(/^[A-T](\d+)$/), r = m && +m[1]; return r >= LOG_FIRST && r < LOG_FIRST + LOG_READ ? r : null; };
 /* ---------- Edit log: every change the add-in makes to a patient tab or the Benefits tab, one row each on the Edit Log sheet
    (hidden; it travels with the workbook, so every computer sees the same list). A Id, B when, C tab, D what, E kind, F by,
    G state ("" can be undone, "Undone ...", "No undo"), H on: what undo needs, as JSON in 30,000-character parts. An undo only
@@ -1931,11 +1944,12 @@ function describeCells(tab, addrs) {
   return sentence([...rows, ...new Set(other)].join("; ")) || "Cells changed";
 }
 /* applyOps' writes as Edit log entries, one per tab */
-function editsFromOps(was, benWas, log) {
-  const by = new Map(), get = tab => by.get(tab) || by.set(tab, { tab, cells: [], ben: [] }).get(tab);
+function editsFromOps(was, benWas, atWas, log) {
+  const by = new Map(), get = tab => by.get(tab) || by.set(tab, { tab, cells: [], ben: [], at: [] }).get(tab);
+  atWas.forEach(a => get(a.tab).at.push({ row: a.row, date: a.date, type: a.type }));
   was.forEach(({ o, b }) => get(o.tab).cells.push({ a: o.a, b, f: o.clear ? b.map(x => x.map(() => "")) : o.v }));
   benWas.forEach(({ e, b }) => get(e.tab).ben.push({ a: e.key, b, f: e.v }));
-  return [...by.values()].filter(x => x.cells.length || x.ben.length).map(x => ({ tab: x.tab, kind: log.kind || "edit", what: log.what || describeCells(x.tab, [...x.cells, ...x.ben].map(c => c.a)), undo: { cells: x.cells, ben: x.ben } }));
+  return [...by.values()].filter(x => x.cells.length || x.ben.length).map(x => ({ tab: x.tab, kind: log.kind || "edit", what: log.what || describeCells(x.tab, [...x.cells, ...x.ben].map(c => c.a)), undo: { cells: x.cells, ben: x.ben, at: x.at } }));
 }
 async function elogSheet(ctx) {
   let ws = ctx.workbook.worksheets.getItemOrNullObject(ELOG_SHEET); await ctx.sync();
@@ -1978,6 +1992,8 @@ async function readElog(ctx) {
 }
 /* each tab's log, read in the current Excel.run: where it ends, B:T formulas (F) and A:T values (V) */
 async function readLogs(ctx, tabs) {
+  /* six tabs per read, like refresh's batches: Excel on the web caps what one sync can return */
+  if (tabs.length > 6) { const out = new Map(); for (let i = 0; i < tabs.length; i += 6) for (const [k, v] of await readLogs(ctx, tabs.slice(i, i + 6))) out.set(k, v); return out; }
   const G = tabs.map(tab => { const ws = ctx.workbook.worksheets.getItem(tab), a10 = ws.getRange(`A${LOG_FIRST}`), b = ws.getRange(`B${LOG_FIRST}:B${LOG_FIRST + LOG_READ - 1}`); a10.load("formulas"); b.load("values"); return { tab, ws, a10, b }; });
   await ctx.sync();
   G.forEach(g => { g.end = endOf(g.b.values.map(r => r[0]), g.a10.formulas[0][0]); g.r = g.ws.getRange(`B${LOG_FIRST}:T${g.end}`); g.r.load("formulas"); g.v = g.ws.getRange(`A${LOG_FIRST}:T${g.end}`); g.v.load("values"); });
@@ -1993,16 +2009,20 @@ async function readUndo(ctx, e) {
   const v = r.values[0]; if (String(v[0]) !== e.id) throw new Error("The Edit log moved (another computer added to it). Select Refresh and try again.");
   return JSON.parse(v.slice(7).join("") || "null");
 }
-/* puts a log back: rows the edit added are deleted (ins), rows it removed come back (del, taking the formulas and formatting of the
-   row below), then B:T's typed cells are written as they were. The formula columns (D, G, I, K, and A) stay on their rows. */
+/* puts a log back: rows the edit added are deleted (ins), rows it removed come back (del), then B:T's typed cells are written as
+   they were. The formula columns (D, G, I, K, and A) stay on their rows. A row comes back inside the log (never on its first row or
+   the TX SUMMARY row, where the PR and header ranges wouldn't take it in), copying the row below; B:T is rewritten anyway.
+   One batch: the deletes and inserts and the B:T write go to Excel together, so a failed sync leaves nothing half done. */
 async function restoreLog(ctx, tab, L) {
   const ws = ctx.workbook.worksheets.getItem(tab);
-  (L.ins || []).slice().sort((a, b) => b - a).forEach(row => ws.getRange(`A${row}:T${row}`).delete(Excel.DeleteShiftDirection.up));
+  let n = L.nAfter;
+  (L.ins || []).slice().sort((a, b) => b - a).forEach(row => { ws.getRange(`A${row}:T${row}`).delete(Excel.DeleteShiftDirection.up); n--; });
   for (const row of (L.del || []).slice().sort((a, b) => a - b)) {
-    ws.getRange(`A${row}:T${row}`).insert(Excel.InsertShiftDirection.down);
-    ws.getRange(`A${row}:T${row}`).copyFrom(ws.getRange(`A${row + 1}:T${row + 1}`), Excel.RangeCopyType.all);
+    const at = Math.min(Math.max(row, L.first + 1), L.first + n - 1);
+    ws.getRange(`A${at}:T${at}`).insert(Excel.InsertShiftDirection.down);
+    ws.getRange(`A${at}:T${at}`).copyFrom(ws.getRange(`A${at + 1}:T${at + 1}`), Excel.RangeCopyType.all);
+    n++;
   }
-  await ctx.sync();
   const last = L.first + L.before.length - 1;
   [["B", "C", 0], ["E", "F", 3], ["H", "H", 6], ["J", "J", 8], ["L", "T", 10]].forEach(([c1, c2, j]) => {
     const w = colIndex(c2) - colIndex(c1) + 1;
@@ -2021,7 +2041,11 @@ async function undoEdit(id) {
       const later = state.edits.slice(0, state.edits.indexOf(e)).filter(x => x.tab === e.tab && !x.st && x.kind !== "undo").length;
       const changed = `${e.tab} changed after this edit${later ? ` (${plural(later, "later edit")} on it in the log)` : ""}. Undo the later edits first, or fix the tab by hand. Nothing was changed.`;
       const ws = ctx.workbook.worksheets.getItem(e.tab), cells = (u.cells || []).map(c => { const r = ws.getRange(c.a); r.load("formulas"); return { c, r }; });
+      const ats = (u.at || []).map(a => { const r = ws.getRange(`E${a.row}:L${a.row}`); r.load("values"); return { a, r }; });
       const logs = u.log ? await readLogs(ctx, [e.tab]) : (await ctx.sync(), null);
+      /* the row must still hold the same visit: pulses and a technician look alike from day to day, so matching cells alone isn't enough */
+      const gone = ats.find(({ a, r }) => dayOf(r.values[0][0]) !== a.date || String(r.values[0][7] ?? "").trim() !== a.type);
+      if (gone) throw new Error(`${e.tab} changed after this edit: row ${gone.a.row} no longer holds the ${gone.a.date != null ? fmtMon(gone.a.date) + " " : ""}visit (a sort, import or removed row moved it). Nothing was changed; fix the cells by hand.`);
       if (cells.some(({ c, r }) => !sameGrid(r.formulas, c.f))) throw new Error(changed);
       if (u.log) { const now = logs.get(e.tab); if (now.F.length !== u.log.nAfter || logHash(now.F) !== u.log.hash) throw new Error(changed); }
       const bp = benTarget(e.tab), benNow = (u.ben || []).map(c => ({ c, v: bp ? ((state.ben.rows.get(bp.mrn) || {}).v || [])[colIndex(BEN_COLS[c.a])] ?? "" : "" }));
@@ -2057,7 +2081,7 @@ async function importStart(list) {
       await ctx.sync();
       list.forEach((x, i) => {
         const L = logs.get(x.tab);
-        if (logSig(parseLog(L.V)) !== x.sig) stale.push(x.tab);
+        if (logSig(parseLog(L.V.slice(0, LOG_READ))) !== x.sig) stale.push(x.tab);   // refresh reads LOG_READ rows at most
         snap.set(x.tab, { before: L.F, cells: cells[i].map(({ a, r }) => ({ a, b: r.formulas })) });
       });
     });
@@ -2109,8 +2133,8 @@ async function logChange(tab, what, kind, fn, del) {
     const before = (await readLogs(ctx, [tab])).get(tab), ws = ctx.workbook.worksheets.getItem(tab);
     await fn(ctx, ws); await ctx.sync();
     const after = (await readLogs(ctx, [tab])).get(tab);
-    await addEdits(ctx, [{ tab, kind, what, undo: { log: { first: LOG_FIRST, before: before.F, ins: [], del: del || [], nAfter: after.F.length, hash: logHash(after.F) } } }]);
-    await ctx.sync();
+    try { await addEdits(ctx, [{ tab, kind, what, undo: { log: { first: LOG_FIRST, before: before.F, ins: [], del: del || [], nAfter: after.F.length, hash: logHash(after.F) } } }]); await ctx.sync(); }
+    catch (e) { console.error(e); toast("Done, but the Edit log couldn't record it, so it can't be undone from there.", true); }
   });
 }
 /* the checks' Fix buttons. kind: tx (renumber C), formulas (A and D back), kaiser (drop the reminder), sort, remove (a row) */
@@ -2119,10 +2143,12 @@ async function fixCheck(tab, kind, row) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const c = checksOf(p);
   try {
-    if (kind === "tx") await applyOps(c.tx.map(x => ({ tab, a: `C${x.row}`, v: [[x.want]] })), null, { kind: "txnum", what: `Renumbered Tx # on ${plural(c.tx.length, "row")}: the MT is 1, each treatment after it one more` });
-    else if (kind === "formulas") await applyOps(c.formulas.flatMap(x => [x.a && { tab, a: `A${x.row}`, v: [[prF(x.row, p.end)]], f: true }, x.d && { tab, a: `D${x.row}`, v: [[ROW_F.D(x.row)]], f: true }].filter(Boolean)), null,
+    /* the rows as this pane read them: a guard on each dated row stops the write if the tab was re-sorted since */
+    const g = rows => rows.map(n => p.rows.find(r => r.row === n)).filter(r => r && r.date != null).map(r => ({ tab, ...at(r) }));
+    if (kind === "tx") await applyOps(c.tx.map(x => ({ tab, a: `C${x.row}`, v: [[x.want]] })), g(c.tx.map(x => x.row)), { kind: "txnum", what: `Renumbered Tx # on ${plural(c.tx.length, "row")}: the MT is 1, each treatment after it one more` });
+    else if (kind === "formulas") await applyOps(c.formulas.flatMap(x => [x.a && { tab, a: `A${x.row}`, v: [[prF(x.row, p.end)]], f: true }, x.d && { tab, a: `D${x.row}`, v: [[ROW_F.D(x.row)]], f: true }].filter(Boolean)), g(c.formulas.map(x => x.row)),
       { kind: "formulas", what: `Put back the formulas on ${plural(c.formulas.length, "row")} (${andList([c.formulas.some(x => x.a) && "PR in A", c.formulas.some(x => x.d) && "Tx left in D"].filter(Boolean))})` });
-    else if (kind === "kaiser") await applyOps(c.kaiser.map(r => ({ tab, a: `S${r}`, v: [[TmsCore.dropKaiser(p.rows.find(x => x.row === r).note)]] })), null, { kind: "notes", what: `Removed the template's Kaiser reminder from ${plural(c.kaiser.length, "row")}` });
+    else if (kind === "kaiser") await applyOps(c.kaiser.map(r => ({ tab, a: `S${r}`, v: [[TmsCore.dropKaiser(p.rows.find(x => x.row === r).note)]] })), g(c.kaiser), { kind: "notes", what: `Removed the template's Kaiser reminder from ${plural(c.kaiser.length, "row")}` });
     else if (kind === "sort") {
       const order = sortOrder(p.rows), tx = TmsCore.txNumbers(order.map(i => p.rows[i]));
       await logChange(tab, "Sorted the visit log by date and renumbered Tx #", "sort", () => arrangeLogs([{ tab, order, tx, dates: p.rows.map(r => r.date) }]));
@@ -2170,13 +2196,13 @@ async function arrangeLogs(list) {
   if (!list.length) return;
   if (POPOUT) return callPane("arrangeLogs", [list]);
   await Excel.run(async ctx => {
-    const got = list.map(({ tab, order }) => { const r = ctx.workbook.worksheets.getItem(tab).getRange(`B${LOG_FIRST}:T${LOG_FIRST + order.length - 1}`); r.load("formulas"); return r; });
+    const got = list.map(({ tab, order }) => { const r = ctx.workbook.worksheets.getItem(tab).getRange(`B${LOG_FIRST}:T${LOG_FIRST + order.length - 1}`); r.load("formulas,values"); return r; });
     await ctx.sync();
     /* the order is a move of rows, so it is only right on the rows it was planned from: every E must hold the date the plan wrote
        there. Anything else (the log changed while the import ran) and nothing moves, on any tab. */
     list.forEach(({ tab, dates }, n) => {
       if (!dates) return;
-      const i = dates.findIndex((d, k) => (Math.floor(Number(got[n].formulas[k][3])) || null) !== (d ?? null));
+      const i = dates.findIndex((d, k) => dayOf(got[n].values[k][3]) !== (d ?? null));   // values: an E that is a formula (=E12+1) still reads as its date
       if (i >= 0) throw new Error(`${tab}: row ${LOG_FIRST + i} changed while the import ran, so the visit log was not re-sorted. Undo this import from the Edit log at the bottom of Patients, then import again.`);
     });
     list.forEach(({ tab, order, tx }, n) => {
@@ -3151,7 +3177,9 @@ async function applyPlan() {
     await refresh();
     const sug = state.patients.filter(p => p.d.suggest);
     failStep = "Updating statuses and measures";
-    if (sug.length) await applyOps(sug.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })), null, false);
+    const sugIn = sug.filter(p => done.some(d => d.tab === p.tab)), sugOut = sug.filter(p => !sugIn.includes(p));
+    if (sugIn.length) await applyOps(sugIn.map(p => ({ tab: p.tab, a: "D7", v: [[p.d.suggest]] })), null, false);   // in that tab's import entry
+    for (const p of sugOut) await applyOps([{ tab: p.tab, a: "D7", v: [[p.d.suggest]] }], null, { kind: "auto", what: `Status set to ${p.d.suggest} after the import` });
     const nx = reflow.size ? await placeMeasures(state.patients.filter(p => reflow.has(p.tab)), false, false) : 0;
     sug.forEach(p => { const d = done.find(x => x.tab === p.tab); if (d) d.what += `, status set to ${p.d.suggest}`; });
     if (nx) done.forEach(d => { if (reflow.has(d.tab)) d.what += ", measures re-planned"; });
