@@ -125,6 +125,26 @@ Select a patient to open them over the list. Esc or × closes it. The header sho
 
 Follow-ups (99214) keep their own PR, but don't count toward the course cost or the OOPM tally. When the OOPM is met (0 remaining) or the BIDF quote is $0, the copay and benefits reminders stop for that patient; only the new-year re-verify still shows.
 
+### Edit log
+
+At the bottom of Patients, **Edit log** opens a list of every change the add-in made to a patient tab or the Benefits tab, newest first: when, which tab, what changed in plain words ("Pulses and technician on Oct 27 (row 29)", "Import: Created 2 new rows, set 5 dates, re-sorted by date") and the name in By or the last technician. Every computer sees the same list; it lives on a hidden **Edit Log** sheet in the workbook.
+
+**Undo** puts the cells back as they were. It only runs while the cells still hold what that edit left; if someone changed them since, it says so and changes nothing, so undo the later edit first. Undoing an import removes the rows it created and puts every date, type and note back; it asks first.
+
+**To check** lists what looks wrong on each active tab, with a fix beside each:
+
+| Check | Fix |
+|---|---|
+| Two rows for the same day and kind of visit | **Remove row** (rows without pulses only; asks first), or **Open tab** |
+| Tx # off: the MT is 1 and every Daily, Taper or MTR is one more than the treatment above it; follow-ups and missed visits have none | **Renumber Tx #** |
+| Rows out of date order | **Sort by date** |
+| Rows that lost the PR formula (A) or Tx left formula (D) | **Put formulas back** |
+| New Template's Kaiser reminder on a visit row | **Remove the reminder** |
+| A treatment booked past # of TXs (D2) | Add an extension, or cancel it in NextGen |
+| On the appointment list but not the tab, or on the tab but not the list | **Import again** / **Open tab** and check NextGen |
+
+Every fix is logged, so it can be undone too. Not logged: check-ins and chair moves (the Sessions sheet), formatting, and the Appt List tab.
+
 ## Import the appointment list
 
 Run this whenever the schedule changes, at least daily. The banner tells you when the list on file is out of date.
@@ -134,7 +154,7 @@ Run this whenever the schedule changes, at least daily. The banner tells you whe
 3. Export the report with the x icon beside the bar graph icon.
 4. Copy the file from your NextGen File Explorer to your computer.
 5. In the add-in, choose **Import**, leave **ALL TMS for this clinic** selected, and choose the file.
-6. Review the preview (dates set, types changed, visits cleared, misses recorded per tab), then select **Apply**. Nothing changes until you apply.
+6. Review the preview (dates set, types changed, visits cleared, misses recorded per tab), then select **Apply** once. Nothing changes until you apply. If a tab changed after the preview was made (someone edited it, or the same list was applied on another computer), nothing is written: the preview is rebuilt and you apply again. Each tab's import is one entry in the Edit log, so it can be undone.
 
 What the import does:
 

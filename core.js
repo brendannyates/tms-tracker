@@ -1,6 +1,6 @@
 /* core.js: the TMS Tracker floor rules. Pure functions (no Office.js, no DOM), shared with tests/.
    A visit's phase, a chair's state on the Today board, chair moves against NextGen, missed-visit streaks, and the needs list
-   that Patients sorts by. taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
+   that Patients sorts by, and the visit log's own checks (Tx #, duplicate days, lost formulas, the appointment list). taskpane.js builds the inputs from the visit logs, the saved appointment list and the Sessions sheet. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.TmsCore = factory();
@@ -236,6 +236,62 @@
     return ops;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast,
+  /* ---------- the visit log's own checks ---------- */
+  /* Tx # (column C), top to bottom: the MT is always 1, and each Daily, Taper or MTR that wasn't missed is one more than the
+     treatment above it. Follow-ups and missed visits have none. rows: { type, miss } in row order. */
+  const TX_TYPES = ["MT", "Daily", "Taper", "MTR"];
+  function txNumbers(rows) {
+    let n = 0;
+    return rows.map(r => { if (r.miss || !TX_TYPES.includes(r.type)) return ""; n = r.type === "MT" ? 1 : n + 1; return n; });
+  }
+  const txText = v => typeof v === "number" ? String(v) : String(v ?? "").trim();
+  /* New Template's last follow-up row carries this reminder. It isn't needed on a visit: it is template text that comes along
+     with the row when an import gives the row a date */
+  const KAISER_NOTE = "**Send final progress note/summary to Kaiser**";
+  const dropKaiser = note => String(note || "").split("; ").filter(x => x.trim() !== KAISER_NOTE).join("; ");
+  /* rows: the parsed log (row, date, type, miss, delivered, tx, note, noA, noD). o: { pr (the tab has the PR formula), approved (D2) }.
+     dup: the same day and kind of visit on two or more rows, unless every one was treated (an accelerated day).
+     tx: rows whose Tx # isn't the count. order: dated rows above an earlier date. formulas: rows that lost the PR formula in A
+     or the Tx-left formula in D. kaiser: dated rows still holding the template's Kaiser reminder. over: dated treatments numbered
+     past # of TXs (D2), for example a 37th booked on a 36-treatment course. */
+  function logChecks(rows, o = {}) {
+    const groups = new Map();
+    rows.forEach(r => { if (r.date == null) return; const k = `${r.date}|${pool(r.type)}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+    const dup = [...groups.values()].filter(g => g.length > 1 && g.filter(r => r.delivered).length < g.length).map(g => ({ date: g[0].date, pool: pool(g[0].type), rows: g.map(r => r.row) }));
+    const want = txNumbers(rows), tx = rows.map((r, i) => ({ row: r.row, was: txText(r.tx), want: want[i] })).filter(x => x.was !== String(x.want));
+    let last = -Infinity; const order = [];
+    rows.forEach(r => { if (r.date == null) return; if (r.date < last) order.push(r.row); else last = r.date; });
+    const formulas = rows.filter(r => (o.pr && r.noA) || r.noD).map(r => ({ row: r.row, a: !!(o.pr && r.noA), d: !!r.noD }));
+    const kaiser = rows.filter(r => r.date != null && dropKaiser(r.note) !== String(r.note || "")).map(r => r.row);
+    const over = o.approved > 0 ? rows.map((r, i) => ({ row: r.row, date: r.date, n: want[i] })).filter(x => x.date != null && typeof x.n === "number" && x.n > o.approved) : [];
+    return { dup, tx, order, formulas, kaiser, over, n: dup.length + (tx.length ? 1 : 0) + (order.length ? 1 : 0) + (formulas.length ? 1 : 0) + (kaiser.length ? 1 : 0) + (over.length ? 1 : 0) };
+  }
+  /* the saved appointment list against one tab. appts: { date, time, status (Scheduled, Kept, No-show, Cancelled), type } for this
+     patient. Booked from today on (o.from) and kept since the course's first dated row each need a row that day; an open row from
+     today through the list's last day (o.to) needs a booking. The same visit listed twice (day, type, time) counts once. */
+  function apptGaps(rows, appts, o) {
+    const dated = rows.filter(r => r.date != null), start = dated.length ? Math.min(...dated.map(r => r.date)) : o.from, seen = new Set(), want = new Map();
+    for (const a of appts) {
+      if (!(a.status === "Scheduled" && a.date >= o.from) && !(a.status === "Kept" && a.date >= start)) continue;
+      const k = `${a.date}|${a.type}|${a.time}`; if (seen.has(k)) continue; seen.add(k);
+      const g = `${a.date}|${pool(a.type)}`; if (!want.has(g)) want.set(g, []); want.get(g).push(a);
+    }
+    const on = (d, p) => rows.filter(r => r.date === d && pool(r.type) === p && !r.miss && !r.alt), notOnTab = [], notOnList = [];
+    for (const [g, list] of want) { const [d, p] = g.split("|"); list.slice(on(+d, p).length).forEach(a => notOnTab.push(a)); }
+    const days = new Set(dated.filter(r => r.date >= o.from && r.date <= o.to && !r.miss && !r.alt && !r.delivered).map(r => `${r.date}|${pool(r.type)}`));
+    for (const g of days) {
+      const [d, p] = g.split("|"), rs = on(+d, p).sort((x, y) => x.delivered - y.delivered), n = (want.get(g) || []).length;
+      rs.slice(0, Math.max(0, rs.length - n)).filter(r => !r.delivered).forEach(r => notOnList.push(r.row));
+    }
+    return { notOnTab: notOnTab.sort((a, b) => a.date - b.date), notOnList };
+  }
+  /* a short fingerprint of a log's typed cells, so a saved state can be recognised later (an undo only runs on the state it left) */
+  function hashRows(rows) {
+    const s = JSON.stringify(rows); let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return `${rows.length}:${(h >>> 0).toString(36)}`;
+  }
+
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });
