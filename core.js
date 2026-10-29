@@ -83,7 +83,7 @@
     if (d.stale) add("stale", `No visit in ${rec}+ days, last ${d.lastTx != null ? f(d.lastTx) : "none"}`, ["Pause or discontinue", "statuspick"], { bad: true });
     const streak = missStreak(p.rows, x.today);
     if (streak >= 3) add("missed", `Missed ${streak} in a row`, ["Call to reschedule", "call"], { bad: true });
-    if (A) d.authFlags.forEach(t => add("auth", t, /^Auth starts|MT redo/.test(t) ? ["Open tab", "opentab"] : ["Add extension", "ext"], { bad: /expired|past auth|authorized \(D2\)/i.test(t) }));
+    if (A) d.authFlags.forEach(t => add("auth", t, /^Auth starts|MT redo/.test(t) ? ["Open", "opentab"] : ["Add extension", "ext"], { bad: /expired|past auth|authorized \(D2\)/i.test(t) }));
     (x.moved || []).forEach(v => add("ng", `Moved to ${v.chairLabel}${v.dayLabel ? ` on ${v.dayLabel}` : ""}, not yet in NextGen`, ["Mark moved in NextGen", "ngdone"], { key: v.key }));
     (x.noChair || []).forEach(v => add("nochair", `No chair for ${v.timeLabel}`, ["Choose a chair", "move"], { key: v.key }));
     if (A && d.bidfToday) add("bidf", "BIDF info needed today", ["Enter benefits", "ben"]);
@@ -95,15 +95,16 @@
     });
     d.overdue.forEach(r => add("pulses", `No pulses for ${f(r.date)}`, ["Enter pulses", "pastpulses"], { row: r.row }));
     d.noTech.forEach(r => add("tech", `No technician on ${f(r.date)}`, ["Add technician", "pasttech"], { row: r.row }));
+    (x.noAppt || []).forEach(r => add("noappt", `Pulses on ${f(r.date)}, no visit in NextGen that day`, ["Edit pulses", "editPulses"], { row: r.row }));
     /* earlier days' measures can't be collected now: one reminder to look in NextGen, only while the course is active */
     if (A && d.measDue.length) add("measures", "Check NextGen for PHQ-9 and GAD-7", ["Enter scores", "pastmeas"], { row: d.measDue.reduce((a, b) => b.date > a.date ? b : a).row });
-    if (A && d.noProto) add("noproto", "Choose a protocol", ["Choose a protocol", "proto"]);
+    if (A && d.noProto) add("noproto", "Protocol not confirmed", ["Confirm protocol", "proto"]);
     if (A) d.protoFlags.forEach(t => add("protocol", t, ["Update protocol", "proto"]));
     if (A && d.rollover) add("rollover", `Re-verify benefits for ${d.rollover.year}`, ["Update BIDF", "ben"], { bad: d.rollover.bad });
     /* one line per absence, naming every visit booked inside it */
     if (A) [...new Set(d.awayConflicts.map(c => c.why))].forEach(why => { const cs = d.awayConflicts.filter(c => c.why === why); add("away", `Booked ${cs.map(c => f(c.r.date)).join(", ")} while ${why}`, ["Edit availability", "avail"], { row: cs[0].r.row }); });
-    d.closedConflicts.forEach(c => add("closed", `Booked ${f(c.r.date)} on a closure (${c.why})`, ["Open tab", "opentab"], { row: c.r.row }));
-    if (A && d.sameDay.length) add("sameday", `More than one visit on ${d.sameDay.map(f).join(", ")}`, ["Open tab", "opentab"]);
+    d.closedConflicts.forEach(c => add("closed", `Booked ${f(c.r.date)} on a closure (${c.why})`, ["Open", "opentab"], { row: c.r.row }));
+    if (A && d.sameDay.length) add("sameday", `More than one visit on ${d.sameDay.map(f).join(", ")}`, ["Open", "opentab"]);
     if (A && x.mtToday && !x.schedGiven) add("sched", "Course schedule not given", ["Print course schedule", "print"], { v: "all" });
     if (A) d.benFlags.forEach(t => add("cost", t, ["Review benefits", "ben"]));
     if (d.oopmMet) add("oopm", `${d.oopmMet} OOPM met`, null, { quiet: true });
@@ -285,6 +286,36 @@
     }
     return { notOnTab: notOnTab.sort((a, b) => a.date - b.date), notOnList };
   }
+  /* pulses on a day the list covers (lo through today) with no visit of that kind in NextGen that day, cancelled ones aside:
+     a treatment NextGen can't bill, or pulses entered on the wrong row. appts: every booking on the list for the patient. Rows. */
+  function pulsesNoAppt(rows, appts, lo, today) {
+    if (lo == null) return [];
+    return rows.filter(r => r.delivered && !r.alt && r.date != null && r.date >= lo && r.date <= today
+      && !appts.some(a => a.date === r.date && pool(a.type) === pool(r.type) && a.status !== "Cancelled"));
+  }
+  /* the clinic in a tracker's name: "Castro MagV Patient Tracker" -> "Castro", "Walnut Creek TMS Pt Tracker 2026" -> "Walnut Creek" */
+  function clinicFromName(name) {
+    const s = String(name || "").replace(/\.(xlsx|xlsm|xls)$/i, "").replace(/[_-]+/g, " ");
+    const m = s.match(/^(.*?)\s+(magv|mag\s?venture|brainsway|bw|tms|esk|ivk|pt|patient|tracker)\b/i);
+    return (m ? m[1] : "").replace(/\s{2,}/g, " ").trim();
+  }
+  /* which clinic carries a patient's tab. visits: { chair, here, where, type } per booking (no cancellations), where chair is a
+     device resource, here is a resource or location naming this tracker's clinic, and where names any other clinic. The clinic with
+     the most chair visits carries the tab; a tie goes to where the MT was. With no chair visit anywhere yet (an MT on a provider's
+     schedule), the MT decides, else any visit here (here is null when the report doesn't say where: that counts for this clinic).
+     No chair visit here, or an MT elsewhere with nothing here: not this clinic's.
+     role: "home" (a tab here), "guest" (tracked at home, which names the other clinic) or "none" (left out). */
+  function clinicRole(visits) {
+    const chair = visits.filter(v => v.chair), here = chair.filter(v => v.here).length, by = {};
+    chair.filter(v => !v.here).forEach(v => { const w = v.where || "Another clinic"; by[w] = (by[w] || 0) + 1; });
+    const top = Object.entries(by).sort((a, b) => b[1] - a[1])[0] || ["", 0];
+    const mt = visits.find(v => v.type === "MT"), mtHere = mt ? mt.here : null;
+    const out = (role, home) => ({ role, here, home: home || "", homeCount: top[1], by });
+    if (!chair.length) return mtHere === false || (!visits.some(v => v.here) && visits.some(v => v.here === false)) ? out("none", mt ? mt.where : "") : out("home");
+    if (!here) return out("none", top[0]);
+    if (here > top[1] || (here === top[1] && mtHere !== false)) return out("home");
+    return out("guest", here === top[1] ? mt.where || top[0] : top[0]);
+  }
   /* a short fingerprint of a log's typed cells, so a saved state can be recognised later (an undo only runs on the state it left) */
   function hashRows(rows) {
     const s = JSON.stringify(rows); let h = 5381;
@@ -292,6 +323,6 @@
     return `${rows.length}:${(h >>> 0).toString(36)}`;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast,
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });

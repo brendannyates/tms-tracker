@@ -1,0 +1,1 @@
+﻿Put the blank tracker templates here: 'MagV Template.xlsx' and 'BrainsWay Template.xlsx'. Each needs a sheet named New Template (and Protocols). Blank only: no patient tabs, no PHI, no sensitivity label.
