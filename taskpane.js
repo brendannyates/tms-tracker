@@ -509,6 +509,9 @@ function renderBanners() {
   const nm = noMrn(); $("mrnCount").textContent = nm.length;
   $("mrnList").innerHTML = nm.map(p => { const s = (state.codeMrn && state.codeMrn.get(p.code)) || ""; return `<div class="nrow"><span><b>${esc(p.tab)}</b> ${esc(p.status || "no status")}${s ? ", MRN from NextGen filled in" : ""}</span><input class="sm" data-mrnin="${esc(p.tab)}" value="${esc(s)}" placeholder="MRN" aria-label="MRN for ${esc(p.tab)}" inputmode="numeric" autocomplete="off" style="width:110px"><button class="btn ghost sm" data-act="saveMrn" data-t="${esc(p.tab)}">Save to A4</button></div>`; }).join("");
   show("mrnBanner", nm.length > 0);
+  const ak = state.asks || []; $("askCount").textContent = ak.length;
+  $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, ${g.daily} daily treatments booked here${g.next != null ? `, next ${fmtMon(g.next)}` : ""}.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
+  show("askBanner", ak.length > 0);
   const gl = (state.guests || []).filter(g => !g.link); $("guestCount").textContent = gl.length;
   $("guestList").innerHTML = gl.map(g => `<div class="nrow"><span><b>${esc(g.code || "Guest")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. Home: ${esc(g.home)} (${g.homeCount} chair visit${g.homeCount === 1 ? "" : "s"}), ${g.here} here${g.next != null ? `, next here ${fmtMon(g.next)}` : ""}.</span><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(g.home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" data-v="${esc(g.mrn)}">Save link</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button></div>`).join("");
   show("guestBanner", gl.length > 0);
@@ -695,6 +698,12 @@ function courseNeeds(p, fl) {
 }
 const sessNo = v => typeof v.r.tx === "number" ? v.r.tx : v.p.d.txDone + (v.done ? 0 : 1);
 const typeName = v => ({ Daily: "Daily", Taper: "Taper", MT: "MT (first session)", MTR: "MT redo", "F/U": "Follow-up" })[v.type] || v.type;
+/* guests (and patients offered a tracker): no tab here, so their chair bookings come from the saved list. They show on Today and
+   Schedule for the chair's sake; pulses, technician and measures go on their home clinic's tab, through the link. */
+const guestOf = mrn => [...(state.asks || []), ...(state.guests || [])].find(g => g.mrn === mrn);
+const guestVisits = day => ((state.lx && state.lx.gv) || []).filter(x => x.date === day).map(x => ({ ...x, g: guestOf(x.mrn) })).filter(x => x.g).sort((a, b) => (a.time ?? 1e4) - (b.time ?? 1e4));
+const guestLink = g => g.link ? `<a class="btn ghost sm" href="${esc(g.link)}" target="_blank" rel="noopener">Open their tab</a>` : '<button class="btn ghost sm" data-act="guests">Add their link</button>';
+const guestRowToday = x => `<div class="row"><div class="rowmain static"><span class="p">${esc(x.code || "Guest")}</span><span class="w">${clock(x.time) || "–"}</span><span class="muted">MRN: ${esc(String(x.g.raw).replace(/\D/g, "").slice(-4))}</span><span class="f"><span class="muted">Guest from ${esc(x.g.home)}, ${esc(chairLbl(x.chair))}: pulses go on their ${esc(x.g.home)} tab</span></span></div>${guestLink(x.g)}</div>`;
 /* Today names a patient by LASFIR with the MRN's last four beside it, in grey */
 const mrnTag = p => p.mrnRaw ? `MRN: ${String(p.mrnRaw).replace(/\D/g, "").slice(-4) || p.mrnRaw.slice(-4)}` : "No MRN";
 const where = v => v.alt ? "Other clinic" : v.type === "F/U" ? (v.tele ? "Telehealth" : v.p.provider || "Provider") : v.chair ? chairLbl(v.chair) : "";
@@ -800,8 +809,9 @@ function viewToday(fl) {
       return `<button class="crw" ${s.v ? `data-k="${esc(s.v.key)}"` : `data-chair="${esc(c.id)}"`} data-state="${s.state}" aria-pressed="${!!sel}" aria-label="${esc(aria)}">${lantern(running)}<span><b>${esc(c.label)}</b><small class="coil">${esc(c.coil || c.device)}</small></span><span class="who${s.v ? "" : " open"}">${who}</span>${bar}<span class="st">${st}</span></button>`;
     }).join("") || '<p class="empty">Every chair is marked unavailable. Mark one available on Chairs.</p>';
     const rows = rest.map(v => `<div class="row"><button class="rowmain" data-k="${esc(v.key)}" aria-pressed="${!!(state.sel && state.sel.k === v.key)}"><span class="p">${esc(v.tab)}</span><span class="w">${clock(v.time) || "–"}</span><span class="muted">${esc(mrnTag(v.p))}</span><span class="f">${rowFlag(v, fl)}</span></button>${rowAction(v)}</div>`).join("");
+    const gs = guestVisits(fl.t).filter(x => x.time == null || x.time >= fl.now - 30), grows = gs.map(guestRowToday).join(""), nleft = rest.length + gs.length;
     left = `<div class="stack"><div class="card board" role="group" aria-label="Chairs">${board}</div>
-      <div class="card list"><div class="h"><h2>Still to come</h2><span>${rest.length ? `${rest.length} left today` : ""}</span></div>${rows || '<p class="empty">Nobody else is booked today.</p>'}</div>
+      <div class="card list"><div class="h"><h2>Still to come</h2><span>${nleft ? `${nleft} left today` : ""}</span></div>${rows + grows || '<p class="empty">Nobody else is booked today.</p>'}</div>
       ${listCheckCard(fl.t)}${varianceCard(fl.t)}</div>`;
   } else {
     const c = fl.avail.find(x => x.id === mode), s = TmsCore.chairState(c.id, fl.visits, fl.now), vs = fl.visits.filter(v => v.chairVisit && v.chair === c.id);
@@ -823,8 +833,8 @@ function listCheckCard(day) {
   const c = listCheck(day); if (!c) return "";
   const run = state.report && state.report.asOf != null ? `List run ${fmtMon(state.report.asOf)}${state.report.asOfMin != null ? ` ${clock(state.report.asOfMin)}` : ""}` : "";
   const what = a => `${clock(a.time) || "no time"} ${esc(apptTypeName(a))}`;
-  const guestRow = (a, g) => `<div class="row"><div class="rowmain static"><span class="p">${esc(a.code || "Guest")}</span><span class="w">${clock(a.time)}</span><span>${esc(apptTypeName(a))}</span><span class="f">Guest from ${esc(g ? g.home : "another clinic")}: pulses go on their tab there</span></div>${g && g.link ? `<a class="btn ghost sm" href="${esc(g.link)}" target="_blank" rel="noopener">Open their tab</a>` : '<button class="btn ghost sm" data-act="guests">Add their link</button>'}</div>`;
-  const rows = c.miss.map(({ a, p, why }) => why === "new" && a.guest ? guestRow(a, (state.guests || []).find(g => g.mrn === a.mrn)) : why === "new"
+  /* guests aren't a gap: they have no tab here by design, and show on Still to come and the Schedule */
+  const rows = c.miss.filter(({ a }) => !a.guest).map(({ a, p, why }) => why === "new"
     ? `<div class="row"><div class="rowmain static"><span class="p">${esc(a.code || "New")}</span><span class="w">${clock(a.time)}</span><span>${esc(apptTypeName(a))}</span><span class="f flag">No tracker tab (MRN ending ${esc(a.mrn.slice(-4))})</span></div>${state.pendingNew.some(x => x.mrn === a.mrn) ? `<button class="btn ghost sm" data-act="newTracker" data-v="${esc(a.mrn)}">Create tracker</button>` : ""}</div>`
     : `<div class="row"><div class="rowmain static"><span class="p">${esc(p.tab)}</span><span class="w">${clock(a.time)}</span><span>${esc(apptTypeName(a))}</span><span class="f flag">${why === "disc" ? `${esc(p.status)} on the tracker, booked in NextGen` : "On the list, not on the tab"}</span></div>${why === "disc" ? "" : '<button class="btn ghost sm" data-act="reimport">Import again</button>'}</div>`)
     .concat(c.extra.map(({ p, r }) => `<div class="row"><div class="rowmain static"><span class="p">${esc(p.tab)}</span><span class="w">${clock(r.time)}</span><span>${esc(apptTypeName(r))}</span><span class="f flag">On the tab, not on the list. Check NextGen</span></div>${btn("opentab", p.tab, "", "Open").replace('data-act="opentab"', `data-act="opentab" data-row="${r.row}"`)}</div>`)).join("");
@@ -951,7 +961,13 @@ function viewSchedule(fl) {
     }
     close(); return out;
   };
-  const blocks = lane => pack(lane.id === "prov" ? ent.prov : ent.chair.filter(e => chairFor(e) === lane.id)).map(e => {
+  /* guests' chair bookings here, from the saved list: they take the chair, but open their home clinic's tab */
+  const gents = guestVisits(day).filter(x => x.time != null).map(x => ({ guest: x, p: { tab: x.code || "Guest" }, start: x.time, end: x.time + DEFAULT_LEN }));
+  const guestBlk = e => { const x = e.guest, len = e.end - e.start, side = e.cols > 1 ? `;left:calc(4px + (100% - 8px) * ${e.col} / ${e.cols});right:auto;width:calc((100% - 8px) / ${e.cols} - 3px)` : "";
+    const attrs = x.g.link ? `data-act="guestOpen" data-v="${esc(x.mrn)}"` : 'data-act="guests"';
+    return `<button class="blk guest${e.cols > 1 ? " dbl" : ""}" ${attrs} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, guest from ${esc(x.g.home)}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}Guest, ${esc(x.g.home)}${e.cols > 1 ? '<br><span class="flag">Double-booked</span>' : ""}</button>`; };
+  const blocks = lane => pack(lane.id === "prov" ? ent.prov : ent.chair.filter(e => chairFor(e) === lane.id).concat(gents.filter(e => (cl.some(c => c.id === e.guest.chair) ? e.guest.chair : "") === lane.id))).map(e => {
+    if (e.guest) return guestBlk(e);
     const v = isToday ? fl.visits.find(x => x.tab === e.p.tab && x.row === e.r.row) : null, p2 = v ? ph(v) : e.r.delivered ? "done" : "booked";
     const cs = v && v.chair && lane.id !== "prov" ? TmsCore.chairState(v.chair, fl.visits, fl.now) : null, live = cs && cs.v && cs.v.key === v.key;
     const k = p2 === "done" || p2 === "missed" ? "past" : live ? (cs.state === "open" ? "track" : cs.state) : "";
@@ -960,7 +976,7 @@ function viewSchedule(fl) {
     const side = e.cols > 1 ? `;left:calc(4px + (100% - 8px) * ${e.col} / ${e.cols});right:auto;width:calc((100% - 8px) / ${e.cols} - 3px)` : "";
     return `<button class="blk ${k}${dbl ? " dbl" : ""}" ${v ? `data-k="${esc(v.key)}" data-go="today"` : `data-act="opentab" data-t="${esc(e.p.tab)}" data-row="${e.r.row}"`} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, ${esc(lab)}${dbl ? ", double-booked" : ""}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}${esc(lab)}${v && v.moved ? " (moved)" : ""}${dbl ? '<br><span class="flag">Double-booked</span>' : ""}</button>`;
   }).join("");
-  const used = lanes.filter(l => l.id !== "" || ent.chair.some(e => chairFor(e) === ""));
+  const used = lanes.filter(l => l.id !== "" || ent.chair.some(e => chairFor(e) === "") || gents.some(e => !cl.some(c => c.id === e.guest.chair)));
   let hrs = ""; for (let m = start + 60; m < end; m += 60) hrs += `<div class="hr" style="top:${(m - start) * pxm}px"></div>`;
   let tm = ""; for (let m = start; m <= end; m += 60) tm += `<span style="top:${(m - start) * pxm}px">${clock(m)}</span>`;
   const nowLine = isToday && fl.now >= start && fl.now <= end ? `<div class="nowline" style="top:${(fl.now - start) * pxm}px"></div>` : "";
@@ -2919,12 +2935,21 @@ async function addPatient(d) {
   } catch (e) { fail(e); }
 }
 const apTabName = d => (+d.apCourse || 1) > 1 ? `${d.code} ${+d.apCourse}` : d.code;
+/* Don't ask again: kept in the workbook's settings, so nobody on this tracker is asked about that patient again; they become a guest */
+const noAskList = () => { if (!POPOUT) try { state.noAsk = Office.context.document.settings.get("tms_noask") || state.noAsk || []; } catch { /* settings unavailable */ } return state.noAsk || []; };
+function dontAsk(mrn) {
+  const a = (state.asks || []).find(x => x.mrn === mrn); if (!a) return;
+  state.noAsk = [...new Set([...noAskList(), mrn])]; saveSetting("tms_noask", state.noAsk);
+  state.asks = state.asks.filter(x => x.mrn !== mrn); state.guests = [...(state.guests || []), a];
+  toast(`${a.code || "That patient"} won't be asked about again. They're on the ${GUEST_SHEET} sheet: add the link to their ${a.home} tab.`);
+  renderBanners(); syncGuests(); renderDash();
+}
 function startTracker(mrn) {
-  const x = state.pendingNew.find(y => y.mrn === mrn), g = !x && (state.guests || []).find(y => y.mrn === mrn); if (!x && !g) return;
+  const x = state.pendingNew.find(y => y.mrn === mrn), g = !x && [...(state.asks || []), ...(state.guests || [])].find(y => y.mrn === mrn); if (!x && !g) return;
   ["apLast", "apFirst", "apDob", "apIns", "apAuthStart", "apAuthExp", "apAssess"].forEach(i => $(i).value = "");
   const y = x || g; $("apMrn").value = y.raw; $("apCode").value = y.code; state.codeEdited = !!y.code; state.courseEdited = false;
   $("apNote").textContent = x ? `From NextGen: ${x.n} visit${x.n > 1 ? "s" : ""} today or later, first ${fmtDateY(x.first.date)} (${x.first.type}). Enter coverage and billing, then create the tab. The import preview reruns afterward to fill its dates.`
-    : `A guest from ${g.home} (${g.here} chair visit${g.here === 1 ? "" : "s"} here, ${g.homeCount} there). ${g.home} carries their tab, so only make one here if this clinic will track the course. The import preview reruns afterward to fill its dates.`;
+    : `${g.home} carries this course (the MT is there, or most chair visits), with ${g.daily} daily visit${g.daily === 1 ? "" : "s"} booked here. Create a tab here only if pulses will be entered here. The import preview reruns afterward to fill its dates.`;
   updateApTab(); show("add");
 }
 
@@ -3226,26 +3251,38 @@ async function buildPlan(quiet) {
     x.visits.push({ chair: dev.ours.test(pv), here: isHere(pv, loc), where: whereOf(pv, loc), type: ev.type, date, sts }); x.code = x.code || lasfir(r);
   }
   const hasTab = (mrn, code) => state.patients.some(p => p.mrn === mrn || (!p.mrn && code && p.code === code));
-  const roles = new Map([...roleIn].map(([mrn, x]) => [mrn, hasTab(mrn, x.code) ? { role: "home" } : TmsCore.clinicRole(x.visits)]));
-  const roleOf = mrn => (roles.get(mrn) || { role: "home" }).role;
+  /* "ask" (MT elsewhere, 16+ dailies here) is offered a tracker here until someone says Don't ask again; then it's a guest. Until a
+     tab exists both are tracked at home: no tab, no import, their bookings on Today and Schedule marked as guests. */
+  const noAsk = new Set(noAskList());
+  const roles = new Map([...roleIn].map(([mrn, x]) => { const g = hasTab(mrn, x.code) ? { role: "home" } : TmsCore.clinicRole(x.visits); return [mrn, g.role === "ask" && noAsk.has(mrn) ? { ...g, role: "guest" } : g]; }));
+  const roleOf = mrn => (roles.get(mrn) || { role: "home" }).role, awayRole = r => r === "guest" || r === "ask";
   const t0 = todaySerial(), hereDates = x => x.visits.filter(v => v.chair && v.here).map(v => v.date);
   if (!ps) {
-    state.guests = [...roles].filter(([, g]) => g.role === "guest").map(([mrn, g]) => {
+    const list = role => [...roles].filter(([, g]) => g.role === role).map(([mrn, g]) => {
       const x = roleIn.get(mrn), ds = hereDates(x), fut = ds.filter(d => d >= t0), past = ds.filter(d => d < t0);
-      return { mrn, raw: x.raw, code: x.code, home: g.home, here: g.here, homeCount: g.homeCount, next: fut.length ? Math.min(...fut) : null, last: past.length ? Math.max(...past) : null, link: (state.guestLinks || {})[mrn] || "" };
+      return { mrn, raw: x.raw, code: x.code, home: g.home, here: g.here, daily: g.daily, homeCount: g.homeCount, next: fut.length ? Math.min(...fut) : null, last: past.length ? Math.max(...past) : null, link: (state.guestLinks || {})[mrn] || "" };
     }).sort((a, b) => (a.next ?? 1e9) - (b.next ?? 1e9));
+    state.guests = list("guest"); state.asks = list("ask");
     state.clinicSplit = { on: split, clinic: clinic(), none: [...roles.values()].filter(g => g.role === "none").length };
   }
   // from the ALL TMS list only: each visit's chair (the resource booked), and per patient the cancellations, whether anything is still booked, the last kept visit
   if (!ps) {
-    const v = {}, pt = {}, c = {}, names = new Set(), cnt = {}, ap = [], apKey = new Set();
+    const v = {}, pt = {}, c = {}, names = new Set(), cnt = {}, ap = [], apKey = new Set(), gv = [];
     for (const r of state.file.rows) {
       const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim(), role = roleOf(mrn), ourChair = dev.ours.test(pv) && (!split || isHere(pv, String(cell(r, "mLoc") || "").trim()) !== false);
-      if (!mrn || isOther(mrn) || dev.other.test(pv) || role === "none" || (role === "guest" && !ourChair)) continue;
+      if (!mrn || isOther(mrn) || dev.other.test(pv) || role === "none" || (awayRole(role) && !ourChair)) continue;
       const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
       if (date == null || sts === "Skip" || !ev) continue;
-      /* a guest's visits only show on the Day view's list check, as a guest: no chair or cancellations, since there's no tab here */
-      if (role === "guest") { if (sts !== "Cancelled" && date >= from - 31) { let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate")); const k = `${mrn}|${date}|${ev.type}|${time}`; if (!apKey.has(k)) { apKey.add(k); ap.push({ mrn, code: lasfir(r), date, time, type: ev.type, tele: ev.tele, guest: true }); } } continue; }
+      /* a guest's chair bookings here: on the Day view's list check, and on Today and Schedule as guests (state.lx.gv). No cancellations,
+         no chair counts, since there's no tab here. */
+      if (awayRole(role)) {
+        if (sts !== "Cancelled" && date >= from - 31) {
+          let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
+          const k = `${mrn}|${date}|${ev.type}|${time}`;
+          if (!apKey.has(k)) { apKey.add(k); ap.push({ mrn, code: lasfir(r), date, time, type: ev.type, tele: ev.tele, guest: true }); gv.push({ mrn, code: lasfir(r), date, time, type: ev.type, chair: pv, status: sts }); }
+        }
+        continue;
+      }
       const x = c[mrn] || (c[mrn] = { cx: [], on: [], booked: false, lastKept: null });
       if (sts === "Cancelled") x.cx.push(date);
       else if (sts === "Scheduled" || sts === "Kept") {
@@ -3262,7 +3299,7 @@ async function buildPlan(quiet) {
     for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); delete x.on; }   // rebooked the same day: not a cancellation
     for (const [mrn, k] of Object.entries(cnt)) pt[mrn] = Object.entries(k).sort((a, b) => b[1] - a[1])[0][0];
     const ds = ap.map(a => a.date);
-    state.lx = { v, pt, c, chairs: [...names].sort(), ap, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
+    state.lx = { v, pt, c, chairs: [...names].sort(), ap, gv, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
     state.patients.forEach(p => p.d = derive(p));
   }
   const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
@@ -3270,7 +3307,7 @@ async function buildPlan(quiet) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
     if (!mrn) continue;
     if (isOther(mrn) || dev.other.test(pv) || roleOf(mrn) === "none") { ignored++; continue; }
-    if (roleOf(mrn) === "guest") continue;   // tracked at their home clinic: the Guest Patients sheet
+    if (awayRole(roleOf(mrn))) continue;   // tracked at their home clinic: the Guest Patients sheet, or the ask banner
     const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
     if (date == null || sts === "Skip" || !ev) continue;
     const past = date < from;
@@ -3345,8 +3382,8 @@ function renderPlan() {
   if (disc.length) h += `<div class="item amb" style="margin-top:6px">Discontinued on the tracker but still booked in NextGen, so not updated: ${disc.map(esc).join(", ")}. Cancel the visits in NextGen, or start a new course tab.</div>`;
   const pv = ch.filter(p => p.e2).length;
   if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
-  const cs = state.clinicSplit, ng = (state.guests || []).length;
-  if (cs && !ps) h += cs.on ? `<div class="sub" style="margin-top:6px">${esc(cs.clinic)} chairs only: ${cs.none} patient${cs.none === 1 ? "" : "s"} with no chair visit at ${esc(cs.clinic)} left out${ng ? `, and ${ng} guest${ng === 1 ? "" : "s"} whose home clinic carries the tab listed on the ${GUEST_SHEET} sheet` : ""}.</div>`
+  const cs = state.clinicSplit, ng = (state.guests || []).length, na = (state.asks || []).length;
+  if (cs && !ps) h += cs.on ? `<div class="sub" style="margin-top:6px">${esc(cs.clinic)} chairs only: ${cs.none} patient${cs.none === 1 ? "" : "s"} with no chair visit at ${esc(cs.clinic)} left out${ng ? `, and ${ng} guest${ng === 1 ? "" : "s"} whose home clinic carries the tab listed on the ${GUEST_SHEET} sheet` : ""}${na ? `. ${na} with the MT elsewhere but ${TmsCore.ASK_MIN}+ dailies here: see Create a tracker here? at the top` : ""}.</div>`
     : `<div class="item amb" style="margin-top:6px">${cs.clinic ? `No chair on this report names ${esc(cs.clinic)}` : "The clinic isn't known (set it in Settings)"}, so every patient on it was kept. Check the clinic in Settings.</div>`;
   if (state.pendingNew.length) h += `<div class="sub" style="margin-top:6px">${state.pendingNew.length} patient${state.pendingNew.length > 1 ? "s" : ""} in the report ${state.pendingNew.length > 1 ? "have" : "has"} no tracker yet. See the top of the dashboard.</div>`;
   h += `<div class="actions"><button class="pri" data-act="apply">Apply</button></div>`;
@@ -3474,7 +3511,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap() });
   sendParts("snap", s);
 }
@@ -3483,7 +3520,7 @@ function sendParts(k, s) { const n = Math.ceil(s.length / CHUNK) || 1, seq = Dat
 const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -3665,6 +3702,8 @@ Office.onReady(info => {
       elUndo: () => elUndoAsk(v), elUndoGo: () => { const id = m.id; closeModal(); return undoEdit(id); },
       elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
       apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
+      dontAsk: () => dontAsk(v),
+      guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
       guests: () => { state.dismissed.delete("guestBanner"); delete state.snoozeMem.guestBanner; renderBanners(); const b = $("guestBanner"); b.hidden = false; b.scrollIntoView({ block: "start" }); },
       saveMrn: () => { const x = String((document.querySelector(`[data-mrnin="${CSS.escape(t)}"]`) || {}).value || "").trim();

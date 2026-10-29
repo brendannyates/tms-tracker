@@ -310,18 +310,22 @@ test("clinicFromName: the clinic before the device or Tracker", () => {
   assert.equal(T.clinicFromName("Book1"), "");
 });
 
-test("clinicRole: majority of chair visits carries the tab, MT breaks a tie", () => {
+test("clinicRole: the MT and MT redo decide home; 16+ dailies here asks; no MT falls back to the majority", () => {
   const c = (here, where = "Post", type = "Daily") => ({ chair: true, here, where: here ? "" : where, type });
-  const mt = here => ({ chair: false, here, where: here ? "" : "Post", type: "MT" });
-  assert.equal(T.clinicRole([c(true), c(true), c(false)]).role, "home");
-  const g = T.clinicRole([c(true), c(false), c(false), c(false)]);
-  assert.deepEqual([g.role, g.home, g.here, g.homeCount], ["guest", "Post", 1, 3]);
-  assert.equal(T.clinicRole([c(false), c(false)]).role, "none");                 // no chair visit here
-  assert.equal(T.clinicRole([mt(false), c(true), c(false)]).role, "guest");      // tie, MT at Post
-  assert.equal(T.clinicRole([mt(true), c(true), c(false)]).role, "home");        // tie, MT here
-  assert.equal(T.clinicRole([mt(false), c(true), c(true), c(false)]).role, "home");   // MT at Post, most dailies here
-  assert.equal(T.clinicRole([mt(false)]).role, "none");                          // only an MT, at Post
-  assert.equal(T.clinicRole([mt(true)]).role, "home");                           // a new patient's MT here
-  assert.equal(T.clinicRole([{ chair: false, here: false, where: "Post", type: "F/U" }]).role, "none");
-  assert.equal(T.clinicRole([{ chair: false, here: null, where: "", type: "MT" }]).role, "home");   // the report doesn't say where
+  const mt = (here, type = "MT") => ({ chair: false, here, where: here ? "" : "Post", type });
+  const dailies = (n, here) => Array.from({ length: n }, () => c(here));
+  assert.equal(T.ASK_MIN, 16);
+  assert.equal(T.clinicRole([mt(true), c(false), c(false), c(true)]).role, "home");           // MT here: home, whatever the dailies
+  assert.equal(T.clinicRole([mt(false), mt(true, "MTR")]).role, "home");                      // tie between MT and MTR stays here
+  const g = T.clinicRole([mt(false), ...dailies(15, true), c(false)]);
+  assert.deepEqual([g.role, g.home, g.daily], ["guest", "Post", 15]);                          // MT at Post, 15 dailies here
+  const a = T.clinicRole([mt(false), ...dailies(16, true)]);
+  assert.deepEqual([a.role, a.home, a.daily], ["ask", "Post", 16]);                            // 16 dailies here: ask
+  assert.equal(T.clinicRole([mt(false, "MTR"), ...dailies(20, true)]).role, "ask");           // an MT redo elsewhere counts too
+  assert.equal(T.clinicRole([mt(false), c(false)]).role, "none");                             // MT at Post, nothing here
+  assert.equal(T.clinicRole([{ chair: false, here: false, where: "Post", type: "F/U" }, c(true)]).role, "home");   // F/U don't decide
+  assert.equal(T.clinicRole([mt(null), c(true), c(false)]).role, "home");                     // MT location unknown: majority, tie here
+  assert.equal(T.clinicRole([c(true), c(false), c(false)]).role, "guest");                    // no MT: most chair visits at Post
+  assert.equal(T.clinicRole([c(false), c(false)]).role, "none");                              // no chair visit here
+  assert.equal(T.clinicRole([mt(true)]).role, "home");                                         // a new patient's MT here
 });
