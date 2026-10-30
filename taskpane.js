@@ -2498,6 +2498,9 @@ async function arrangeLogs(list) {
    row 10's or the blank row's), so a hand-colored row is left alone. Cell properties and number formats only: the template's
    conditional formats (the MT, MTR, F/U and missed highlights) and validation stay as they are. Returns the rows reformatted. */
 const FMT_Q = { format: { fill: { color: true }, font: { bold: true, color: true, italic: true, name: true, size: true }, borders: { color: true, style: true, weight: true }, horizontalAlignment: true } };
+/* the log grid, header row 9 through the log's last row in A:R, is drawn in regular (thin) lines: no bold outline, whatever the template has */
+const GRID_EDGES = ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight", "InsideVertical", "InsideHorizontal"];
+const thinGrid = (ws, end) => GRID_EDGES.forEach(e => { const b = ws.getRange(`A9:R${end}`).format.borders.getItem(e); b.style = "Continuous"; b.weight = "Thin"; });
 /* Excel reports a setting it can't give one value for (mixed fonts in a cell, a pattern fill) as null, and rejects null when it's written back */
 const dropBlank = o => {
   if (o === null || o === undefined || o === "") return undefined;
@@ -2551,6 +2554,8 @@ async function formatLogs(list) {
       jobs.forEach(put);
       try { await ctx.sync(); n += jobs.length; }
       catch (e) { for (const j of jobs) { put(j); try { await ctx.sync(); n++; } catch (e2) { console.error(e2); skipped.push(`${j.g.tab} row ${j.r}`); } } }
+      part.forEach(g => thinGrid(g.ws, g.end));
+      try { await ctx.sync(); } catch (e) { console.error(e); }
     }
   });
   if (skipped.length) toast(`Couldn't reformat ${skipped.length} visit-log row${skipped.length === 1 ? "" : "s"} (${skipped.slice(0, 5).join(", ")}${skipped.length > 5 ? ", ..." : ""}). Everything else was applied.`, true, true);
@@ -2859,8 +2864,8 @@ async function matchTab(ctx, name) {
   const sv = lg.values[s - LOG_FIRST];
   if (typeof sv[0] !== "boolean") ws.getRange(`A${s}`).values = [[false]];
   if (!SUM_RE.test(String(sv[1] ?? ""))) ws.getRange(`B${s}`).values = [[SUM_LABEL]];
-  /* 5. colors by visit type and the dropdowns, over every log row */
-  applyRules(ws, end, s);
+  /* 5. colors by visit type and the dropdowns, over every log row, in a thin grid */
+  applyRules(ws, end, s); thinGrid(ws, end);
   await ctx.sync();
   return { name, end };
 }
@@ -3004,7 +3009,7 @@ async function addPatient(d) {
       const ex = wsAll.getItemOrNullObject(name), tpl = wsAll.getItemOrNullObject("New Template"); await ctx.sync();
       if (!ex.isNullObject) throw new Error(`A tab named ${name} already exists.`);
       if (tpl.isNullObject) throw new Error("There is no New Template tab to copy.");
-      const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name;
+      const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; thinGrid(ws, LOG_LAST);
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
       set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N7", d.apAssess);
       set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
@@ -3279,6 +3284,16 @@ function planTab(p, appts, from, to, o) {
   }
   for (const [k, v] of Object.entries(res.f)) st[k] = (st[k] || 0) + v;   // steps 0-1 counted some of these already
   st.none = res.left.length;
+  // 3. every visit dated this week (from Sunday) or later has NextGen's time, including the first import on a tab typed by hand:
+  //    a row the steps above left without one (earlier this week, already treated, missed, or past the list) takes the time of
+  //    that day's booking of the same kind, each booking once
+  const wk = weekStart(o.today ?? from), used = new Set(rows.filter(r => r.date != null && r.time != null).map(r => `${r.date}|${poolOf(r)}|${r.time}`));
+  st.timed = 0;
+  for (const r of rows) {
+    if (r.date == null || r.date < wk || r.time != null) continue;
+    const e = appts.filter(a => a.date === r.date && a.time != null && (a.status !== "Cancelled" || kindOf(a)) && evPool(a) === poolOf(r) && !used.has(`${a.date}|${evPool(a)}|${a.time}`)).sort(cmp)[0];
+    if (e) { r.time = e.time; used.add(`${e.date}|${evPool(e)}|${e.time}`); st.timed++; }
+  }
   rows.forEach((r, i) => { r.row = LOG_FIRST + i; });
   rows.forEach((r, i) => {
     if (r._o) return;
