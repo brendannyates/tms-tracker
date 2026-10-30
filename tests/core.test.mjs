@@ -329,3 +329,39 @@ test("clinicRole: the MT and MT redo decide home; 16+ dailies here asks; no MT f
   assert.equal(T.clinicRole([c(false), c(false)]).role, "none");                              // no chair visit here
   assert.equal(T.clinicRole([mt(true)]).role, "home");                                         // a new patient's MT here
 });
+
+test("needsTracker: an MT here or 16+ treatments here offers a tracker; F/U alone and an MT elsewhere don't", () => {
+  const b = (type, here = null, date = 10, status = "Scheduled") => ({ type, here, date, status });
+  const tx = (n, here = null) => Array.from({ length: n }, (_, i) => b("Daily", here, 10 + i));
+  assert.equal(T.needsTracker([b("F/U"), b("F/U", true, 12), b("F/U", false, 14)], 10), false);   // F/U only, in office or telehealth
+  assert.equal(T.needsTracker(tx(16), 10), true);                                              // 16 booked treatments
+  assert.equal(T.needsTracker(tx(15), 10), false);                                             // 15 isn't enough
+  assert.equal(T.needsTracker([...tx(15), b("Daily", null, 30, "Cancelled")], 10), false);     // cancellations don't count
+  assert.equal(T.needsTracker([...tx(16, false)], 10), false);                                 // treatments at another clinic
+  assert.equal(T.needsTracker([b("MT", true)], 10), true);                                     // MT at this tracker's clinic
+  assert.equal(T.needsTracker([b("MT")], 10), true);                                           // MT, location not given
+  assert.equal(T.needsTracker([b("MT", false), b("F/U", true)], 10), false);                   // MT at another clinic
+  assert.equal(T.needsTracker([b("MT", false), ...tx(16, true)], 10), true);                   // MT elsewhere, but 16 here
+  assert.equal(T.needsTracker([b("MT", true, 5, "Kept")], 10), true);                          // an MT already done here
+  assert.equal(T.needsTracker([b("MT", true, 5, "No-show")], 10), false);                      // a missed MT
+});
+
+test("noTabRole: no tab, no MT here and under 16 treatments here is a guest; F/U alone and a tracker due stay home", () => {
+  const b = (type, here = null, date = 10) => ({ type, here, date, status: "Scheduled" });
+  const tx = (n, here = null) => Array.from({ length: n }, (_, i) => b("Daily", here, 10 + i));
+  const g = T.noTabRole({ role: "home" }, tx(5), 10);
+  assert.deepEqual([g.role, g.home, g.here], ["guest", "", 5]);                                 // 5 treatments: a guest, home clinic unknown
+  assert.equal(T.noTabRole({ role: "home", by: { Post: 3 } }, tx(5), 10).home, "Post");        // the clinic with most chair visits elsewhere
+  assert.equal(T.noTabRole({ role: "home" }, tx(16), 10).role, "home");                        // 16: create tracker
+  assert.equal(T.noTabRole({ role: "home" }, [b("MT", true), ...tx(5)], 10).role, "home");     // MT here: create tracker
+  assert.equal(T.noTabRole({ role: "home" }, [b("F/U"), b("F/U", true)], 10).role, "home");    // F/U only: no tracker, no guest
+  assert.equal(T.noTabRole({ role: "ask", home: "Post" }, tx(5), 10).role, "ask");             // clinicRole's answer stands
+});
+
+test("cellLabel: names a tracker cell for the rebuild's side-by-side check", () => {
+  assert.deepEqual(T.cellLabel("A6"), { label: "DOB", date: true });
+  assert.deepEqual(T.cellLabel("A4"), { label: "MRN", date: false });
+  assert.deepEqual(T.cellLabel("E12"), { label: "Date, log row 3", date: true });
+  assert.equal(T.cellLabel("K3").label, "Protocol row 2: Pulses per train");
+  assert.equal(T.cellLabel("Z99").label, "Z99");
+});
