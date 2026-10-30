@@ -1,0 +1,12 @@
+{
+  "updates": [
+    {
+      "id": "2026-10-29-dev-updates",
+      "date": "2026-10-29",
+      "bullets": [
+        "New: the bell in the top right lists what changed in the tracker. A note like this one appears once after each update.",
+        "Banners you dismiss or snooze stay hidden when you switch between the task pane and full screen."
+      ]
+    }
+  ]
+}
