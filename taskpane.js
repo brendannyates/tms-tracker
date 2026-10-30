@@ -331,6 +331,10 @@ async function refresh() {
       try { state.file = await loadList(); if (state.file) await buildPlan(true); } catch (e) { console.error(e); toast(`The ${LIST_SHEET} tab could not be read. Import the list again.`, true); }
     }
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
+    /* asks and guests are only worked out when a list is applied: a tab made since (by hand, copied in, or A4 filled) makes them home */
+    const tabbed = x => state.patients.some(p => p.mrn === x.mrn);
+    if (state.asks) state.asks = state.asks.filter(x => !tabbed(x));
+    if (state.guests) state.guests = state.guests.filter(x => !tabbed(x));
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
     if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
