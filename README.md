@@ -55,7 +55,7 @@ New Template owns the layout. The add-in reads and writes these cells; benefits 
 
 | Cells | Purpose |
 |---|---|
-| A2, A4, A6 | LASFIR, MRN, DOB. A4 is kept in the General number format on every tab and New Template (set on refresh, Add patient and Match New Template). |
+| A2, A4, A6 | LASFIR, MRN, DOB. A4 is a number with no decimals (format `0`): refresh sets it on New Template and on every tab with an authorization that hasn't ended (G4) or a visit today or later; Add patient and Match New Template set it too. Other tabs are left as they are. |
 | D2 / D4 / D6 / D7 | # of TXs (authorized treatments, extensions included), # of MT redos (number format `0`, set on every refresh, Add patient and Match New Template), MD required on-site, Status. |
 | E2 / E4 / E6 | Provider's last name (set from the appointment list on import), care navigator (TAS), insurance. |
 | F4:G4, G2, G6 | Auth start and expiry, update protocol by, progress note sent on. |

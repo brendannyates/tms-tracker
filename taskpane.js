@@ -45,7 +45,7 @@ const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
 const D4_FMT = "0";                                              // # of MT redos (D4) is a count, never a date
-const A4_FMT = "General";                                       // the MRN (A4) is always General
+const A4_FMT = "0";                                              // the MRN (A4) is a number, no decimals
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
 const isTxRow = r => !r.miss && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // a numbered row in C (Tx #)
@@ -264,8 +264,10 @@ async function refresh() {
       await ctx.sync();
       /* # of MT redos (D4) is a count: a date or decimal format there gets "0" (finished tabs are left alone) */
       const d4s = L.filter(l => !stale.has(l.name) && l.d4.numberFormat[0][0] !== D4_FMT);
-      /* the MRN (A4) is always General, on every tab and New Template, so it never reads as a date, text or with decimals */
-      const a4s = L.filter(l => l.a4.numberFormat[0][0] !== A4_FMT);
+      /* the MRN (A4) is a number with no decimals, never a date or text: on New Template and every tab whose authorization hasn't
+         ended (G4 today or later) or with a visit (E) today or later. Other tabs are left as they are. */
+      const t4 = todaySerial(), a4Live = l => l.name === "New Template" || (isNum(l.hdr.values[2][6]) && l.hdr.values[2][6] >= t4) || l.log.values.some(r => (eDate(r[4]) ?? 0) >= t4);
+      const a4s = L.filter(l => l.a4.numberFormat[0][0] !== A4_FMT && a4Live(l));
       if (d4s.length || a4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); a4s.forEach(l => { l.a4.numberFormat = [[A4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
