@@ -632,6 +632,8 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
         <h2>Workbook tools</h2>
         <p class="hint warnline" id="tplNote" hidden></p>
         <div class="actions"><button id="btnMatch">Match New Template (all active tabs)</button><button id="btnFmt">Fix visit-log formatting</button><button id="btnMeas">Replan measures and pulse totals</button><button id="btnApRebuild">Rebuild Active Patients sheet</button></div>
+        <div class="actions" style="align-items:flex-end"><label class="fld" for="tplPick"><span>Use another tab as New Template</span><select id="tplPick"></select></label><button id="btnTplUse">Make it New Template</button></div>
+        <p class="hint">The tab you choose is renamed New Template and the current New Template is deleted (it asks first). Patient tabs and the add-in's own sheets aren't listed. The workbook's version history can bring the old one back.</p>
         <p class="hint">Rows with an appointment date take row 10's formatting and empty rows go back to the template's gray. This also runs on every import and once each time the add-in opens. Rows you colored yourself are left alone.</p>
       </div>
     </section>

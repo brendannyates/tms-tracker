@@ -45,6 +45,7 @@ const AV_TYPE = ["Unavailable", "Available"];
 const FREEBIE_TAG = { Used: "Freebie used", Waived: "Freebie waived" };
 const SITES = ["Left", "Right", "Other"];
 const D4_FMT = "0";                                              // # of MT redos (D4) is a count, never a date
+const A4_FMT = "General";                                       // the MRN (A4) is always General
 const OUTCOMES = ["No-show", "Same-day cancel"];                 // both require a freebie classification
 const STD_VISIT = ["MT", "MTR", "F/U"];
 const isTxRow = r => !r.miss && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // a numbered row in C (Tx #)
@@ -223,7 +224,7 @@ async function refresh() {
   try {
     await firstLaunch();
     await Excel.run(async ctx => {
-      ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || "";
+      ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || ""; state.sheetNames = sheets.items.map(s => s.name);
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
       const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), j6: s.getRange("J6"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
@@ -257,12 +258,15 @@ async function refresh() {
           wk: g(`W${WK_FIRST}:X${WK_FIRST + 4}`), av: g(`V${AV_FIRST}:Y${AV_LAST}`), log: g(`A${LOG_FIRST}:T${LOG_FIRST + LOG_READ - 1}`), s9: g("S9") });
         L[L.length - 1].vt = s.getRange(`A${LOG_FIRST}:D${LOG_FIRST + LOG_READ - 1}`); L[L.length - 1].vt.load("valueTypes");
         L[L.length - 1].d4 = s.getRange("D4"); L[L.length - 1].d4.load("numberFormat");
+        L[L.length - 1].a4 = s.getRange("A4"); L[L.length - 1].a4.load("numberFormat");
         if (L.length % 8 === 0) await ctx.sync();
       }
       await ctx.sync();
       /* # of MT redos (D4) is a count: a date or decimal format there gets "0" (finished tabs are left alone) */
       const d4s = L.filter(l => !stale.has(l.name) && l.d4.numberFormat[0][0] !== D4_FMT);
-      if (d4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); await ctx.sync(); }
+      /* the MRN (A4) is always General, on every tab and New Template, so it never reads as a date, text or with decimals */
+      const a4s = L.filter(l => l.a4.numberFormat[0][0] !== A4_FMT);
+      if (d4s.length || a4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); a4s.forEach(l => { l.a4.numberFormat = [[A4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -532,6 +536,7 @@ function renderBanners() {
   const gl = (state.guests || []).filter(g => !g.link); $("guestCount").textContent = gl.length;
   $("guestList").innerHTML = gl.map(g => `<div class="nrow"><span><b>${esc(g.code || "Guest")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. Home: ${esc(g.home)} (${g.homeCount} chair visit${g.homeCount === 1 ? "" : "s"}), ${g.here} here${g.next != null ? `, next here ${fmtMon(g.next)}` : ""}.</span><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(g.home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" data-v="${esc(g.mrn)}">Save link</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button></div>`).join("");
   show("guestBanner", gl.length > 0);
+  fillTplPick();
   if ($("cfgLoc")) $("cfgLoc").placeholder = TmsCore.clinicFromName(state.wbName) ? `From the workbook name: ${TmsCore.clinicFromName(state.wbName)}` : "Type the clinic, for example Castro";
 }
 /* tabs still in progress, with a visit in the recent-visit window or later, whose MRN (A4) is blank */
@@ -2066,6 +2071,39 @@ async function saveGuestLink(mrn, url) {
   } catch (e) { fail(e); }
 }
 
+/* ---------- Settings > Use another tab as New Template: the chosen tab is renamed New Template and the current one deleted.
+   Patient tabs and the add-in's own sheets aren't offered. Logged without undo; the workbook's version history has the old tab. ---------- */
+const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, ELOG_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
+const tplChoices = () => (state.sheetNames || []).filter(n => !OWN_SHEETS().includes(sheetKey(n)) && !state.tabs.some(t => t.name === n) && !state.stale.includes(n) && !/ \(old\)$/.test(n));
+function fillTplPick() {
+  const s = $("tplPick"); if (!s || document.activeElement === s) return;
+  const L = tplChoices(), cur = s.value;
+  s.innerHTML = L.length ? L.map(n => `<option${n === cur ? " selected" : ""}>${esc(n)}</option>`).join("") : "<option value=\"\">No other tabs to use</option>";
+  s.disabled = !L.length; $("btnTplUse").disabled = !L.length;
+}
+function mTplUse() {
+  const name = $("tplPick").value; if (!name) return;
+  const had = (state.sheetNames || []).includes("New Template"); state.mctx = { t: name };
+  showModal(`<h2 id="mtitle">Make ${esc(name)} New Template?</h2><p class="body">${esc(name)} is renamed New Template${had ? " and the current New Template is <b>deleted</b>" : ""}. New tabs are copied from it, and Match New Template brings active tabs in line with it.</p>
+    <p class="body">If it isn't laid out like the tracker template (PATIENT: in A1, MRN: in A3, the visit log headings in row 8), Settings says what's off and tabs can't be added until it's fixed.${had ? " The workbook's version history can bring the old New Template back." : ""}</p>
+    ${mfoot(had ? "Delete the old one and use this tab" : "Use this tab", "doTplUse")}`);
+}
+async function useTemplateTab(name) {
+  if (POPOUT) return callPane("useTemplateTab", [name]);
+  await Excel.run(async ctx => {
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(name), old = ctx.workbook.worksheets.getItemOrNullObject("New Template"); await ctx.sync();
+    if (ws.isNullObject) throw new Error(`There's no tab named ${name} any more. Refresh and choose again.`);
+    if (!old.isNullObject) { old.delete(); await ctx.sync(); }
+    ws.name = "New Template"; await ctx.sync();
+    await addEdits(ctx, [{ tab: "New Template", kind: "tab", what: `New Template is now the tab that was ${name}${old.isNullObject ? "" : "; the earlier New Template was deleted"}`, undo: null }]);
+    await ctx.sync();
+  });
+}
+async function doTplUse() {
+  const name = state.mctx.t; closeModal();
+  try { await useTemplateTab(name); toast(`${name} is now New Template.`); await refresh(); if (state.templateWhy) toast(state.templateWhy, true, true); } catch (e) { fail(e); }
+}
+
 /* ---------- first launch: a workbook's own New Template is used as it is; one without it gets the blank one shipped with the add-in
    (assets/templates). Active Patients and Guest Patients are made. Inserting sheets from a file needs ExcelApi 1.13 (Excel on the web has it). ---------- */
 const TEMPLATE_FILE = () => `assets/templates/${device() === "Brainsway" ? "BrainsWay" : "MagV"} Template.xlsx`;
@@ -2854,7 +2892,7 @@ async function matchTab(ctx, name) {
     if (layout === 2) ws.getRange("N6:N7").values = [[typeof at("N7") === "number" ? at("N7") : 3], [at("N6") ?? ""]];
     ws.getRange("J6:J7").values = tl.values;
   }
-  ws.getRange("D4").numberFormat = [[D4_FMT]];
+  ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("A4").numberFormat = [[A4_FMT]];
   /* 3. visit log: the PR formula over the whole log, and the template's formulas on rows that lost them */
   const F = lg.formulas;
   ws.getRange(`A${LOG_FIRST}:A${end}`).formulas = F.slice(0, end - LOG_FIRST + 1).map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, end) : v[0]]);
@@ -2881,7 +2919,7 @@ async function rebuildTab(ctx, name) {
   const ws = tpl.copy(Excel.WorksheetPositionType.end); ws.name = name; ws.position = pos;
   const wrote = new Map(), put = (a, v) => { ws.getRange(a).values = [[v]]; wrote.set(a, v); }, ben = {};
   ["A2", "A4", "A6", "D2", "D4", "D6", "D7", "E2", "E4", "E6", "F2", "F4", "F6", "G2", "G4", "G6", "E9", "P9", "Q9", "S9"].forEach(a => { const v = at(a); if (v !== "" && isK(v)) put(a, v); });
-  ws.getRange("D4").numberFormat = [[D4_FMT]];
+  ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("A4").numberFormat = [[A4_FMT]];
   for (let r = 2; r <= 4; r++) { ["J", "K", "L", "M"].forEach(c => { const v = at(c + r); if (isK(v)) put(c + r, v); }); if (txt("O1") === "Site" && SITES.includes(txt("O" + r))) put("O" + r, txt("O" + r)); }
   const assess = at("M7"); if (assess !== "" && isK(assess) && !/:$/.test(String(assess))) put("N7", assess);
   /* visit log: typed entries only, so the template's formulas (A, D, G, I, K) stay */
@@ -3013,7 +3051,7 @@ async function addPatient(d) {
       const set = (a, val) => { if (val !== "" && val != null) ws.getRange(a).values = [[val]]; };
       set("A2", code); set("A4", d.apMrn); set("D2", +d.apTxs || 36); set("D4", d.apRedos === "" ? "" : +d.apRedos); set("D6", d.apMd); set("E6", d.apIns); set("N7", d.apAssess);
       set("A6", inputToSerial(d.apDob)); set("F4", inputToSerial(d.apAuthStart)); set("G4", inputToSerial(d.apAuthExp));
-      ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("D7").values = [["Pending Start"]];
+      ws.getRange("D4").numberFormat = [[D4_FMT]]; ws.getRange("A4").numberFormat = [[A4_FMT]]; ws.getRange("D7").values = [["Pending Start"]];
       if (d.apHome) ws.getRange("S9").values = [[`Home Clinic: ${d.apHome}`]];
       /* benefits and cost by code go on the patient's Benefits row */
       const mrn = normMrn(d.apMrn), bv = { W1: bidf, W4: ded, W5: oop, W6: d.apMtr, W7: 0 };
@@ -3623,7 +3661,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
@@ -3632,7 +3670,7 @@ function sendParts(k, s) { const n = Math.ceil(s.length / CHUNK) || 1, seq = Dat
 const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -3650,7 +3688,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u),
+  saveSetting: (k, v) => saveSetting(k, v), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -3818,7 +3856,7 @@ Office.onReady(info => {
       elUndo: () => elUndoAsk(v), elUndoGo: () => { const id = m.id; closeModal(); return undoEdit(id); },
       elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
       apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
-      dontAsk: () => dontAsk(v),
+      dontAsk: () => dontAsk(v), doTplUse,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
       guests: () => { state.dismissed.delete("guestBanner"); delete state.snoozeMem.guestBanner; renderBanners(); const b = $("guestBanner"); b.hidden = false; b.scrollIntoView({ block: "start" }); },
@@ -3902,7 +3940,7 @@ Office.onReady(info => {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
   document.addEventListener("toggle", e => { if (e.target.matches && e.target.matches("[data-elog]")) state.elogOpen = e.target.open; }, true);   // the Edit log stays open across redraws
   syncTheme();
-  $("btnMatch").onclick = () => setupClick(true);
+  $("btnMatch").onclick = () => setupClick(true); $("btnTplUse").onclick = mTplUse;
   ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });

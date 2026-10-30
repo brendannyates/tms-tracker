@@ -55,7 +55,7 @@ New Template owns the layout. The add-in reads and writes these cells; benefits 
 
 | Cells | Purpose |
 |---|---|
-| A2, A4, A6 | LASFIR, MRN, DOB. |
+| A2, A4, A6 | LASFIR, MRN, DOB. A4 is kept in the General number format on every tab and New Template (set on refresh, Add patient and Match New Template). |
 | D2 / D4 / D6 / D7 | # of TXs (authorized treatments, extensions included), # of MT redos (number format `0`, set on every refresh, Add patient and Match New Template), MD required on-site, Status. |
 | E2 / E4 / E6 | Provider's last name (set from the appointment list on import), care navigator (TAS), insurance. |
 | F4:G4, G2, G6 | Auth start and expiry, update protocol by, progress note sent on. |
@@ -126,7 +126,7 @@ Chair cards (resource name, device, coil, today's count, last service) with **Ma
 
 ### Settings
 
-Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, Appearance (Light, Dark or Match Windows; saved on this computer, also in the rail as Dark mode), the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Replan measures and pulse totals**, **Rebuild Active Patients sheet**).
+Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, Appearance (Light, Dark or Match Windows; saved on this computer, also in the rail as Dark mode), the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Replan measures and pulse totals**, **Rebuild Active Patients sheet**), and **Use another tab as New Template**: a dropdown of the workbook's other tabs (not patient tabs or the add-in's own sheets); after a confirmation the chosen tab is renamed New Template and the old one is deleted (logged, no undo; version history has it).
 
 ### Full screen
 
