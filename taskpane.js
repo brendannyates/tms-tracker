@@ -537,17 +537,17 @@ function renderBanners() {
   $("mrnList").innerHTML = nm.map(p => { const s = (state.codeMrn && state.codeMrn.get(p.code)) || ""; return `<div class="nrow"><span><b>${esc(p.tab)}</b> ${esc(p.status || "no status")}${s ? ", MRN from NextGen filled in" : ""}</span><input class="sm" data-mrnin="${esc(p.tab)}" value="${esc(s)}" placeholder="MRN" aria-label="MRN for ${esc(p.tab)}" inputmode="numeric" autocomplete="off" style="width:110px"><button class="btn ghost sm" data-act="saveMrn" data-t="${esc(p.tab)}">Save to A4</button></div>`; }).join("");
   show("mrnBanner", nm.length > 0);
   const ak = state.asks || []; $("askCount").textContent = ak.length;
-  $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, ${g.daily} daily treatments booked here${g.next != null ? `, next ${fmtMon(g.next)}` : ""}.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
+  $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, ${g.daily} daily treatments booked here${g.next != null ? `, next ${fmtMon(g.next)}` : ""}.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
   show("askBanner", ak.length > 0);
   const gl = (state.guests || []).filter(g => !g.link); $("guestCount").textContent = gl.length;
-  $("guestList").innerHTML = gl.map(g => `<div class="nrow"><span><b>${esc(g.code || "Guest")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. Home: ${esc(g.home)} (${g.homeCount} chair visit${g.homeCount === 1 ? "" : "s"}), ${g.here} here${g.next != null ? `, next here ${fmtMon(g.next)}` : ""}.</span><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(g.home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" data-v="${esc(g.mrn)}">Save link</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button></div>`).join("");
+  $("guestList").innerHTML = gl.map(g => `<div class="nrow"><span><b>${esc(g.code || "Guest")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. ${g.home ? `Home: ${esc(g.home)} (${g.homeCount} chair visit${g.homeCount === 1 ? "" : "s"})` : "No MT here and under 16 treatments, home clinic not on the list"}, ${g.here} here${g.next != null ? `, next here ${fmtMon(g.next)}` : ""}.</span><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(g.home || "their home clinic")}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" data-v="${esc(g.mrn)}">Save link</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button></div>`).join("");
   show("guestBanner", gl.length > 0);
   fillTplPick();
   if ($("cfgLoc")) $("cfgLoc").placeholder = TmsCore.clinicFromName(state.wbName) ? `From the workbook name: ${TmsCore.clinicFromName(state.wbName)}` : "Type the clinic, for example Castro";
 }
 /* tabs still in progress, with a visit in the recent-visit window or later, whose MRN (A4) is blank */
 const noMrn = () => { const t = todaySerial(); return state.patients.filter(p => !p.mrnRaw && (p.status === "" || ACTIVE.includes(p.status)) && !state.stale.includes(p.tab) && p.rows.some(r => r.date != null && r.date >= t - state.cfg.recentDays)); };
-const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button></div>`;
+const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(x.mrn)}">Use existing tab</button></div>`;
 
 /* ---------- v2 screens: Today (the chair board), Schedule, Patients and Chairs, on the design language ESK Tracker shares
    (tokens and components live in taskpane.html). The reads and writes are the same as before; core.js holds the floor rules.
@@ -2032,7 +2032,7 @@ async function readGuests(ctx, ws) {
   for (let i = 0; i < n; i++) { const h = ws.getRange(`H${GUEST_FIRST + i}`); h.load("hyperlink"); links.push(h); }
   if (n) await ctx.sync();
   const by = new Map();
-  r.values.slice(0, n).forEach((v, i) => { const mrn = normMrn(v[1]); if (!mrn) return; const h = links[i].hyperlink, txt = String(v[7]).trim(); by.set(mrn, { row: GUEST_FIRST + i, link: (h && h.address) || (/^https?:\/\//i.test(txt) ? txt : "") }); });
+  r.values.slice(0, n).forEach((v, i) => { const mrn = normMrn(v[1]); if (!mrn) return; const h = links[i].hyperlink, txt = String(v[7]).trim(); by.set(mrn, { row: GUEST_FIRST + i, home: String(v[2]).trim(), link: (h && h.address) || (/^https?:\/\//i.test(txt) ? txt : "") }); });
   return { by, next: GUEST_FIRST + n };
 }
 async function syncGuests() {
@@ -2047,7 +2047,8 @@ async function syncGuests() {
       const on = new Set(state.guests.map(g => g.mrn)), dt = v => v == null ? "" : v;
       for (const g of state.guests) {
         const row = by.has(g.mrn) ? by.get(g.mrn).row : next++;
-        ws.getRange(`A${row}:G${row}`).values = [[g.code || "", g.raw, g.home, g.here, g.homeCount, dt(g.next), dt(g.last)]];
+        // no home clinic on the report: keep one typed in C
+        ws.getRange(`A${row}:G${row}`).values = [[g.code || "", g.raw, g.home || (by.has(g.mrn) ? by.get(g.mrn).home : ""), g.here, g.homeCount, dt(g.next), dt(g.last)]];
         ws.getRange(`F${row}:G${row}`).numberFormat = [["m/d/yyyy", "m/d/yyyy"]]; ws.getRange(`B${row}`).numberFormat = [["@"]];
         ws.getRange(`I${row}`).values = [["Yes"]];
         g.link = by.has(g.mrn) ? by.get(g.mrn).link : "";
@@ -2070,10 +2071,10 @@ async function saveGuestLink(mrn, url) {
     await Excel.run(async ctx => {
       const ws = await guestSheet(ctx), { by, next } = await readGuests(ctx, ws), row = by.has(mrn) ? by.get(mrn).row : next;
       if (!by.has(mrn)) { ws.getRange(`A${row}:G${row}`).values = [[g.code || "", g.raw, g.home, g.here, g.homeCount, g.next ?? "", g.last ?? ""]]; ws.getRange(`I${row}`).values = [["Yes"]]; }
-      ws.getRange(`H${row}`).hyperlink = { address: url, textToDisplay: `${g.code || "Their"} tab at ${g.home}` };
+      ws.getRange(`H${row}`).hyperlink = { address: url, textToDisplay: `${g.code || "Their"} tab at ${g.home || "their home clinic"}` };
       await ctx.sync();
     });
-    g.link = url; state.guestLinks = { ...(state.guestLinks || {}), [mrn]: url }; toast(`Link saved for ${g.code || "the guest"} (${g.home}).`); renderBanners(); if (state.view === "today") renderDash();
+    g.link = url; state.guestLinks = { ...(state.guestLinks || {}), [mrn]: url }; toast(`Link saved for ${g.code || "the guest"}${g.home ? ` (${g.home})` : ""}.`); renderBanners(); if (state.view === "today") renderDash();
   } catch (e) { fail(e); }
 }
 
@@ -2954,9 +2955,10 @@ async function rebuildTab(ctx, name) {
   /* check the transfer, then delete the earlier tab */
   const back = ws.getRange("A1:Y49"); back.load("values"); await ctx.sync();
   const same = (a, b) => (a === "" || a == null) ? (b === "" || b == null) : typeof a === "number" ? typeof b === "number" && Math.abs(a - b) < 1e-9 : String(a) === String(b);
-  const bad = [...wrote].filter(([a, v]) => { const m = a.match(/^([A-Z]+)(\d+)$/), c = colIndex(m[1]); return !same(v, back.values[+m[2] - 1][c]); }).map(([a]) => a);
+  const now = a => { const m = a.match(/^([A-Z]+)(\d+)$/); return back.values[+m[2] - 1][colIndex(m[1])]; };
+  const bad = [...wrote].filter(([a, v]) => !same(v, now(a))).map(([a, v]) => ({ a, old: v, now: now(a) }));   // for the side-by-side check
   if (!bad.length) { old.delete(); await ctx.sync(); }
-  return { name, deleted: !bad.length, bad };
+  return { name, old: `${name} (old)`.slice(0, 31), deleted: !bad.length, bad };
 }
 /* rebuilding deletes the earlier tabs, so it asks first. force: every active tracker, not only the ones that look off */
 function setupClick(force) {
@@ -2999,9 +3001,76 @@ async function setupColumns(force) {
     const kept = res.filter(x => !x.deleted), rebuilt = res.length - kept.length;
     const parts = [matched.length ? `${matched.length} tab${matched.length === 1 ? "" : "s"} now match New Template` : "", rebuilt ? `${rebuilt} earlier tab${rebuilt === 1 ? "" : "s"} rebuilt and deleted` : ""].filter(Boolean);
     toast(kept.length
-      ? `${parts.join(", ") || "Tabs updated"}. Kept ${kept.map(x => `${x.name} (old)`).join(", ")}: ${kept.map(x => x.bad.slice(0, 3).join(", ")).join("; ")} didn't copy over. Check those cells, then delete the "(old)" tab.`
+      ? `${parts.join(", ") || "Tabs updated"}. ${kept.length} tab${kept.length === 1 ? "" : "s"} to check before the old one is deleted.`
       : `${parts.join(", ") || "Tabs already match New Template"}.`, kept.length > 0);
     await refresh();
+    if (kept.length) { state.verify = kept; showVerify(); }
+  } catch (e) { fail(e); }
+}
+/* a rebuilt tab whose cells didn't all read back the same: each field, old tab and new tab side by side, for someone to confirm
+   before the old tab is deleted. Keeping it leaves "NAME (old)". One tab at a time, from state.verify. */
+function showVerify() {
+  const x = (state.verify || [])[0]; if (!x) return;
+  const fmt = (v, date) => v === "" || v == null ? "(blank)" : date && typeof v === "number" ? fmtDateY(v) : String(v);
+  const rows = x.bad.map((b, i) => { const l = TmsCore.cellLabel(b.a); return `<tr><td>${esc(l.label)} <span class="sub">${esc(b.a)}</span></td><td>${esc(fmt(b.old, l.date))}</td><td>${esc(fmt(b.now, l.date))}</td><td><label class="opt"><input type="checkbox" data-vok="${i}"><span>Matches</span></label></td></tr>`; }).join("");
+  state.mctx = { verify: x };
+  showModal(`<h2 id="mtitle">Check ${esc(x.name)} before the old tab is deleted</h2><p class="sub">${x.bad.length} field${x.bad.length === 1 ? "" : "s"} didn't read back the same on the new tab. Compare each one; when they all match, delete ${esc(x.old)}. Otherwise keep it and fix the new tab by hand.</p>
+    <table class="tbl"><tr><th>Field</th><th>Old tab (${esc(x.old)})</th><th>New tab (${esc(x.name)})</th><th></th></tr>${rows}</table>
+    ${mfoot("Delete the old tab", "verifyGo", `<button class="btn ghost" data-act="verifyKeep">Keep the old tab</button>`)}`, true);
+}
+function verifyNext() { state.verify = (state.verify || []).slice(1); closeModal(); if (state.verify.length) showVerify(); }
+async function verifyGo() {
+  const x = (state.mctx || {}).verify; if (!x) return;
+  if ([...document.querySelectorAll("[data-vok]")].some(c => !c.checked)) return merr("Tick Matches on every field first, or keep the old tab.");
+  try {
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItemOrNullObject(x.old); await ctx.sync();
+      if (!ws.isNullObject) ws.delete();
+      await addEdits(ctx, [{ tab: x.name, kind: "tab", what: `Deleted ${x.old} after ${x.bad.map(b => b.a).join(", ")} were checked by hand`, undo: null }]);
+      await ctx.sync();
+    });
+    toast(`Deleted ${x.old}.`); verifyNext(); await refresh();
+  } catch (e) { fail(e); }
+}
+function verifyKeep() { const x = (state.mctx || {}).verify; if (x) toast(`Kept ${x.old}. Fix ${x.name} by hand, then delete the old tab.`); verifyNext(); }
+/* Use existing tab: a patient offered a tracker (New patients, Create a tracker here?, a guest) goes onto a tab already in the workbook
+   instead of a new one. Only tabs with no MRN, or this one, are offered, the same LASFIR first. The MRN goes in A4 (and the LASFIR in A2
+   when it's blank); a tab in an earlier layout is rebuilt from New Template with its data moved over, and checked as Match New Template does. */
+function useTabAsk(mrn) {
+  if (POPOUT) return toast("Use this from the task pane.", true);
+  const y = state.pendingNew.find(z => z.mrn === mrn) || [...(state.asks || []), ...(state.guests || [])].find(z => z.mrn === mrn); if (!y) return;
+  if (!state.templateOk) return toast(state.templateWhy, true, true);
+  const cur = state.tabs.map(t => { const p = state.patients.find(q => q.tab === t.name); return { name: t.name, code: t.code, mrn: p ? p.mrn : "", old: false }; });
+  const tabs = [...cur, ...state.old.map(n => ({ name: n, code: n.split(" ")[0], mrn: "", old: true }))].filter(t => !t.mrn || t.mrn === mrn)
+    .sort((a, b) => (b.code === y.code) - (a.code === y.code) || a.name.localeCompare(b.name));
+  if (!tabs.length) return toast("Every tracker tab already has an MRN. Create a tracker instead.", true);
+  state.mctx = { use: y };
+  showModal(`<h2 id="mtitle">Use an existing tab for ${esc(y.code || "this patient")}</h2><p class="sub">MRN ending ${esc(String(y.raw).slice(-4))} goes in A4 of the tab you pick. A tab in an earlier layout is rebuilt from New Template with its data moved over; any field that doesn't copy cleanly is shown side by side for you to check before the old tab is deleted.</p>
+    <div class="qrow"><span>Tab</span><select id="useTabSel" aria-label="Tab">${tabs.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.mrn ? " (this MRN)" : " (no MRN)"}${t.old ? ", earlier layout" : ""}</option>`).join("")}</select></div>
+    ${mfoot("Use this tab", "useTabGo")}`);
+}
+async function useTabGo() {
+  const y = (state.mctx || {}).use, name = ($("useTabSel") || {}).value; if (!y || !name) return;
+  const rebuild = state.old.includes(name), match = !rebuild && state.fix.has(name);
+  let res = null;
+  try {
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItem(name), hd = ws.getRange("A2:A4"); hd.load("values"); await ctx.sync();
+      const had = normMrn(hd.values[2][0]);
+      if (had && had !== y.mrn) throw new Error(`${name} already has another MRN in A4.`);
+      ws.getRange("A4").values = [[y.raw]]; ws.getRange("A4").numberFormat = [[A4_FMT]];
+      if (y.code && String(hd.values[0][0] ?? "").trim() === "") ws.getRange("A2").values = [[y.code]];
+      await ctx.sync();
+      if (rebuild) { await benSheet(ctx); res = await rebuildTab(ctx, name); } else if (match) await matchTab(ctx, name);
+      await addEdits(ctx, [{ tab: name, kind: "tab", what: `Assigned MRN ending ${String(y.raw).slice(-4)} from the appointment list${rebuild ? "; rebuilt from New Template (earlier layout)" : match ? "; matched New Template" : ""}`, undo: null }]);
+      await ctx.sync();
+    });
+    closeModal();
+    state.pendingNew = state.pendingNew.filter(x => x.mrn !== y.mrn);
+    await refresh();
+    toast(res && !res.deleted ? `${y.code || "The patient"} is on ${name}. Check the fields that didn't copy over.` : `${y.code || "The patient"} is on ${name}.`);
+    if (res && !res.deleted) { state.verify = [res]; showVerify(); }
+    else if (state.file) { show("imp"); await buildPlan(); }
   } catch (e) { fail(e); }
 }
 
@@ -3398,21 +3467,23 @@ async function buildPlan(quiet) {
   const isHere = (pv, loc) => loc ? atClinic(loc) : dev.ours.test(pv) ? atClinic(pv) : null;   // a provider's schedule with no location: unknown
   const whereOf = (pv, loc) => loc || pv.replace(/\s*(magv|mag\s?venture|brainsway|bw)\s*\d*$/i, "").trim();
   const split = !!clinic() && state.file.rows.some(r => { const pv = String(cell(r, "mProv") || ""), loc = String(cell(r, "mLoc") || ""); return dev.ours.test(pv) && atClinic(loc || pv); });
-  for (const r of split ? state.file.rows : []) {
+  // every report gets the no-tab check (core.js noTabRole); only one that names the clinic is split by clinicRole
+  for (const r of state.file.rows) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim(), loc = String(cell(r, "mLoc") || "").trim();
     if (!mrn || isOther(mrn) || dev.other.test(pv)) continue;
     const sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent")), date = toSerial(cell(r, "mDate"));
     if (!ev || date == null || sts === "Skip" || sts === "Cancelled") continue;
     const x = roleIn.get(mrn) || { visits: [], raw: String(cell(r, "mMrn")).trim(), code: "" }; roleIn.set(mrn, x);
-    x.visits.push({ chair: dev.ours.test(pv), here: isHere(pv, loc), where: whereOf(pv, loc), type: ev.type, date, sts }); x.code = x.code || lasfir(r);
+    x.visits.push({ chair: dev.ours.test(pv), here: split ? isHere(pv, loc) : null, where: whereOf(pv, loc), type: ev.type, date, sts, status: sts }); x.code = x.code || lasfir(r);
   }
   const hasTab = (mrn, code) => state.patients.some(p => p.mrn === mrn || (!p.mrn && code && p.code === code));
   /* "ask" (MT elsewhere, 16+ dailies here) is offered a tracker here until someone says Don't ask again; then it's a guest. Until a
-     tab exists both are tracked at home: no tab, no import, their bookings on Today and Schedule marked as guests. */
+     tab exists both are tracked at home: no tab, no import, their bookings on Today and Schedule marked as guests. No tab, no MT
+     here and fewer than 16 treatments here is a guest too, its home clinic's link asked for on the Guest Patients banner. */
   const noAsk = new Set(noAskList());
-  const roles = new Map([...roleIn].map(([mrn, x]) => { const g = hasTab(mrn, x.code) ? { role: "home" } : TmsCore.clinicRole(x.visits); return [mrn, g.role === "ask" && noAsk.has(mrn) ? { ...g, role: "guest" } : g]; }));
+  const roles = new Map([...roleIn].map(([mrn, x]) => { const g = hasTab(mrn, x.code) ? { role: "home" } : TmsCore.noTabRole(split ? TmsCore.clinicRole(x.visits) : { role: "home" }, x.visits, from); return [mrn, g.role === "ask" && noAsk.has(mrn) ? { ...g, role: "guest" } : g]; }));
   const roleOf = mrn => (roles.get(mrn) || { role: "home" }).role, awayRole = r => r === "guest" || r === "ask";
-  const t0 = todaySerial(), hereDates = x => x.visits.filter(v => v.chair && v.here).map(v => v.date);
+  const t0 = todaySerial(), hereDates = x => x.visits.filter(v => v.chair && v.here !== false).map(v => v.date);
   if (!ps) {
     const list = role => [...roles].filter(([, g]) => g.role === role).map(([mrn, g]) => {
       const x = roleIn.get(mrn), ds = hereDates(x), fut = ds.filter(d => d >= t0), past = ds.filter(d => d < t0);
@@ -3474,7 +3545,7 @@ async function buildPlan(quiet) {
     const chg = String(cell(r, "mChg") ?? "").trim(), charged = /waive/i.test(chg) ? "Waived" : /exempt/i.test(chg) ? "Exempt" : "";
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
-    by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim() });
+    by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim(), here: split && isHere(pv, String(cell(r, "mLoc") || "").trim()) === false ? false : null });   // false: booked at another clinic
     if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
@@ -3509,7 +3580,8 @@ async function buildPlan(quiet) {
     plans.push(pl);
   }
   const noTab = [...by.entries()].filter(([k]) => !latest.has(k) && !(codes.get(k) && latestCode.has(codes.get(k)) && !latestCode.get(codes.get(k)).mrn));
-  state.pendingNew = noTab.map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from).sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
+  // offered a tracker only with an MT booked here or 16+ treatments here (core.js needsTracker); F/U alone don't need one
+  state.pendingNew = noTab.filter(([, a]) => TmsCore.needsTracker(a, from)).map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from).sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
   state.plan = { ps, plans, from, to: maxDate, ignored, disc };
   if (!quiet) renderPlan(); renderBanners(); renderSavedList();
   if (!ps) syncGuests();
@@ -3540,7 +3612,7 @@ function renderPlan() {
   if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
   const cs = state.clinicSplit, ng = (state.guests || []).length, na = (state.asks || []).length;
   if (cs && !ps) h += cs.on ? `<div class="sub" style="margin-top:6px">${esc(cs.clinic)} chairs only: ${cs.none} patient${cs.none === 1 ? "" : "s"} with no chair visit at ${esc(cs.clinic)} left out${ng ? `, and ${ng} guest${ng === 1 ? "" : "s"} whose home clinic carries the tab listed on the ${GUEST_SHEET} sheet` : ""}${na ? `. ${na} with the MT elsewhere but ${TmsCore.ASK_MIN}+ dailies here: see Create a tracker here? at the top` : ""}.</div>`
-    : `<div class="item amb" style="margin-top:6px">${cs.clinic ? `No chair on this report names ${esc(cs.clinic)}` : "The clinic isn't known (set it in Settings)"}, so every patient on it was kept. Check the clinic in Settings.</div>`;
+    : `<div class="item amb" style="margin-top:6px">${cs.clinic ? `No chair on this report names ${esc(cs.clinic)}` : "The clinic isn't known (set it in Settings)"}, so every patient on it was kept${ng ? ` (${ng} with no tab, no MT and under ${TmsCore.ASK_MIN} treatments listed as guest${ng === 1 ? "" : "s"} on the ${GUEST_SHEET} sheet)` : ""}. Check the clinic in Settings.</div>`;
   if (state.pendingNew.length) h += `<div class="sub" style="margin-top:6px">${state.pendingNew.length} patient${state.pendingNew.length > 1 ? "s" : ""} in the report ${state.pendingNew.length > 1 ? "have" : "has"} no tracker yet. See the top of the dashboard.</div>`;
   h += `<div class="actions"><button class="pri" data-act="apply">Apply</button></div>`;
   $("planBody").innerHTML = h; $("planBox").hidden = false;
@@ -3862,7 +3934,7 @@ Office.onReady(info => {
       elUndo: () => elUndoAsk(v), elUndoGo: () => { const id = m.id; closeModal(); return undoEdit(id); },
       elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
       apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
-      dontAsk: () => dontAsk(v), doTplUse,
+      dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
       guests: () => { state.dismissed.delete("guestBanner"); delete state.snoozeMem.guestBanner; renderBanners(); const b = $("guestBanner"); b.hidden = false; b.scrollIntoView({ block: "start" }); },

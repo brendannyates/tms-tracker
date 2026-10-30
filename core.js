@@ -322,6 +322,37 @@
     if (!here) return out("none", top[0]);
     return here >= top[1] ? out("home") : out("guest", top[0]);
   }
+  /* whether a patient with no tab here is offered one (the New patients banner). appts: { date, status, type, here } per booking,
+     here false when it names another clinic. An MT or MT redo here (kept or booked), or ASK_MIN or more treatments booked here from
+     today on. F/U alone never does, nor does an MT at another clinic. */
+  function needsTracker(appts, from) {
+    const ok = appts.filter(a => a.status !== "No-show" && a.status !== "Cancelled" && a.here !== false), fut = ok.filter(a => a.date >= from);
+    return ok.some(a => a.type === "MT" || a.type === "MTR") || fut.filter(a => a.type === "Daily" || a.type === "Taper").length >= ASK_MIN;
+  }
+  /* a patient with no tab here and no tracker due (needsTracker) but treatments booked here is a guest: tracked at their home clinic,
+     whose tab link the Guest Patients banner asks for. F/U alone stays as it was. g: clinicRole's answer, or { role: "home" }. */
+  function noTabRole(g, visits, from) {
+    const tx = visits.filter(v => v.here !== false && (v.type === "Daily" || v.type === "Taper"));
+    if (g.role !== "home" || !tx.length || needsTracker(visits, from)) return g;
+    const top = Object.entries(g.by || {}).sort((a, b) => b[1] - a[1])[0];
+    return { ...g, role: "guest", here: tx.length, daily: tx.length, home: top ? top[0] : "", homeCount: top ? top[1] : 0, by: g.by || {} };
+  }
+  /* what a tracker cell holds, for the rebuild's side-by-side check: "A6" -> { label: "DOB", date: true }; a log cell names its
+     visit row ("E12" -> "Date, log row 3"). Unknown cells are labeled by address. */
+  const CELL_HEAD = { A2: "LASFIR", A4: "MRN", A6: ["DOB"], D2: "# of TXs", D4: "# of MT redos", D6: "MD required on-site", D7: "Status",
+    E2: "Provider", E4: "Care navigator", E6: "Insurance", F4: ["Auth start"], G4: ["Auth expiry"], G2: ["Update protocol by"], G6: ["Progress note sent"],
+    N6: "Freebie count", N7: "Auth assessment", S9: "Home clinic" };
+  const CELL_LOG = { B: "Technician", C: "Tx #", E: ["Date"], F: "Pulses left", H: "Pulses right", J: "Pulses other", L: "Visit type", M: "Miss",
+    N: "Miss", O: "Action", P: "PHQ-9", Q: "GAD-7", R: "Alt clinic", S: "Notes", T: "Time" };
+  const CELL_PROT = { J: "Hz", K: "Pulses per train", L: "Trains", M: "Wait", O: "Site" };
+  function cellLabel(a) {
+    const m = String(a).match(/^([A-Z]+)(\d+)$/); if (!m) return { label: String(a), date: false };
+    const c = m[1], r = +m[2], one =x => ({ label: [].concat(x)[0], date: Array.isArray(x) });
+    if (CELL_HEAD[a]) return one(CELL_HEAD[a]);
+    if (r >= 2 && r <= 4 && CELL_PROT[c]) return { label: `Protocol row ${r - 1}: ${CELL_PROT[c]}`, date: false };
+    if (r >= 10 && r <= 49 && CELL_LOG[c]) { const x = one(CELL_LOG[c]); return { ...x, label: `${x.label}, log row ${r - 9}` }; }
+    return { label: a, date: false };
+  }
   /* a short fingerprint of a log's typed cells, so a saved state can be recognised later (an undo only runs on the state it left) */
   function hashRows(rows) {
     const s = JSON.stringify(rows); let h = 5381;
@@ -329,6 +360,6 @@
     return `${rows.length}:${(h >>> 0).toString(36)}`;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN,
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });
