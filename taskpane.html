@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="dev-updates.css">
 <style>
 /* MHS tracker design tokens (shared with ESK Tracker). Every colour comes from these variables, so dark mode follows. */
 :root{
@@ -56,7 +57,7 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .conn{display:flex;align-items:center;gap:8px;padding:10px 12px 0;font-size:12.5px;color:var(--muted)}
 .cdot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
 .page{overflow:auto;padding:28px 32px 32px}
-.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:20px}
+.top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:20px;padding-right:52px}   /* clears the Dev Update bell */
 h1{margin:0;font-size:28px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
 h2{margin:0;font-size:15px;font-weight:600}
 h3{margin:18px 0 0;font-size:15px;font-weight:600}
@@ -282,6 +283,7 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .lane .hr{position:absolute;left:0;right:0;height:1px;background:var(--surface-2)}
 .blk{position:absolute;z-index:1;left:4px;right:4px;border-radius:8px;padding:4px 8px;font-size:12.5px;line-height:1.25;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--surface-2);overflow:hidden;text-align:left}
 .blk b{font-weight:600}
+.blk.guest{background:repeating-linear-gradient(135deg,var(--surface),var(--surface) 6px,var(--surface-3) 6px,var(--surface-3) 12px);box-shadow:inset 0 0 0 1.5px var(--faint);color:var(--muted)}
 .blk.past{background:transparent;box-shadow:inset 0 0 0 1px var(--surface-2);color:var(--muted)}
 .blk.track{box-shadow:inset 0 0 0 2px var(--faint)}
 .blk.soon{background:var(--warn-soft);box-shadow:inset 0 0 0 2px var(--warn)}
@@ -526,6 +528,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       <div id="mrnList" style="margin-top:6px"></div>
       <span class="bctl"><button class="btn mute sm" data-banner="mrnBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="mrnBanner" data-bact="dismiss">Dismiss</button></span>
     </div>
+    <div id="askBanner" class="banner" hidden>
+      <b>Create a tracker here? (<span id="askCount"></span>)</b>
+      <div class="sub">Their MT is at another clinic, but 16 or more daily treatments are booked here. Create a tab here if this clinic will enter their pulses. Otherwise they stay a guest, and their pulses go on their home clinic's tab.</div>
+      <div id="askList" style="margin-top:6px"></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="askBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="askBanner" data-bact="dismiss">Dismiss</button></span>
+    </div>
     <div id="guestBanner" class="banner" hidden>
       <b>Guest patients need a link to their tab (<span id="guestCount"></span>)</b>
       <div class="sub">Most of their chair visits are at another clinic, so that clinic carries the tab. Paste the link to their tab on that clinic's tracker: pulses, technician and measures are entered there. The list is on the Guest Patients sheet.</div>
@@ -650,6 +658,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 <div id="toast" role="status"></div>
 <script src="benefits.js"></script>
 <script src="core.js"></script>
+<script src="dev-updates.js"></script>
 <script src="taskpane.js"></script>
 </body>
 </html>

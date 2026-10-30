@@ -300,21 +300,27 @@
     return (m ? m[1] : "").replace(/\s{2,}/g, " ").trim();
   }
   /* which clinic carries a patient's tab. visits: { chair, here, where, type } per booking (no cancellations), where chair is a
-     device resource, here is a resource or location naming this tracker's clinic, and where names any other clinic. The clinic with
-     the most chair visits carries the tab; a tie goes to where the MT was. With no chair visit anywhere yet (an MT on a provider's
-     schedule), the MT decides, else any visit here (here is null when the report doesn't say where: that counts for this clinic).
-     No chair visit here, or an MT elsewhere with nothing here: not this clinic's.
-     role: "home" (a tab here), "guest" (tracked at home, which names the other clinic) or "none" (left out). */
+     device resource, here is a resource or location naming this tracker's clinic (null when the report doesn't say), and where names
+     any other clinic. The MT and MT redo decide: the clinic holding most of them is home (F/U don't count). With them elsewhere, a
+     patient with ASK_MIN or more daily visits here is "ask" (offer a tracker here), fewer is a "guest", none is left out. With no MT
+     or MT redo on the list, the clinic with the most chair visits carries it, a tie staying here.
+     role: "home" (a tab here), "ask", "guest" (tracked at home, which names the other clinic) or "none" (left out). */
+  const ASK_MIN = 16;
   function clinicRole(visits) {
     const chair = visits.filter(v => v.chair), here = chair.filter(v => v.here).length, by = {};
     chair.filter(v => !v.here).forEach(v => { const w = v.where || "Another clinic"; by[w] = (by[w] || 0) + 1; });
-    const top = Object.entries(by).sort((a, b) => b[1] - a[1])[0] || ["", 0];
-    const mt = visits.find(v => v.type === "MT"), mtHere = mt ? mt.here : null;
-    const out = (role, home) => ({ role, here, home: home || "", homeCount: top[1], by });
-    if (!chair.length) return mtHere === false || (!visits.some(v => v.here) && visits.some(v => v.here === false)) ? out("none", mt ? mt.where : "") : out("home");
+    const most = list => { const c = {}; list.forEach(v => { const w = v.where || "Another clinic"; c[w] = (c[w] || 0) + 1; }); return Object.entries(c).sort((a, b) => b[1] - a[1])[0] || ["", 0]; };
+    const top = most(chair.filter(v => !v.here)), daily = chair.filter(v => v.here && (v.type === "Daily" || v.type === "Taper")).length;
+    const out = (role, home) => ({ role, here, daily, home: home || "", homeCount: home ? by[home] || 0 : top[1], by });
+    const mts = visits.filter(v => (v.type === "MT" || v.type === "MTR") && v.here != null), mtOut = mts.filter(v => !v.here);
+    if (mts.length) {
+      if (mts.length - mtOut.length >= mtOut.length) return out("home");
+      const away = most(mtOut)[0];
+      return !here ? out("none", away) : daily >= ASK_MIN ? out("ask", away) : out("guest", away);
+    }
+    if (!chair.length) return visits.some(v => v.here) || !visits.some(v => v.here === false) ? out("home") : out("none", most(visits)[0]);
     if (!here) return out("none", top[0]);
-    if (here > top[1] || (here === top[1] && mtHere !== false)) return out("home");
-    return out("guest", here === top[1] ? mt.where || top[0] : top[0]);
+    return here >= top[1] ? out("home") : out("guest", top[0]);
   }
   /* a short fingerprint of a log's typed cells, so a saved state can be recognised later (an undo only runs on the state it left) */
   function hashRows(rows) {
@@ -323,6 +329,6 @@
     return `${rows.length}:${(h >>> 0).toString(36)}`;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole,
+  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
 });
