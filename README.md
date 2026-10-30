@@ -26,6 +26,7 @@ Tested with fictional patients:
 | `benefits.js` | Sohar benefits import: matching and plan (pure functions). |
 | `tests/` | Tests for `core.js` and `benefits.js` (`npm test`). |
 | `schedule.html` | The patient schedule printout, shown over the add-in: print or save as PDF. |
+| `dev-updates.js`, `dev-updates.css`, `dev-updates.json` | Dev Update notices: a pop-up the first time someone opens the tracker after a change, and the bell (top right) with the history. Add an entry to `dev-updates.json` (newest first, never reuse an `id`) with each change staff will notice. Shared with the other MHS add-ins. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
 | `package.json` | Helper scripts: `certs`, `start`, `validate`, `check`, `set-host`. |
