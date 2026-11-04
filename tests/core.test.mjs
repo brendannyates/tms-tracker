@@ -259,6 +259,17 @@ test("protocol: exact, custom with what changed, none; sites and pulse columns",
   assert.deepEqual(["F3", "F4", "Other"].map(T.pulseCol), [0, 1, 2]);
 });
 
+test("protocol pulses: theta burst counts 3 per burst, custom keeps its base's ratio, no total is pulses x trains", () => {
+  const table = [{ name: "X", rep: 10, pulses: 40, trains: 75, iti: 10, total: 3000 }, { name: "iTBS 600 ", rep: 5, pulses: 10, trains: 20, iti: 8, total: 600 },
+    { name: "cTBS", rep: 5, pulses: 300, trains: 1, iti: 1, total: 300 }, { name: "LF 1Hz", rep: 1, pulses: 50, trains: 20, iti: 1 }];
+  assert.equal(T.protoPulses({ hz: 10, dur: 40, trains: 75, wait: 10 }, table), 3000);
+  assert.equal(T.protoPulses({ hz: 5, dur: 10, trains: 20, wait: 8 }, table), 600);
+  assert.equal(T.protoPulses({ hz: 5, dur: 10, trains: 60, wait: 8 }, table), 1800);   // iTBS custom, more trains
+  assert.equal(T.protoPulses({ hz: 1, dur: 50, trains: 20, wait: 1 }, table), 1000);
+  assert.equal(T.protoPulses({ hz: 20, dur: 40, trains: 75, wait: 10 }, table), 3000);   // no protocol at that rate
+  assert.equal(T.protoPulses({ hz: 10, dur: "", trains: 75 }, table), 0);
+});
+
 test("needs: Confirm protocol, rollover, OOPM met is quiet", () => {
   const d = { active: true, authFlags: [], decisions: [], overdue: [], noTech: [], measDue: [], protoFlags: [], awayConflicts: [], closedConflicts: [], sameDay: [], benFlags: [], noProto: true, rollover: { year: 2027, bad: true }, oopmMet: 2026 };
   const n = T.needs({ status: "In Progress", rows: [], d }, { today: 100, fmtDate: String, recentDays: 10 });
