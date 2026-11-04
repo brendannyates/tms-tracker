@@ -170,6 +170,13 @@
     const name = String(best.q.name).trim();
     return { name: best.diffs.length ? `${name} (Custom)` : name, base: best.q, custom: best.diffs.length > 0, diffs: best.diffs };
   }
+  /* pulses a protocol row gives per session: pulses per train x trains, scaled by the Protocols table's Total Pulses where it says
+     more. Theta burst lists bursts per train (3 pulses each), so iTBS 600 is 10 x 20 x 3. A custom row takes its base protocol's ratio. */
+  function protoPulses(x, table) {
+    if (typeof x.dur !== "number" || typeof x.trains !== "number") return 0;
+    const m = protoMatch(x, table || []), q = m && m.base, per = q ? q.pulses * q.trains : 0;
+    return Math.round(x.dur * x.trains * (typeof q?.total === "number" && per > 0 ? q.total / per : 1));
+  }
 
   /* the provider's last name for E2, from the report's name: "Smith, Jane MD" or "Dr. Jane Smith, PMHNP" both give "Smith".
      With a comma, the part before it; otherwise the last word once credentials are dropped. */
@@ -361,5 +368,5 @@
   }
 
   return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
-    copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch };
+    copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });

@@ -317,7 +317,7 @@ async function refresh() {
       }
       state.patients.sort((a, b) => a.code.localeCompare(b.code) || a.course - b.course);
       state.patients.forEach(p => p.d = derive(p));
-      state.protocols = prv ? prv.values.filter(r => r[1] !== "").map(r => ({ type: r[0], name: String(r[1]), rep: r[2], pulses: r[3], trains: r[4], iti: r[5], typed: r[7], inten: r[8] })) : [];
+      state.protocols = prv ? prv.values.filter(r => r[1] !== "").map(r => ({ type: r[0], name: String(r[1]), rep: r[2], pulses: r[3], trains: r[4], iti: r[5], total: r[6], typed: r[7], inten: r[8] })) : [];
       state.hasAP = sheets.items.some(s => s.name === AP_SHEET);
       state.clinic = null;
       if (cs) {
@@ -1258,8 +1258,8 @@ async function copayToday(tab, row, kind) {
 const pctMt = v => typeof v === "number" ? `${v <= 3 ? Math.round(v * 100) : v}% MT` : String(v || "").trim() ? `${String(v).trim()} MT` : "";
 function protoLines(p) {
   return siteRows(p).map(x => {
-    const m = TmsCore.protoMatch(x, state.protocols), site = TmsCore.siteOf(x.site), q = m && m.base, tot = x.dur * x.trains;
-    const ch = !q ? [] : [...(m.diffs.some(dd => dd.k !== "wait") ? [`${tot.toLocaleString()} pulses (standard ${(q.pulses * q.trains).toLocaleString()})`] : []), ...(m.diffs.some(dd => dd.k === "wait") ? [`${x.wait} s wait (standard ${q.iti} s)`] : [])];
+    const m = TmsCore.protoMatch(x, state.protocols), site = TmsCore.siteOf(x.site), q = m && m.base, tot = TmsCore.protoPulses(x, state.protocols);
+    const ch = !q ? [] : [...(m.diffs.some(dd => dd.k !== "wait") ? [`${tot.toLocaleString()} pulses (standard ${(typeof q.total === "number" ? q.total : q.pulses * q.trains).toLocaleString()})`] : []), ...(m.diffs.some(dd => dd.k === "wait") ? [`${x.wait} s wait (standard ${q.iti} s)`] : [])];
     return { x, m, site, text: [TmsCore.SITE_LABEL[site], `${x.hz} Hz`, q && pctMt(q.inten), `${tot.toLocaleString()} pulses`].filter(Boolean).join(" · "), ch };
   });
 }
@@ -1620,7 +1620,7 @@ const techInput = cur => `<input id="mTech" list="mTechs" value="${esc(cur || ""
 /* what the protocol calls for, per site (J:M rows with a site in O) */
 function wantPulses(p) {
   const want = { Left: 0, Right: 0, Other: 0 };
-  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES[TmsCore.pulseCol(TmsCore.siteOf(x.site) || "F3")]] += x.dur * x.trains; });
+  p.protoRows.filter(x => isNum(x.dur) && isNum(x.trains)).forEach(x => { want[SITES[TmsCore.pulseCol(TmsCore.siteOf(x.site) || "F3")]] += TmsCore.protoPulses(x, state.protocols); });
   return want;
 }
 function pulseFields(p, had) {
