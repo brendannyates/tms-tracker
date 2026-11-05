@@ -66,14 +66,15 @@ function device() {
 const chairName = () => DEVICES[device()].chair;
 /* this tracker's clinic: the Settings value, else the workbook name ("Castro MagV Patient Tracker" is Castro) */
 const clinic = () => String(state.cfg.location || "").trim() || TmsCore.clinicFromName(state.wbName);
-/* S9's home clinic names this clinic: its name, a short form of it (CAS), or SRL for San Rafael */
-const atClinic = s => { const c = clinic().toLowerCase(), x = String(s || "").toLowerCase(); return !c || x.includes(c) || (c === "srl" && x.includes("san rafael")); };
-const homeHere = h => { const x = String(h).trim().toLowerCase(), c = clinic().toLowerCase(); return x === c || (x.length >= 3 && c.startsWith(x)) || (!!c && x.includes(c)) || (x === "srl" && (!c || c === "san rafael")); };
+/* a location naming this clinic, and S9's home clinic naming it (its name or a short form, CAS for Castro). SRL and San Rafael are
+   one clinic only when this tracker is San Rafael's; with the clinic unknown no clinic is assumed (see TmsCore.homeHere) */
+const atClinic = s => TmsCore.atClinic(s, clinic());
+const homeHere = h => TmsCore.homeHere(h, clinic());
 
 const state = {
   cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT },
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
-  drafts: {}, initials: "", techName: "", apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
+  drafts: {}, initials: "", techName: "", user: "", users: [], usersRead: false, whoKey: "", adminUntil: 0, apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "today", ptOpen: null, ptPast: false, ptPick: null, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
   dismissed: new Set(), snoozeMem: {}, avDraft: null, lx: null, apptBy: new Map(), apptTo: null, edits: [], elogOpen: false, elogTab: "", chair: "all", sess: null, fl: null, sel: null, mctx: null, copied: new Set()
 };
@@ -193,6 +194,138 @@ function closeModal() {
   if (modalFrom && document.contains(modalFrom)) modalFrom.focus(); modalFrom = null;
 }
 
+/* ---------- who's using the tracker ----------
+   Each workbook keeps its own people list on the hidden "TMS User Settings" sheet. The first time the tracker opens each day on a
+   computer, it asks who is using it, from that list only (nobody pre-selected; people who used this computer in this workbook
+   are listed first). The pick fills Treating technician, By and initials (still editable per entry) and signs the Edit log.
+   This computer's memory is kept per workbook (TmsCore.wbKey), so one clinic's people never show up in another clinic's tracker.
+   Full screen never asks: it takes the pane's pick. */
+const USER_ROWS = 300, WB_ID = "tms_wbid";
+function whoKey() {
+  let url = ""; try { url = Office.context.document.url || ""; } catch { /* no URL */ }
+  let id = "";
+  if (!url) try { id = Office.context.document.settings.get(WB_ID) || ""; if (!id) { id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); saveSetting(WB_ID, id); } } catch { /* settings unavailable */ }
+  return TmsCore.wbKey(url, id);
+}
+function whoMem() { try { const m = JSON.parse(localStorage.getItem(state.whoKey) || "{}"); return m && typeof m === "object" ? m : {}; } catch { return {}; } }
+function whoSave(m) { try { if (state.whoKey) localStorage.setItem(state.whoKey, JSON.stringify(m)); } catch { /* this session only */ } }
+const findUser = name => state.users.find(u => TmsCore.userKey(u.name) === TmsCore.userKey(name)) || null;
+/* use a name in this window: the defaults that came from the last pick follow the new one */
+function applyUser(name) {
+  const was = state.user;
+  if (!state.techName || state.techName === was) state.techName = name;
+  if (!state.initials || state.initials === initialsOf(was)) state.initials = initialsOf(name);
+  state.user = name; renderPeople();
+}
+/* the pane remembers today's pick for this workbook on this computer, and tells full screen */
+async function pickUser(name) {
+  if (POPOUT) { await callPane("pickUser", [name]); applyUser(name); hideWho(); return; }
+  const m = whoMem(), k = TmsCore.userKey(name); m.used = m.used || {}; m.used[k] = new Date().toISOString(); m.day = TmsCore.dayKey(); m.name = name; whoSave(m);
+  applyUser(name); hideWho(); toChild({ k: "user", name, users: state.users });
+  touchUser(name).catch(e => console.error(e));
+}
+/* after every read: today's pick still on the list, else ask (also when the day changes with the pane open) */
+function checkWho() {
+  if (POPOUT || !state.usersRead || !state.whoKey) return;
+  const m = whoMem(), u = m.day === TmsCore.dayKey() && m.name ? findUser(m.name) : null;
+  if (u) { if (state.user !== u.name) applyUser(u.name); return; }
+  if ($("who").hidden) showWho(false);
+}
+function showWho(switching) {
+  const here = (whoMem().used) || {}, list = TmsCore.pickOrder(state.users, POPOUT ? {} : here), empty = !list.length;
+  $("whoBody").innerHTML = `<h2 id="whoT">Who's using the tracker?</h2>
+    <p class="sub">Pick your name for today on this computer. It signs the Edit log and fills in Treating technician; you can still change that on any entry.</p>
+    ${empty ? `<p class="hint">No one is on this workbook's list yet. Add yourself below.</p>` : `<div class="wholist">${list.map(u => `<button class="whobtn" data-who="${esc(u.name)}"><span>${esc(u.name)}</span>${u.here ? `<span class="tag">On this computer</span>` : ""}</button>`).join("")}</div>`}
+    <details class="whonew"${empty ? " open" : ""}><summary>I'm not on the list</summary>
+      <label class="fld" for="whoNew"><span>Your name (first name and last initial, for example Alex P.)</span><input id="whoNew" maxlength="40" autocomplete="off" spellcheck="false"></label>
+      <p class="err" id="whoErr" role="alert"></p><button class="btn primary" data-whoadd>Add me and continue</button></details>
+    ${switching && state.user ? `<div class="mfoot"><button class="btn mute" data-whocancel>Keep ${esc(state.user)}</button></div>` : ""}`;
+  $("who").hidden = false;
+  const f = $("whoBody").querySelector(empty ? "#whoNew" : ".whobtn"); if (f) f.focus();
+}
+function hideWho() { $("who").hidden = true; $("whoBody").innerHTML = ""; }
+/* a new name goes on the list (or the same name already there is used) */
+async function addUser(name) {
+  const n = TmsCore.cleanUserName(name); if (!n) throw new Error("Enter your first name and last initial (letters only).");
+  if (POPOUT) { await callPane("addUser", [n]); return n; }
+  const at = new Date().toISOString();
+  await Excel.run(async ctx => {
+    const ws = await userSheet(ctx), r = ws.getRange(`A1:A${USER_ROWS}`); r.load("values"); await ctx.sync();
+    const L = TmsCore.parseUsers(r.values.map(([a]) => [a]));
+    if (!L.some(u => TmsCore.userKey(u.name) === TmsCore.userKey(n))) {
+      const last = r.values.reduce((m, [a], i) => String(a ?? "").trim() ? i + 1 : m, 1), row = last + 1;
+      if (row > USER_ROWS) throw new Error("The people list is full. An admin can remove people who have left in Settings.");
+      const line = ws.getRange(`A${row}:D${row}`); line.numberFormat = [["@", "@", "@", "@"]]; line.values = [[n, at, at, "{}"]];
+    }
+    const all = ws.getRange(`A1:D${USER_ROWS}`); all.load("values"); await ctx.sync(); state.users = TmsCore.parseUsers(all.values);
+  });
+  return n;
+}
+async function userSheet(ctx) {
+  let ws = ctx.workbook.worksheets.getItemOrNullObject(TmsCore.USER_SHEET); await ctx.sync();
+  if (!ws.isNullObject) return ws;
+  ws = ctx.workbook.worksheets.add(TmsCore.USER_SHEET);
+  const hd = ws.getRange("A1:D1"); hd.values = [TmsCore.USER_HDR]; hd.format.font.bold = true;
+  ws.visibility = Excel.SheetVisibility.hidden;
+  return ws;
+}
+/* the person's Updated date on the list: when they last picked their name */
+async function touchUser(name) {
+  if (POPOUT || !findUser(name)) return;
+  await Excel.run(async ctx => {
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(TmsCore.USER_SHEET); await ctx.sync(); if (ws.isNullObject) return;
+    const r = ws.getRange(`A1:A${USER_ROWS}`); r.load("values"); await ctx.sync();
+    const i = r.values.findIndex(([a], j) => j > 0 && TmsCore.userKey(a) === TmsCore.userKey(name)); if (i < 0) return;
+    const c = ws.getRange(`C${i + 1}`); c.numberFormat = [["@"]]; c.values = [[new Date().toISOString()]]; await ctx.sync();
+  });
+}
+/* admin only: take someone off the list (their row is found again by name, since another computer may have added rows) */
+async function delUser(name) {
+  if (POPOUT) { await callPane("delUser", [name]); return; }
+  await Excel.run(async ctx => {
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(TmsCore.USER_SHEET); await ctx.sync(); if (ws.isNullObject) return;
+    const r = ws.getRange(`A1:A${USER_ROWS}`); r.load("values"); await ctx.sync();
+    const i = r.values.findIndex(([a], j) => j > 0 && TmsCore.userKey(a) === TmsCore.userKey(name));
+    if (i >= 0) ws.getRange(`A${i + 1}:D${i + 1}`).delete(Excel.DeleteShiftDirection.up);
+    const all = ws.getRange(`A1:D${USER_ROWS}`); all.load("values"); await ctx.sync(); state.users = TmsCore.parseUsers(all.values);
+  });
+  toChild({ k: "user", name: state.user, users: state.users });
+}
+async function whoClick(el) {
+  if (el.closest("[data-whocancel]")) return hideWho();
+  const b = el.closest("[data-who]");
+  try {
+    if (b) return await pickUser(b.dataset.who);
+    if (el.closest("[data-whoadd]")) {
+      $("whoErr").textContent = "";
+      const n = await addUser(($("whoNew") || {}).value);
+      return await pickUser((findUser(n) || { name: n }).name);
+    }
+  } catch (e) { const er = $("whoErr"); if (er) er.textContent = e.message || String(e); else fail(e); }
+}
+/* ---------- admin: the admin code (TmsCore.adminOk) unlocks for ADMIN_MIN minutes on this screen, in every workbook ---------- */
+const adminOn = () => state.adminUntil > Date.now();
+async function adminUnlock() {
+  const el = $("admCode"), ok = await TmsCore.adminOk(el ? el.value : "");
+  if (el) el.value = "";
+  if (!ok) return toast("That isn't the admin code.", true);
+  state.adminUntil = Date.now() + TmsCore.ADMIN_MIN * 60000; renderPeople();
+  setTimeout(renderPeople, TmsCore.ADMIN_MIN * 60000 + 500);
+}
+/* Settings: who you are today, the clinic's lock, and (admin) the people list */
+function renderPeople() {
+  const set = (id, html) => { const el = $(id); if (el && el._h !== html) { el.innerHTML = html; el._h = html; } };
+  set("userBtn", state.user ? `<span class="uname">${esc(state.user)}</span><small>Switch user</small>` : "Pick your name");
+  set("whoBox", `<h2>You</h2><div class="nrow"><span>${state.user ? `Using the tracker as <b>${esc(state.user)}</b> today on this computer.` : "No name picked yet."}</span><button class="btn ghost sm" data-act="whoSwitch">${state.user ? "Switch user" : "Pick your name"}</button></div>`);
+  const on = adminOn(), loc = String(state.cfg.location || "").trim();
+  if ($("cfgLoc")) $("cfgLoc").disabled = !!loc && !on;
+  set("locNote", loc ? (on ? "Admin unlocked: you can change the clinic." : "Saved for this workbook by the first person who entered it. An admin can change it.") : "Blank uses the workbook name. Whoever saves a clinic here sets it for this workbook.");
+  set("adminBox", `<h2>Admin</h2>${on
+    ? `<div class="nrow"><span class="hint" style="margin:0">Unlocked until ${esc(new Date(state.adminUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}.</span><button class="btn ghost sm" data-act="admLock">Lock</button></div>
+       <h3 class="hint">People on this workbook's list</h3>${state.users.length ? state.users.map(u => `<div class="nrow"><span>${esc(u.name)}</span><button class="btn ghost sm" data-act="userDel" data-v="${esc(u.name)}">Remove</button></div>`).join("") : `<p class="hint">No one yet.</p>`}`
+    : `<p class="hint">Changing a saved clinic and removing people from the list need the admin code.</p><div class="actions"><input id="admCode" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Admin code" style="width:120px"><button class="btn ghost sm" data-act="admUnlock">Unlock</button></div>`}`);
+}
+
 /* ---------- read the workbook ---------- */
 /* a missed visit's freebie decision lives in Notes ("Freebie used" or "Freebie waived"); p.fbCell (N6) counts the freebies left */
 const freebieOf = note => /\bfreebie used\b/i.test(note) ? "Used" : /\bfreebie waived\b/i.test(note) ? "Waived" : "";
@@ -230,10 +363,12 @@ async function refresh() {
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
       /* sheet names are already known, so the Protocols, Clinic Schedule and Benefits reads ride along with this sync (names match case-insensitively, as getItem does) */
       const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
-      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET);
+      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET);
       const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:S${BEN_LAST}`) : null;
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
-      [prv, cs, bn, ss, sc].forEach(r => r && r.load("values")); await ctx.sync();
+      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null;
+      [prv, cs, bn, ss, sc, us].forEach(r => r && r.load("values")); await ctx.sync();
+      state.users = TmsCore.parseUsers(us ? us.values : null); state.usersRead = true;
       readBen(bn ? bn.values : null); readSess(ss ? ss.values : null, sc ? sc.values : null);
       await readElog(ctx);
       const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
@@ -342,6 +477,7 @@ async function refresh() {
        shows the need "Set to Complete". Nothing is written on its own, so an extension on the way isn't closed out. */
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
+    checkWho();
     syncActiveSheet();
     /* once a session: visit logs edited by hand get the formatting that follows their dates (hand-colored rows stay) */
     if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
@@ -510,6 +646,7 @@ function shareUi() {
 }
 const bctl = id => `<span class="bctl"><button class="sm" data-banner="${id}" data-bact="snooze">Snooze 3 h</button><button class="sm" data-banner="${id}" data-bact="dismiss" aria-label="Dismiss">Dismiss</button></span>`;
 function renderBanners() {
+  renderPeople();
   const t = todaySerial(), r = state.report, show = (id, on) => { $(id).hidden = !on || snoozed(id); };
   const stale = !r || r.asOf == null || r.asOf < t;
   $("reportMsg").textContent = !r ? "No appointment list has been uploaded yet. Run the report, then use Import."
@@ -2080,7 +2217,7 @@ async function saveGuestLink(mrn, url) {
 
 /* ---------- Settings > Use another tab as New Template: the chosen tab is renamed New Template and the current one deleted.
    Patient tabs and the add-in's own sheets aren't offered. Logged without undo; the workbook's version history has the old tab. ---------- */
-const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, ELOG_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
+const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, ELOG_SHEET, TmsCore.USER_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
 const tplChoices = () => (state.sheetNames || []).filter(n => !OWN_SHEETS().includes(sheetKey(n)) && !state.tabs.some(t => t.name === n) && !state.stale.includes(n) && !/ \(old\)$/.test(n));
 function fillTplPick() {
   const s = $("tplPick"); if (!s || document.activeElement === s) return;
@@ -2288,7 +2425,7 @@ const whenText = s => { const d = Math.floor(s), t = clock(Math.round((s - d) * 
 async function addEdits(ctx, entries) {
   if (!entries.length) return;
   const ws = await elogSheet(ctx), u = ws.getUsedRange(true); u.load("rowCount"); await ctx.sync();
-  let row = Math.max(2, u.rowCount + 1); const when = nowSerial(), by = state.techName || "";
+  let row = Math.max(2, u.rowCount + 1); const when = nowSerial(), by = state.user || state.techName || "";
   for (const e of entries) {
     const id = `${Date.now().toString(36)}${(elogSeq++).toString(36)}`, data = e.undo ? JSON.stringify(e.undo) : "";
     const parts = []; for (let i = 0; i < data.length; i += ELOG_PART) parts.push(data.slice(i, i + ELOG_PART));
@@ -3103,7 +3240,7 @@ function collectAddPatient() {
 function resetAddPatient() {
   AP_FIELDS.forEach(i => $(i).value = ""); BILL.forEach((b, i) => { $("apX" + i).value = ""; $("apY" + i).value = ""; });
   [1, 2, 3, 4, 5].forEach(k => { $("apWf" + k).value = ""; $("apWt" + k).value = ""; });
-  $("apHome").value = clinic() || "SRL"; $("apTxs").value = 36; $("apRedos").value = 0; $("apCourse").value = 1; $("apNote").textContent = ""; state.apRanges = [{}]; renderApRanges();
+  $("apHome").value = clinic(); $("apTxs").value = 36; $("apRedos").value = 0; $("apCourse").value = 1; $("apNote").textContent = ""; state.apRanges = [{}]; renderApRanges();
   state.codeEdited = state.courseEdited = false; updateApTab();
 }
 /* copies New Template and fills the header, benefits, cost by code and availability in the template's own cells */
@@ -3546,7 +3683,7 @@ async function buildPlan(quiet) {
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim(), here: split && isHere(pv, String(cell(r, "mLoc") || "").trim()) === false ? false : null });   // false: booked at another clinic
-    if (pv && !past && !/san rafael|magv|brainsway|mag\s?venture/i.test(pv)) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
+    if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   if (!ps) state.codeMrn = new Map([...codes].map(([mrn, c]) => [c, rawMrn.get(mrn) || mrn]));   // LASFIR -> MRN, to suggest a blank A4
@@ -3740,7 +3877,7 @@ function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m))
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
-    edits: state.edits, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
+    edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
 /* dialog messages are size-limited, so anything big goes in CHUNK-sized parts the window puts back together */
@@ -3749,7 +3886,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
-    edits: o.edits || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui);
+    edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -3766,7 +3903,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -3806,6 +3943,7 @@ function onPaneMessage(a) {
       const w = rpc.wait.get(m.id); if (!w) return; rpc.wait.delete(m.id);
       if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
     } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
+    else if (m.k === "user") { state.users = m.users || state.users; applyUser(m.name); }
     else if (m.k === "ui") { mergeUi(m); renderBanners(); }
     else if (window.DevUpdates) DevUpdates.receive(m);
 }
@@ -3881,10 +4019,11 @@ const benOk = data => { for (const [a, raw] of Object.entries(data)) { const v =
 
 Office.onReady(info => {
   if (!POPOUT && info.host !== Office.HostType.Excel) return;
-  if (!POPOUT) { const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved); }
+  if (!POPOUT) { const saved = Office.context.document.settings.get("tms_cfg"); if (saved) Object.assign(state.cfg, saved); state.whoKey = whoKey(); }
   syncCfgInputs();
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
-    const v = $(id).value; state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    const v = $(id).value;
+    if (k === "location" && String(state.cfg.location || "").trim() && !adminOn()) { $(id).value = state.cfg.location; renderPeople(); return toast("The clinic is already saved for this workbook. Unlock admin in Settings to change it.", true); } state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
   $("apBack").onclick = () => show("patients");
   $("btnFull").onclick = fullScreen;
@@ -3894,7 +4033,8 @@ Office.onReady(info => {
   /* the clock moves the board: every 30 seconds, unless someone is typing or a dialog is open */
   setInterval(() => {
     const a = document.activeElement;
-    if (document.hidden || !$("modal").hidden || (a && a.matches && a.matches("input,select,textarea")) || !["today", "schedule"].includes(state.view)) return;
+    if (!POPOUT && state.usersRead && whoMem().day !== TmsCore.dayKey()) checkWho();   // a new day with the pane still open
+    if (document.hidden || !$("modal").hidden || !$("who").hidden || (a && a.matches && a.matches("input,select,textarea")) || !["today", "schedule"].includes(state.view)) return;
     focusWant = focusKey(a); pullSess().catch(e => console.error(e)).then(() => { renderDash(); refocus(); });
   }, 30000);
   document.addEventListener("click", e => {
@@ -3904,6 +4044,8 @@ Office.onReady(info => {
   });
   function onClick(e) {
     const el = e.target;
+    if (el.closest("#who")) return whoClick(el);
+    if (el.closest("#userBtn")) return showWho(true);
     const bn = el.closest("[data-banner]"); if (bn) { if (bn.dataset.bact === "snooze") snooze(bn.dataset.banner); else dismiss(bn.dataset.banner); return; }
     if (el.closest("[data-mclose]") || el.id === "modal") return closeModal();
     const mf = el.closest("[data-mf]"); if (mf) return setFreebie(mf.dataset.t, +mf.dataset.row, mf.dataset.mf);
@@ -3933,6 +4075,8 @@ Office.onReady(info => {
       /* the Edit log on Patients: undo (whole-log changes ask first), and the checks' fixes (removing a row asks first) */
       elUndo: () => elUndoAsk(v), elUndoGo: () => { const id = m.id; closeModal(); return undoEdit(id); },
       elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
+      whoSwitch: () => showWho(true), admUnlock: () => adminUnlock(), admLock: () => { state.adminUntil = 0; renderPeople(); },
+      userDel: () => { if (!adminOn()) return toast("Unlock admin first.", true); delUser(v).then(() => { renderPeople(); toast(`${v} removed from this workbook's list.`); }).catch(fail); },
       apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
       dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
@@ -3986,6 +4130,16 @@ Office.onReady(info => {
     if (acts[a]) { e.preventDefault(); acts[a](); }
   }
   document.addEventListener("keydown", e => {
+    if (!$("who").hidden) {   // the name picker sits over everything; it closes only with a pick (or Keep, when switching)
+      if (e.key === "Escape" && $("whoBody").querySelector("[data-whocancel]")) { e.preventDefault(); return hideWho(); }
+      if (e.key === "Enter" && e.target.id === "whoNew") { e.preventDefault(); return whoClick($("whoBody").querySelector("[data-whoadd]")); }
+      if (e.key === "Tab") { const f = [...$("whoBody").querySelectorAll("button,input,summary")].filter(x => x.offsetParent);
+        if (f.length && e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+        else if (f.length && !e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); } }
+      if (e.key === "Escape") e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter" && e.target.id === "admCode") { e.preventDefault(); return adminUnlock(); }
     if (e.key === "Escape" && !$("schedOverlay").hidden) return closeSchedOverlay();
     if (e.key === "Escape" && !$("modal").hidden) return closeModal();
     if (e.key === "Escape" && !$("ptView").hidden) return closePt();
@@ -4026,7 +4180,7 @@ Office.onReady(info => {
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
   $("btnAdd").onclick = () => addPatient(collectAddPatient());
   $("btnFmt").onclick = formatLogsClick;
-  fillAddPatientForm(); show("today");
+  fillAddPatientForm(); renderPeople(); show("today");
   /* Dev Update notices; full screen tells the pane what was dismissed (the pane tells full screen once it opens it) */
   if (window.DevUpdates) DevUpdates.init({ app: "tms", send: POPOUT ? m => Office.context.ui.messageParent(JSON.stringify(m)) : null });
   if (POPOUT) initPopout(); else refresh();

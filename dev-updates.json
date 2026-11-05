@@ -1,6 +1,14 @@
 {
   "updates": [
     {
+      "id": "2026-11-05-who",
+      "date": "2026-11-05",
+      "bullets": [
+        "New: once a day the tracker asks who is using it, from this workbook's own list. Pick your name or add yourself. It fills in Treating technician and signs the Edit log.",
+        "The clinic is never assumed. It comes from Settings or the workbook's name, and once saved only an admin can change it."
+      ]
+    },
+    {
       "id": "2026-10-29-dev-updates",
       "date": "2026-10-29",
       "bullets": [

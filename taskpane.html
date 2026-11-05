@@ -469,6 +469,16 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 .g4.greyed{display:grid;grid-template-columns:repeat(4,1fr);gap:0 10px;opacity:.5}
 .per{display:grid;grid-template-columns:1.4fr 1fr repeat(4,.8fr);gap:8px;align-items:center;margin-top:8px}
 .per.hdr{font-size:12.5px;color:var(--muted)}
+#who{position:fixed;inset:0;z-index:60;background:var(--scrim);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:grid;place-items:center;padding:20px}
+#who .modal{width:min(460px,100%)}
+.wholist{display:grid;gap:8px;margin-top:16px}
+.whobtn{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:0 16px;border-radius:12px;background:var(--surface-2);color:var(--ink);font-weight:600;font-size:15px;text-align:left}
+.whobtn:hover,.whobtn:focus-visible{background:var(--accent-soft)}
+.whonew{margin-top:16px}
+.whonew summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:14px;min-height:36px;display:flex;align-items:center}
+#userBtn{flex-direction:column;align-items:flex-start;gap:0;line-height:1.2}
+#userBtn .uname{font-weight:600}
+#userBtn small{color:var(--muted);font-size:12px}
 #schedOverlay{position:fixed;inset:0;z-index:40;background:var(--scrim);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);padding:3vh 5vw}
 #schedFrame{width:100%;height:100%;border:0;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.3);background:#fff}
 
@@ -521,6 +531,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
     <button class="item" data-view="imp">Import</button>
     <button class="item" data-view="settings">Settings</button>
     <div class="spacer"></div>
+    <button class="item" id="userBtn" title="Who's using the tracker on this computer today">Pick your name</button>
     <button class="item" id="refresh" title="Re-read every patient tab">Refresh</button>
     <button class="item" id="btnFull">Full screen</button>
     <button class="item" id="btnTheme" aria-pressed="false">Dark mode</button>
@@ -608,11 +619,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
     </section>
 
     <section id="v-settings" aria-label="Settings" hidden>
-      <header class="top"><div><h1>Settings</h1><p class="sub">Saved in this workbook for everyone, except Appearance and the view on Today (Clinic or one chair), which stay on this computer.</p></div></header>
+      <header class="top"><div><h1>Settings</h1><p class="sub">Saved in this workbook for everyone, except who you are today, Appearance and the view on Today (Clinic or one chair), which stay on this computer.</p></div></header>
+      <div class="card form" id="whoBox"></div>
       <div class="card form" id="settingsBox">
         <h2>Clinic</h2>
         <div class="row2">
-          <label class="fld" for="cfgLoc"><span>This clinic (NextGen location)</span><input id="cfgLoc"></label>
+          <label class="fld" for="cfgLoc"><span>This clinic (NextGen location)</span><input id="cfgLoc" aria-describedby="locNote"><span class="hint" id="locNote" style="margin:0"></span></label>
           <label class="fld" for="cfgDevice"><span>Tracker device</span><select id="cfgDevice"><option value="auto">From the workbook name</option><option value="MagV">MagVenture</option><option value="Brainsway">BrainsWay</option></select></label>
           <label class="fld" for="cfgAuth"><span>Auth warning (calendar days)</span><input id="cfgAuth" type="number" min="1"></label>
           <label class="fld" for="cfgProto"><span>Protocol warning (business days)</span><input id="cfgProto" type="number" min="1"></label>
@@ -628,6 +640,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
           <label class="fld" for="cfgTheme"><span>Appearance</span><select id="cfgTheme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">Match Windows</option></select></label>
         </div>
       </div>
+      <div class="card form" id="adminBox"></div>
       <div class="card form">
         <h2>Workbook tools</h2>
         <p class="hint warnline" id="tplNote" hidden></p>
@@ -649,7 +662,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
           <label class="fld" for="apCourse"><span>Course #</span><input id="apCourse" type="number" min="1" value="1"></label>
           <label class="fld" for="apMrn"><span>MRN</span><input id="apMrn" autocomplete="off"></label>
           <label class="fld" for="apDob"><span>DOB</span><input id="apDob" type="date"></label>
-          <label class="fld" for="apHome"><span>Home clinic</span><input id="apHome" value="SRL" autocomplete="off"></label>
+          <label class="fld" for="apHome"><span>Home clinic</span><input id="apHome" autocomplete="off" placeholder="This clinic"></label>
           <label class="fld" for="apMd"><span>MD required on-site</span><select id="apMd"><option value=""></option><option>Yes</option><option>No</option></select></label>
         </div>
         <h3>Authorization</h3>
@@ -686,6 +699,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 </div>
 
 <div id="ptView" hidden><div id="pvBody" class="pv" role="dialog" aria-modal="true" aria-labelledby="pvTitle"></div></div>
+<div id="who" hidden><div id="whoBody" class="modal" role="dialog" aria-modal="true" aria-labelledby="whoT"></div></div>
 <div id="modal" hidden><div id="modalBody" class="modal" role="dialog" aria-modal="true"></div></div>
 <div id="schedOverlay" hidden><iframe id="schedFrame" title="Patient schedule"></iframe></div>
 <div id="toast" role="status"></div>

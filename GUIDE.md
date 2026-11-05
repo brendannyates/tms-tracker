@@ -28,17 +28,29 @@ The manifest file only tells Excel where the add-in lives. It contains no patien
 
 **To remove it,** go to **Home > Add-ins > More Add-ins > My Add-ins**, open the ⋯ menu on TMS Tracker and choose **Remove**.
 
+## Who's using the tracker
+
+Each workbook keeps its own list of people (the hidden **TMS User Settings** sheet). The first time you open the tracker each day on a computer, it asks **Who's using the tracker?**
+
+- Pick your name. Nobody is picked for you. Names already used on this computer in this workbook are listed first, tagged **On this computer**.
+- Not on the list? Select **I'm not on the list**, type your first name and last initial, and select **Add me and continue**.
+- Your name fills in **Treating technician**, **By** and your note initials (you can still change them on any entry) and signs the Edit log.
+- Someone else taking over? Select your name at the bottom of the menu (or **Settings > You > Switch user**).
+- Full screen uses the name picked in the task pane and never asks.
+
+Another clinic's workbook has its own list, so your name never shows up there unless you add it.
+
 ## First time in a workbook
 
 Do this once per clinic workbook. Settings save with the workbook, so everyone using it shares them.
 
 1. Open the panel and choose **Settings** in the menu.
-2. Check **This clinic (NextGen location)**, for example San Rafael. Visits booked at other locations are marked as another clinic, and the clinic's name is dropped from chair names (San Rafael MagV1 shows as MagV 1).
+2. Check **This clinic (NextGen location)**. Left blank, the tracker uses the clinic in the workbook's name ("Castro MagV Tracker" is Castro); if the name doesn't say, nothing is assumed. The first person to save a clinic sets it for the workbook; after that only an admin can change it (**Settings > Admin**, admin code). Visits booked at other locations are marked as another clinic, and the clinic's name is dropped from chair names (Castro MagV1 shows as MagV 1).
 3. Check **Tracker device**. "From the workbook name" works when the name contains MagV or Brainsway; otherwise pick MagVenture or BrainsWay.
 4. Leave the warning windows at their defaults unless your clinic wants different ones: auth warning 14 calendar days, protocol warning 2 business days, recent visit window 10 days.
 5. If a banner says tabs don't match New Template, select **Match New Template**. Active trackers get New Template's layout, colors by visit type, dropdowns, borders and TX SUMMARY checkbox over every log row, and their benefits move to the **Benefits** tab (one row per MRN, with Last updated). Entries aren't touched. **Settings > Match New Template (all active tabs)** runs it on every active tracker. Tabs in an older layout are rebuilt on a fresh copy and checked cell by cell before the old one is removed; if a field doesn't match, the add-in shows it with the old and new cells side by side. Tick **Matches** on each to delete the old tab, or select **Keep the old tab** to leave "NAME (old)" and fix it by hand.
 6. On the **Clinic Schedule** tab, enter chair hours and holiday closures (column G) if they are not there yet. **Chairs** shows them, and the Schedule and closure warnings use them.
-7. Import the appointment list (below). The chairs come from it: each NextGen resource for your device (for example San Rafael MagV1, MagV2) is a chair.
+7. Import the appointment list (below). The chairs come from it: each NextGen resource for your device (for example Castro MagV1, MagV2) is a chair.
 
 ## Finding your way around
 

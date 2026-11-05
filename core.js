@@ -367,6 +367,68 @@
     return `${rows.length}:${(h >>> 0).toString(36)}`;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
+  /* ---------- this tracker's clinic and its people. Nothing defaults to one clinic: an unknown clinic stays unknown ---------- */
+  /* the names a clinic goes by, lowercased: "SRL" and "San Rafael" are the same clinic, only when the clinic is one of them */
+  function clinicNames(c) {
+    const x = String(c || "").trim().toLowerCase(); if (!x) return [];
+    return x === "srl" || x === "san rafael" ? ["san rafael", "srl"] : [x];
+  }
+  /* a location or resource name at this clinic; with the clinic unknown everything counts as here, as before */
+  function atClinic(s, c) {
+    const n = clinicNames(c), x = String(s || "").toLowerCase();
+    return !n.length || n.some(a => x.includes(a));
+  }
+  /* a tab's home clinic (S9) is this one: the same name, a short form of it ("CAS" for Castro) or one naming it. Unknown clinic: here */
+  function homeHere(h, c) {
+    const x = String(h || "").trim().toLowerCase(), n = clinicNames(c);
+    if (!n.length || !x) return true;
+    return n.some(a => x === a || (x.length >= 3 && a.startsWith(x)) || x.includes(a));
+  }
+  /* the people list on the hidden "TMS User Settings" sheet: Name | Added | Updated | Settings (JSON); first row is the header */
+  const USER_SHEET = "TMS User Settings", USER_HDR = ["Name", "Added", "Updated", "Settings (JSON)"];
+  const userKey = n => String(n || "").trim().replace(/\s+/g, " ").toLowerCase();
+  function parseUsers(values) {
+    const out = [], seen = new Set();
+    (values || []).slice(1).forEach((r, i) => {
+      const name = String((r || [])[0] ?? "").trim().replace(/\s+/g, " "), k = userKey(name);
+      if (!name || seen.has(k)) return; seen.add(k); out.push({ name, row: i + 2, added: r[1] ?? "", updated: r[2] ?? "" });
+    });
+    return out;
+  }
+  /* a typed name for the list: letters, spaces, apostrophes, periods and hyphens, 2 to 40 characters, tidied */
+  function cleanUserName(s) {
+    const n = String(s || "").trim().replace(/\s+/g, " ");
+    return n.length >= 2 && n.length <= 40 && /^[A-Za-z][A-Za-z .'-]*$/.test(n) ? n : "";
+  }
+  /* the picker's order: people who have used this computer in this workbook first (most recent first, tagged), then everyone
+     else A to Z. Nobody is pre-selected. here: { lowercased name: ISO last used } from this computer's memory */
+  function pickOrder(users, here) {
+    const h = here || {}, on = [], off = [];
+    (users || []).forEach(u => { const at = h[userKey(u.name)]; (at ? on : off).push({ name: u.name, here: !!at, at: at || "" }); });
+    on.sort((a, b) => String(b.at).localeCompare(String(a.at)) || a.name.localeCompare(b.name));
+    off.sort((a, b) => a.name.localeCompare(b.name));
+    return on.concat(off);
+  }
+  /* this computer's memory of who used the tracker is kept per workbook: a key from the document's URL, else from the
+     workbook's own random id (saved in its document settings) */
+  function wbKey(url, id) {
+    const s = String(url || "").trim().split(/[?#]/)[0].toLowerCase() || (id ? "id:" + id : "");
+    if (!s) return "";
+    let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return `tms_who_${(h >>> 0).toString(36)}_${s.length.toString(36)}`;
+  }
+  /* local calendar day "2026-11-05": the daily pick lasts until it changes */
+  const dayKey = d => { const x = d || new Date(); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+  /* the admin code. Only its salted SHA-256 is here; the repo is public, so this keeps honest people honest, nothing more */
+  const ADMIN_SALT = "tms-admin-v1|", ADMIN_HASH = "1d869ce3250fd8b16b9ddce733cfc7815e4762e8b457043ebfaf477815553800", ADMIN_MIN = 15;
+  async function adminOk(code) {
+    const c = String(code || "").trim(); if (!/^\d{4}$/.test(c)) return false;
+    const subtle = (typeof crypto !== "undefined" && crypto.subtle) || (globalThis.crypto && globalThis.crypto.subtle);
+    if (!subtle) return false;
+    const buf = await subtle.digest("SHA-256", new TextEncoder().encode(ADMIN_SALT + c));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
+  }
+
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });

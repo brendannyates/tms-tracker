@@ -65,7 +65,7 @@ New Template owns the layout. The add-in reads and writes these cells; benefits 
 | B / C / E / F, H, J | Treating technician, Tx #, date, pulses Left / Right / Other. Pulses entered = treatment delivered. |
 | L / M / O / P, Q / R / S / T | Visit type, Miss x, Action, PHQ-9 and GAD-7 (x = placeholder), Alt Clinic x, Notes, appointment time. |
 | S (Notes) | "Tele" marks a telehealth follow-up. A missed visit's freebie decision is "Freebie used" or "Freebie waived". The MT row also holds the MT details. "Schedule provided m/d" is written when a schedule is given. |
-| S9 | Home Clinic. Anything other than SRL makes the patient external. |
+| S9 | Home Clinic. A clinic other than this tracker's (Settings, else the workbook name) makes the patient external. |
 | Row after the log (B: TX SUMMARY) | Closes the log. Ticking the checkbox in A turns the row green. |
 | W20:X24, V29:Y48 | Weekly availability (earliest and latest start, Monday to Friday) and dates (Unavailable / Available, from, to, reason). |
 
