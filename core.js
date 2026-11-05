@@ -391,10 +391,18 @@
     const out = [], seen = new Set();
     (values || []).slice(1).forEach((r, i) => {
       const name = String((r || [])[0] ?? "").trim().replace(/\s+/g, " "), k = userKey(name);
-      if (!name || seen.has(k)) return; seen.add(k); out.push({ name, row: i + 2, added: r[1] ?? "", updated: r[2] ?? "" });
+      if (!name || seen.has(k)) return; seen.add(k); out.push({ name, row: i + 2, added: r[1] ?? "", updated: r[2] ?? "", set: userSet(r[3]) });
     });
     return out;
   }
+  /* a person's own settings: the Settings (JSON) cell, anything unreadable counts as none */
+  function userSet(json) { try { const o = JSON.parse(String(json ?? "").trim() || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch { return {}; } }
+  /* "Open in full screen whenever I open this workbook": each person's own choice (autoFull in their settings). Excel can only open
+     the add-in with the workbook for everyone (document setting Office.AutoShowTaskpaneWithDocument), so it's on while anyone has
+     theirs on. users = parseUsers(); name/on = a change not saved yet. */
+  const AUTO_SHOW = "Office.AutoShowTaskpaneWithDocument";
+  const autoFullOf = u => !!(u && u.set && u.set.autoFull === true);
+  const autoAny = (users, name, on) => (users || []).some(u => name != null && userKey(u.name) === userKey(name) ? !!on : autoFullOf(u)) || (name != null && !!on);
   /* a typed name for the list: letters, spaces, apostrophes, periods and hyphens, 2 to 40 characters, tidied */
   function cleanUserName(s) {
     const n = String(s || "").trim().replace(/\s+/g, " ");
@@ -429,6 +437,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
     copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });

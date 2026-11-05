@@ -37,6 +37,7 @@ Each workbook keeps its own list of people (the hidden **TMS User Settings** she
 - Your name fills in **Treating technician**, **By** and your note initials (you can still change them on any entry) and signs the Edit log.
 - Someone else taking over? Select your name at the bottom of the menu (or **Settings > You > Switch user**).
 - Full screen uses the name picked in the task pane and never asks.
+- Want the tracker in full screen every time? Tick **Settings > You > Open in full screen whenever I open this workbook**. It's saved with your name. Excel can only open the tracker with the workbook for everyone, so while anyone has this on, the tracker opens by itself beside the sheet for everyone else, and in full screen once the person who turned it on is picked.
 
 Another clinic's workbook has its own list, so your name never shows up there unless you add it.
 

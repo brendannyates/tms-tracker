@@ -223,13 +223,54 @@ async function pickUser(name) {
   const m = whoMem(), k = TmsCore.userKey(name); m.used = m.used || {}; m.used[k] = new Date().toISOString(); m.day = TmsCore.dayKey(); m.name = name; whoSave(m);
   applyUser(name); hideWho(); toChild({ k: "user", name, users: state.users });
   touchUser(name).catch(e => console.error(e));
+  maybeAutoFull();
 }
 /* after every read: today's pick still on the list, else ask (also when the day changes with the pane open) */
 function checkWho() {
   if (POPOUT || !state.usersRead || !state.whoKey) return;
   const m = whoMem(), u = m.day === TmsCore.dayKey() && m.name ? findUser(m.name) : null;
-  if (u) { if (state.user !== u.name) applyUser(u.name); return; }
+  if (u) { if (state.user !== u.name) applyUser(u.name); maybeAutoFull(); return; }
   if ($("who").hidden) showWho(false);
+}
+/* full screen on open: once per session, in the pane, as soon as we know who's at the desk (today's pick, or the pick at the
+   prompt). Only that person's own choice counts; everyone else just gets the pane. */
+function maybeAutoFull() {
+  if (POPOUT || state.autoDone || !state.user) return; state.autoDone = true;
+  if (TmsCore.autoFullOf(findUser(state.user)) && !pop.dlg) openPopout();
+}
+/* the person's own settings, merged into their Settings (JSON) cell on the people list (row found again by name; added if missing) */
+async function saveUserSet(name, patch) {
+  if (POPOUT) return callPane("saveUserSet", [name, patch]);
+  if (!findUser(name)) await addUser(name);
+  await Excel.run(async ctx => {
+    const ws = await userSheet(ctx), r = ws.getRange(`A1:D${USER_ROWS}`); r.load("values"); await ctx.sync();
+    const i = r.values.findIndex(([a], j) => j > 0 && TmsCore.userKey(a) === TmsCore.userKey(name));
+    if (i < 0) throw new Error(`${name} isn't on this workbook's list any more. Pick your name again, then try again.`);
+    const line = ws.getRange(`C${i + 1}:D${i + 1}`); line.numberFormat = [["@", "@"]];
+    line.values = [[new Date().toISOString(), JSON.stringify({ ...TmsCore.userSet(r.values[i][3]), ...patch })]];
+    const all = ws.getRange(`A1:D${USER_ROWS}`); all.load("values"); await ctx.sync(); state.users = TmsCore.parseUsers(all.values);
+  });
+  toChild({ k: "user", name: state.user, users: state.users });
+}
+/* Excel can only open the add-in with the workbook for everyone, so the document setting is on while anyone has theirs on */
+function syncAutoShow() {
+  if (POPOUT) return;
+  const s = Office.context.document.settings, any = TmsCore.autoAny(state.users);
+  if (any) s.set(TmsCore.AUTO_SHOW, true); else s.remove(TmsCore.AUTO_SHOW);
+  return new Promise((res, rej) => s.saveAsync(r => r.status === Office.AsyncResultStatus.Succeeded ? res(any) : rej(new Error("Couldn't save the workbook setting. Try again."))));
+}
+async function saveAutoFull(name, on) {
+  if (POPOUT) return callPane("saveAutoFull", [name, on]);
+  if (!name) throw new Error("Pick who's at the desk first.");
+  await saveUserSet(name, { autoFull: !!on });
+  return syncAutoShow();
+}
+async function autoFullClick(on) {
+  try {
+    const any = await saveAutoFull(state.user, on);
+    toast(on ? "Saved. Next time you open this workbook, the tracker opens in full screen." : any ? "Saved. You'll open beside the sheet; someone else still has full screen on, so the tracker keeps opening with the workbook." : "Saved. The tracker no longer opens by itself with this workbook.");
+  } catch (e) { fail(e); }
+  $("whoBox")._h = ""; renderPeople();
 }
 function showWho(switching) {
   const here = (whoMem().used) || {}, list = TmsCore.pickOrder(state.users, POPOUT ? {} : here), empty = !list.length;
@@ -290,6 +331,7 @@ async function delUser(name) {
     const all = ws.getRange(`A1:D${USER_ROWS}`); all.load("values"); await ctx.sync(); state.users = TmsCore.parseUsers(all.values);
   });
   toChild({ k: "user", name: state.user, users: state.users });
+  await syncAutoShow();   // they may have been the one with full screen on
 }
 async function whoClick(el) {
   if (el.closest("[data-whocancel]")) return hideWho();
@@ -316,7 +358,8 @@ async function adminUnlock() {
 function renderPeople() {
   const set = (id, html) => { const el = $(id); if (el && el._h !== html) { el.innerHTML = html; el._h = html; } };
   set("userBtn", state.user ? `<span class="uname">${esc(state.user)}</span><small>Switch user</small>` : "Pick your name");
-  set("whoBox", `<h2>You</h2><div class="nrow"><span>${state.user ? `Using the tracker as <b>${esc(state.user)}</b> today on this computer.` : "No name picked yet."}</span><button class="btn ghost sm" data-act="whoSwitch">${state.user ? "Switch user" : "Pick your name"}</button></div>`);
+  set("whoBox", `<h2>You</h2><div class="nrow"><span>${state.user ? `Using the tracker as <b>${esc(state.user)}</b> today on this computer.` : "No name picked yet."}</span><button class="btn ghost sm" data-act="whoSwitch">${state.user ? "Switch user" : "Pick your name"}</button></div>
+    <label class="chk"><input type="checkbox" id="autoFull"${TmsCore.autoFullOf(findUser(state.user)) ? " checked" : ""}${state.user ? "" : " disabled"}> <span>Open in full screen whenever I open this workbook<span class="hint" style="display:block;margin:2px 0 0">${state.user ? "Saved with your name. While anyone has this on, the tracker opens by itself when the workbook opens (beside the sheet for everyone else)." : "Pick who's at the desk first."}</span></span></label>`);
   const on = adminOn(), loc = String(state.cfg.location || "").trim();
   if ($("cfgLoc")) $("cfgLoc").disabled = !!loc && !on;
   set("locNote", loc ? (on ? "Admin unlocked: you can change the clinic." : "Saved for this workbook by the first person who entered it. An admin can change it.") : "Blank uses the workbook name. Whoever saves a clinic here sets it for this workbook.");
@@ -3903,7 +3946,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -4159,6 +4202,7 @@ Office.onReady(info => {
     const el = e.target;
     if (el.dataset.ngk) { focusWant = el.closest("#modal") ? null : focusKey(el); return setNgTick(el.dataset.ngk, el.checked).then(refocus); }
     if (el.id === "mPain") { $("mPainD").hidden = el.value !== "Yes"; return; }
+    if (el.id === "autoFull") return autoFullClick(el.checked);
     if (el.dataset.pick) { const n = +el.dataset.pick; state.ptPick = state.ptPick || new Set(); if (el.checked) state.ptPick.add(n); else state.ptPick.delete(n); return; }
     if (el.dataset.pk === "name") return protoEditPick(el);
     if (el.matches("[data-elf]")) { state.elogTab = el.value; return renderDash(); }
