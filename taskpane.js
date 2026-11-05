@@ -303,7 +303,7 @@ async function whoClick(el) {
     }
   } catch (e) { const er = $("whoErr"); if (er) er.textContent = e.message || String(e); else fail(e); }
 }
-/* ---------- admin: code 0582 unlocks for ADMIN_MIN minutes on this screen, in every workbook ---------- */
+/* ---------- admin: the admin code (TmsCore.adminOk) unlocks for ADMIN_MIN minutes on this screen, in every workbook ---------- */
 const adminOn = () => state.adminUntil > Date.now();
 async function adminUnlock() {
   const el = $("admCode"), ok = await TmsCore.adminOk(el ? el.value : "");
