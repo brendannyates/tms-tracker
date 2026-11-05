@@ -1,6 +1,13 @@
 {
   "updates": [
     {
+      "id": "2026-11-05-card-consent",
+      "date": "2026-11-05",
+      "bullets": [
+        "New: during the session, tick LumaPay card on file and the patient's verbal consent to collect the copay at time of service. It's on today's visit in the patient view and in Complete session, saved to the visit's Notes with your name and the time."
+      ]
+    },
+    {
       "id": "2026-11-05-who",
       "date": "2026-11-05",
       "bullets": [

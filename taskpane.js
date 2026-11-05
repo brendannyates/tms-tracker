@@ -25,11 +25,14 @@ async function tabEnd(ctx, ws) {
 }
 /* Benefits tab: one row per MRN. Keys are the cells the benefits block used to have on each tab. */
 const BEN_SHEET = "Benefits", BEN_FIRST = 2, BEN_LAST = 1000;
-const BEN_COLS = { MRN: "A", Patient: "B", W1: "C", W4: "D", W5: "E", W6: "F", W7: "G", W8: "H", X12: "I", X13: "J", X14: "K", X15: "L", X16: "M", Y12: "N", Y13: "O", Y14: "P", Y15: "Q", Y16: "R", Updated: "S" };
+const BEN_COLS = { MRN: "A", Patient: "B", W1: "C", W4: "D", W5: "E", W6: "F", W7: "G", W8: "H", X12: "I", X13: "J", X14: "K", X15: "L", X16: "M", Y12: "N", Y13: "O", Y14: "P", Y15: "Q", Y16: "R", Updated: "S", Card: "T", Consent: "U" };
 const BEN_HDR = ["MRN", "Patient", "BIDF estimate", "Deductible remaining", "Out-of-pocket max remaining", "MTR approved", "Extensions added (90868)", "Last schedule provided",
-  "MT PR", "Daily PR", "MTR PR", "F/U in-office PR", "F/U telehealth PR", "MT before ded.", "Daily before ded.", "MTR before ded.", "F/U in-office before ded.", "F/U telehealth before ded.", "Last updated"];
+  "MT PR", "Daily PR", "MTR PR", "F/U in-office PR", "F/U telehealth PR", "MT before ded.", "Daily before ded.", "MTR before ded.", "F/U in-office before ded.", "F/U telehealth before ded.", "Last updated",
+  "LumaPay card on file", "Verbal copay consent"];
 const BEN_KEYS = Object.keys(BEN_COLS).filter(k => /^[WXY]\d+$/.test(k)), BEN_STAMP = "BEN_STAMP";
-const isBenKey = a => a === BEN_STAMP || BEN_KEYS.includes(a);
+/* Card and Consent (T, U) are per-patient flags the technician ticks during a session; a workbook without those columns reads them as unticked */
+const BEN_FLAGS = ["Card", "Consent"];
+const isBenKey = a => a === BEN_STAMP || BEN_KEYS.includes(a) || BEN_FLAGS.includes(a);
 const BLANK_ROW = { pr: null, tx: "", tech: "", date: null, time: null, pulses: [null, null, null], delivered: false, type: "", miss: false, action: "", alt: false, note: "", tele: false, freebie: "", phq: "", gad: "", measX: false, measVal: false };
 const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, time: 19 }; // 0-based in A:T
 const COST_FIRST = 12, WK_FIRST = 20, AV_FIRST = 29, AV_LAST = 48;
@@ -364,7 +367,7 @@ async function refresh() {
       /* sheet names are already known, so the Protocols, Clinic Schedule and Benefits reads ride along with this sync (names match case-insensitively, as getItem does) */
       const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
       const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET);
-      const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:S${BEN_LAST}`) : null;
+      const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:${colLetter(BEN_HDR.length - 1)}${BEN_LAST}`) : null;
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
       const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null;
       [prv, cs, bn, ss, sc, us].forEach(r => r && r.load("values")); await ctx.sync();
@@ -1286,7 +1289,7 @@ const chairFor = (p, r) => { const s = state.sess && [...state.sess.rows.values(
 /* Notes (S) hold the add-in's own entries (copay, freebie, NextGen tags, MT %, protocol renewal, a scheduled note) beside what
    staff type. Editing a note changes only the typed part; a scheduled note is one entry, "Scheduled note: ...", shown on its day. */
 const SCHED_RE = /^scheduled note:\s*/i;
-const ownEntry = x => !(TmsCore.copayOf(x) || SCHED_RE.test(x) || /^freebie (used|waived)$/i.test(x) || x === TELE_TAG || x === EXEMPT_TAG || x === UNCLASS_TAG || /\(NextGen\)$/.test(x) || /^mt %:/i.test(x) || /^protocol renewed/i.test(x));
+const ownEntry = x => !(TmsCore.copayOf(x) || TmsCore.consentOf(x) || SCHED_RE.test(x) || /^freebie (used|waived)$/i.test(x) || x === TELE_TAG || x === EXEMPT_TAG || x === UNCLASS_TAG || /\(NextGen\)$/.test(x) || /^mt %:/i.test(x) || /^protocol renewed/i.test(x));
 const noteParts = note => String(note || "").split("; ").filter(Boolean);
 const ownNote = note => noteParts(note).filter(ownEntry).join("; ");
 const schedNote = note => (noteParts(note).find(x => SCHED_RE.test(x)) || "").replace(SCHED_RE, "");
@@ -1343,7 +1346,7 @@ function ptToday(p, v) {
     : p2 === "done" ? (v.r.delivered ? `<button class="btn ghost sm" data-act="ptJump" ${K}>Edit pulses</button>` : "")
     : v.type === "F/U" ? `<button class="btn ghost sm" data-act="${v.r.measX ? "fumeas" : "fudone"}" ${K}>${v.r.measX ? "Enter PHQ-9 and GAD-7" : "Mark follow-up done"}</button>`
     : v.chair ? `<button class="btn ghost sm" data-act="start" ${K}>Start session</button>` : `<button class="btn ghost sm" data-act="move" ${K}>Choose a chair</button>`;
-  return `<div class="pvtoday"><span class="w">Today ${clock(v.time) || "no time"}</span><span>${esc(v.type === "F/U" ? "Follow-up" : `${typeName(v)}, ${sessNo(v)} of ${p.d.total}`)}</span><span class="muted">${esc(where(v))}</span><span class="grow">${esc(st)}</span>${go}<button class="btn mute sm" data-open="${esc(p.tab)}">On Today</button></div>${schedBand(v.r)}${ptCopayToday(p)}`;
+  return `<div class="pvtoday"><span class="w">Today ${clock(v.time) || "no time"}</span><span>${esc(v.type === "F/U" ? "Follow-up" : `${typeName(v)}, ${sessNo(v)} of ${p.d.total}`)}</span><span class="muted">${esc(where(v))}</span><span class="grow">${esc(st)}</span>${go}<button class="btn mute sm" data-open="${esc(p.tab)}">On Today</button></div>${schedBand(v.r)}${ptCopayToday(p)}${ptConsentToday(p)}`;
 }
 
 /* today's copay: the payment from column A on today's row, the answer from its Notes, and who answered. Answering here also
@@ -1361,6 +1364,44 @@ function ptCopayToday(p) {
   }
   const b = (k, l, dis) => `<button class="btn ghost sm" data-act="copayToday" data-t="${esc(p.tab)}" data-row="${r.row}" data-v="${k}" aria-pressed="${!!c && c.kind === k}"${dis ? " disabled" : ""}>${l}</button>`;
   return `<div class="copay line"><span>Copay today</span><span class="amt">${pay != null ? esc(money(pay)) : '<span class="flag">Not set</span>'}</span>${b("collected", "Collected", pay == null)}${b("not", "Not collected")}${by}</div>`;
+}
+/* LumaPay card on file and verbal consent to collect the copay at time of service: the technician asks during the session.
+   Per patient on the Benefits tab (T, U: Yes / No); per visit as the card-and-consent line in that visit's Notes, with who and when.
+   A previous-layout tab has no Benefits row, so its latest line stands in. */
+const benFlag = (p, k) => { const r = p.layout === 3 && state.ben && state.ben.rows.get(p.mrn), v = r ? r.v[colIndex(BEN_COLS[k])] : ""; return String(v ?? "").trim() === "" ? null : TmsCore.flagOn(v); };
+function cardConsent(p) {
+  const last = p.rows.filter(r => TmsCore.consentOf(r.note)).sort((a, b) => (b.date ?? 0) - (a.date ?? 0))[0], c = last && TmsCore.consentOf(last.note);
+  return { card: benFlag(p, "Card") ?? !!(c && c.card), ok: benFlag(p, "Consent") ?? !!(c && c.ok) };
+}
+const todayVisitRow = p => { const t = todaySerial(); return p.rows.find(x => x.date === t && !x.miss && !x.alt && x.type !== "F/U") || p.rows.find(x => x.date === t && !x.miss && !x.alt); };
+function ptConsentToday(p) {
+  const r = todayVisitRow(p); if (!r) return "";
+  const c = TmsCore.consentOf(r.note); if (!c && !p.d.owes) return "";
+  if (c && state.consentEdit !== `${p.tab}|${r.row}`) {
+    const m = (on, yes, no) => on ? `<span class="got">✓ ${yes}</span>` : `<span class="flag">${no}</span>`;
+    return `<div class="copay line"><span>Card and consent</span>${m(c.card, "LumaPay card on file", "No LumaPay card on file")}${m(c.ok, "Verbal copay consent", "No verbal copay consent")}${c.by ? `<span class="muted">${esc(c.by)}${c.at ? `, ${esc(c.at)}` : ""}</span>` : ""}<button class="btn mute sm" data-act="consentChange" data-t="${esc(p.tab)}" data-row="${r.row}">Change</button></div>`;
+  }
+  const f = c || cardConsent(p);
+  return `<div class="copay line"><span>Card and consent</span>${c ? "" : '<span class="chip amb">Not checked today</span>'}
+    <label class="check"><input type="checkbox" id="pvCard"${f.card ? " checked" : ""}> LumaPay card on file</label>
+    <label class="check"><input type="checkbox" id="pvOk"${f.ok ? " checked" : ""}> Patient gave verbal consent to collect the copay at time of service</label>
+    <button class="btn ghost sm" data-act="consentSave" data-t="${esc(p.tab)}" data-row="${r.row}">Save</button></div>`;
+}
+/* the visit's card-and-consent line plus the patient's Benefits flags (Yes / No), in one save */
+const withConsent = (note, card, ok, by) => TmsCore.withConsentLine(note, TmsCore.consentLine(card, ok, firstName(by), clock(nowMin())));
+async function saveCardFlags(p, card, ok) {
+  if (p.layout !== 3 || (benFlag(p, "Card") === card && benFlag(p, "Consent") === ok)) return;
+  await applyOps([{ tab: p.tab, a: "Card", v: [[card ? "Yes" : "No"]], quiet: true }, { tab: p.tab, a: "Consent", v: [[ok ? "Yes" : "No"]], quiet: true }], null, { what: "LumaPay card and copay consent", kind: "edit" });
+}
+async function saveConsent(tab, row, card, ok, by) {
+  const [p, r] = findPR(tab, row); if (!r) return false;
+  const who = by || state.techName || state.user; if (!who) { toast("Pick your name first (Switch user).", true); return false; }
+  const note = withConsent(r.note, card, ok, who);
+  try { await writeCells(tab, [[`S${row}`, note]], at(r)); patchRow(tab, row, { note }); await saveCardFlags(p, card, ok); return true; } catch (e) { fail(e); return false; }
+}
+async function consentToday(tab, row) {
+  const card = !!($("pvCard") || {}).checked, ok = !!($("pvOk") || {}).checked, by = (($("pvBy") || {}).value || "").trim();
+  if (await saveConsent(tab, row, card, ok, by)) { state.consentEdit = null; toast("Card and consent saved to Notes."); renderPt(); }
 }
 /* a note on a visit: the typed part of Notes (past or today), or a scheduled note for a later visit, shown on its day */
 function mPtNote(tab, row, kind) {
@@ -1798,10 +1839,14 @@ function mEnd(v) {
   const p = v.p, nx = p.d.sched.find(r => r.row !== v.row && r.date > v.date) || p.d.sched.find(r => r.row !== v.row), dest = measDest(p, v.r), dr = draftOf(p, v.r);
   /* the copay asked here is the patient view's copay line too: an answer there is already chosen (OOPM met: not asked) */
   const cl = TmsCore.copayOf(v.r.note), pay = cl && cl.kind === "oopm" || !p.d.owes ? 0 : payOf(p, v.r);
-  state.mctx = { k: v.key, pay: pay > 0 ? pay : null };
+  /* card and consent: asked whenever copays are still collected, ticked from today's answer or the patient's last one */
+  const cc = TmsCore.consentOf(v.r.note), askCard = p.d.owes || !!cc, cf = cc || cardConsent(p);
+  state.mctx = { k: v.key, pay: pay > 0 ? pay : null, askCard };
   showModal(`<h2 id="mtitle">Complete ${esc(v.tab)}'s session</h2><p class="sub">Treatment ${sessNo(v)} of ${p.d.total}. Protocol: ${esc(protoText(p))}. Pulses are filled from the protocol; change them if delivery differed.</p>
     ${pulseFields(p)}${fld("Treating technician", techInput(v.r.tech || state.techName || lastTech(p)))}
     ${pay > 0 ? `<h3>Copay today: ${esc(money(pay))}</h3><div class="opts"><label class="opt"><input type="radio" name="copay" value="collected"${cl && cl.kind === "collected" ? " checked" : ""}><span>Collected</span></label><label class="opt"><input type="radio" name="copay" value="not"${cl && cl.kind === "not" ? " checked" : ""}><span>Not collected</span></label></div>` : ""}
+    ${askCard ? `<h3>Card and consent</h3><label class="check"><input type="checkbox" id="mCard"${cf.card ? " checked" : ""}> LumaPay card on file</label>
+      <label class="check"><input type="checkbox" id="mOk"${cf.ok ? " checked" : ""}> Patient gave verbal consent to collect the copay at time of service</label>` : ""}
     <h3>Side effects</h3>
     <div class="qrow"><span>Any pain or discomfort during treatment?</span><select id="mPain"><option${dr.a.pain === "Yes" ? "" : " selected"}>No</option><option${dr.a.pain === "Yes" ? " selected" : ""}>Yes</option></select><input id="mPainD" class="sp" placeholder="What and where (needed if yes)" value="${esc(dr.d.pain || "")}"${dr.a.pain === "Yes" ? "" : " hidden"}></div>
     <div class="qrow"><span>Involuntary muscle movements?</span><select id="mMus">${["Yes (normal)", "No"].map(o => `<option${dr.a.mus === o ? " selected" : ""}>${o}</option>`).join("")}</select></div>
@@ -1825,8 +1870,12 @@ async function doEnd() {
     meas = mv ? { move: v.p.rows.find(x => x.row === +mval("mMeasTo")) } : { P: +P, Q: +Q };
   }
   const dr = draftOf(v.p, v.r); dr.a.pain = pain; dr.d.pain = painD; dr.a.mus = mval("mMus"); if (!dr.initials) dr.initials = state.initials || initialsOf(tech);
+  const askCard = state.mctx.askCard, card = askCard && !!($("mCard") || {}).checked, ok = askCard && !!($("mOk") || {}).checked;
   closeModal();
-  if (!await markPulses(v.tab, v.row, { vals, tech, note: cp ? withCopay(v.r.note, copayLine(cp, pay, tech)) : null })) return;
+  let note = cp ? withCopay(v.r.note, copayLine(cp, pay, tech)) : null;
+  if (askCard) note = withConsent(note ?? v.r.note, card, ok, tech);
+  if (!await markPulses(v.tab, v.row, { vals, tech, note })) return;
+  if (askCard) try { await saveCardFlags(v.p, card, ok); } catch (e) { fail(e); }
   if (meas && meas.move) await moveMeasures(v.tab, v.row, meas.move.row); else if (meas) await saveMeasures(v.tab, v.row, meas);
   if (!await sessWrite(v, { end: nowMin(), ...(v.start == null ? { start: v.checkin ?? nowMin() } : {}) }, `Treatment ${sessNo(v)} saved to ${v.tab}.`)) return;
   const nv = findVisit(v.key), p = state.patients.find(x => x.tab === v.tab);
@@ -2292,7 +2341,7 @@ function readBen(vals) {
     const k = normMrn(raw), row = BEN_FIRST + i; next = row + 1;
     if (k && !rows.has(k)) rows.set(k, { row, v: v.slice() });
   });
-  state.ben = { rows, next, has: !!vals };
+  state.ben = { rows, next, has: !!vals, hdr: vals && vals[0] ? vals[0].slice() : [] };
 }
 async function benSheet(ctx) {
   let ws = ctx.workbook.worksheets.getItemOrNullObject(BEN_SHEET); await ctx.sync();
@@ -2314,6 +2363,14 @@ async function benSheet(ctx) {
 async function writeBen(ctx, entries) {
   if (!entries.length) return;
   const ws = await benSheet(ctx), B = state.ben, touched = new Map();
+  /* a workbook from before the card and consent columns gets their headers the first time one is written */
+  for (const k of new Set(entries.map(e => e.key).filter(k => BEN_FLAGS.includes(k)))) {
+    const i = colIndex(BEN_COLS[k]); if (!B.hdr) B.hdr = [];
+    if (String(B.hdr[i] ?? "").trim() !== BEN_HDR[i]) {
+      const h = ws.getRange(`${BEN_COLS[k]}1`); h.values = [[BEN_HDR[i]]];
+      h.format.font.bold = true; h.format.wrapText = true; h.format.fill.color = "#1c2a33"; h.format.font.color = "#ffffff"; B.hdr[i] = BEN_HDR[i];
+    }
+  }
   for (const e of entries) {
     if (!e.mrn) continue;
     let r = B.rows.get(e.mrn);
@@ -2392,7 +2449,7 @@ const sameGrid = (a, b) => JSON.stringify((a || []).map(r => r.map(normCell))) =
 function describeCells(tab, addrs) {
   const p = state.patients.find(x => x.tab === tab), end = (p && p.end) || LOG_LAST, byRow = new Map(), other = [];
   for (const a of addrs) {
-    if (isBenKey(a)) { other.push("benefits"); continue; }
+    if (isBenKey(a)) { other.push(BEN_FLAGS.includes(a) ? "card and copay consent" : "benefits"); continue; }
     const m = String(a).match(/^([A-Z]+)(\d+)/); if (!m) continue;
     const col = m[1], row = +m[2];
     if (row >= LOG_FIRST && row <= end && LOG_WORDS[col]) { if (!byRow.has(row)) byRow.set(row, []); byRow.get(row).push(LOG_WORDS[col]); continue; }
@@ -4101,6 +4158,7 @@ Office.onReady(info => {
       copayToday: () => copayToday(t, row, v), copayMark: () => copayMark(t, v),
       pvProtoSave: () => { const name = ($("pvProto") || {}).value, site = ($("pvSite") || {}).value; if (!name) return toast("Select the protocol to confirm.", true); saveProtocol(t, [{ name, site: TmsCore.SITE_CELL[site] || "Left" }]); },
       pastpulses: () => mPastPulses(t, row), editPulses: () => mEditPulses(t, row), doEditPulses, copayChange: () => { state.copayEdit = `${t}|${row}`; renderPt(); },
+      consentSave: () => consentToday(t, row), consentChange: () => { state.consentEdit = `${t}|${row}`; renderPt(); },
       finishYes: () => { const { t: tab, k: key } = m; closeModal(); setStatus(tab, "Complete").then(() => { const nv = key && findVisit(key); if (nv && !state.copied.has(nv.key)) mNote(nv); }); },
       finishNo: () => { const nv = m.k && findVisit(m.k); closeModal(); if (nv && !state.copied.has(nv.key)) mNote(nv); }, pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),
       /* Chairs */
