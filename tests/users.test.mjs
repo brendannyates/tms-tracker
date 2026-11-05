@@ -66,8 +66,12 @@ test("dayKey: local date", () => {
   assert.equal(T.dayKey(new Date(2026, 0, 5, 23, 59)), "2026-01-05");
 });
 
-test("adminOk: 0582 unlocks, nothing else", async () => {
-  assert.equal(await T.adminOk("0582"), true);
-  assert.equal(await T.adminOk(" 0582 "), true);
-  for (const c of ["", "582", "05820", "1234", "0583", "abcd"]) assert.equal(await T.adminOk(c), false, c);
+/* the code itself isn't in this public repo: set TMS_ADMIN_CODE in the terminal to check it unlocks */
+const CODE = process.env.TMS_ADMIN_CODE || "";
+test("adminOk: the admin code unlocks", { skip: !CODE && "set TMS_ADMIN_CODE to check the right code" }, async () => {
+  assert.equal(await T.adminOk(CODE), true);
+  assert.equal(await T.adminOk(` ${CODE} `), true);
+});
+test("adminOk: wrong codes don't", async () => {
+  for (const c of ["", "12", "12345", "1234", "abcd", "0000", "9999"]) assert.equal(await T.adminOk(c), false, c);
 });
