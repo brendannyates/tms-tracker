@@ -75,3 +75,20 @@ test("adminOk: the admin code unlocks", { skip: !CODE && "set TMS_ADMIN_CODE to 
 test("adminOk: wrong codes don't", async () => {
   for (const c of ["", "12", "12345", "1234", "abcd", "0000", "9999"]) assert.equal(await T.adminOk(c), false, c);
 });
+
+test("parseUsers: each person's Settings (JSON) is read, anything unreadable counts as none", () => {
+  const u = T.parseUsers([T.USER_HDR, ["Alex P.", "", "", '{"autoFull":true}'], ["Sam K.", "", "", "not json"], ["Bea C.", "", "", ""], ["Zed A.", "", "", "[1]"]]);
+  assert.deepEqual(u.map(x => x.set), [{ autoFull: true }, {}, {}, {}]);
+});
+
+test("full screen on open: each person's choice; the workbook opens the add-in while anyone has it on", () => {
+  const users = [{ name: "Sam K.", set: { autoFull: true } }, { name: "Ana B.", set: {} }, { name: "Lee C.", set: { autoFull: "yes" } }];
+  assert.equal(T.AUTO_SHOW, "Office.AutoShowTaskpaneWithDocument");
+  assert.equal(T.autoFullOf(users[0]), true); assert.equal(T.autoFullOf(users[1]), false); assert.equal(T.autoFullOf(users[2]), false); assert.equal(T.autoFullOf(null), false);
+  assert.equal(T.autoAny(users), true);
+  assert.equal(T.autoAny(users, "sam k.", false), false);   // Sam turns it off: nobody else has it
+  assert.equal(T.autoAny(users, "Ana B.", true), true);
+  assert.equal(T.autoAny([], "New P.", true), true);         // not on the list yet
+  assert.equal(T.autoAny([], "New P.", false), false);
+  assert.equal(T.autoAny([]), false);
+});

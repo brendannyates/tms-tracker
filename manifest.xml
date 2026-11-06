@@ -12,7 +12,7 @@
   xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
   xsi:type="TaskPaneApp">
   <Id>afbdb1d9-a40c-42cb-ac3f-80bba9a06bdf</Id>
-  <Version>1.2.0.2</Version>
+  <Version>1.2.0.3</Version>
   <ProviderName>Radial</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="TMS Tracker"/>
@@ -61,7 +61,7 @@
                     <bt:Image size="80" resid="Icon.80"/>
                   </Icon>
                   <Action xsi:type="ShowTaskpane">
-                    <TaskpaneId>TMSTrackerPane</TaskpaneId>
+                    <TaskpaneId>Office.AutoShowTaskpaneWithDocument</TaskpaneId>
                     <SourceLocation resid="Taskpane.Url"/>
                   </Action>
                 </Control>
