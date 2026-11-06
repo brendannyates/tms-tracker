@@ -397,3 +397,27 @@ test("Benefits flag cells: Yes, x, TRUE and ticks are on; blank and No are off",
   for (const v of ["Yes", "yes", "Y", "x", true, "TRUE", "✓"]) assert.equal(T.flagOn(v), true, String(v));
   for (const v of ["", null, undefined, "No", false, "n"]) assert.equal(T.flagOn(v), false, String(v));
 });
+
+test("noTabRole: a F/U at another clinic with no MT here makes a guest from that clinic, not a new tracker", () => {
+  const b = (type, here = true, where = "", status = "Scheduled") => ({ type, here, where: here ? "" : where, date: 10, status });
+  const tx = n => Array.from({ length: n }, () => b("Daily"));
+  const g = T.noTabRole({ role: "home" }, [...tx(20), b("F/U", false, "Post")], 10);
+  assert.deepEqual([g.role, g.home, g.fuAway], ["guest", "Post", true]);                         // 20 here + F/U at Post: Post's guest, no tracker flag
+  assert.equal(T.noTabRole({ role: "home" }, [...tx(5), b("F/U", false, "Post")], 10).home, "Post");   // under 16: home named, not unknown
+  assert.equal(T.noTabRole({ role: "home" }, [b("MT"), ...tx(5), b("F/U", false, "Post")], 10).role, "home");   // MT here: still this clinic's
+  assert.equal(T.noTabRole({ role: "home" }, [...tx(20), b("F/U", false, "Post", "Cancelled")], 10).role, "home");   // a cancelled F/U doesn't count
+  assert.equal(T.noTabRole({ role: "home" }, [...tx(20), b("F/U", true)], 10).role, "home");     // F/U here: unchanged
+  assert.equal(T.noTabRole({ role: "home" }, [...tx(20), b("F/U", null)], 10).role, "home");     // report doesn't name the clinic: unchanged
+  assert.equal(T.noTabRole({ role: "home" }, [b("F/U", false, "Post")], 10).role, "home");       // F/U only, nothing here: unchanged
+});
+
+test("rankTabs: same LASFIR first, then the same last or first three letters, filtered by what's typed", () => {
+  const tabs = ["ZEDKIM", "SMIJAN 2", "SMIBOB", "SMYJAN", "ALVMAR", "DOEJAN", "SMIJAM"].map(name => ({ name, code: name.split(" ")[0] }));
+  const r = T.rankTabs("SMIJAN", "", tabs);
+  assert.equal(r[0].name, "SMIJAN 2");
+  assert.deepEqual(r.slice(1, 3).map(t => t.name), ["SMIJAM", "SMIBOB"]);                    // same last three, fewest letters apart first
+  assert.ok(r.find(t => t.name === "DOEJAN").near && r.find(t => t.name === "SMYJAN").near);
+  assert.equal(r.find(t => t.name === "ZEDKIM").near, false);
+  assert.deepEqual(T.rankTabs("SMIJAN", "alv", tabs).map(t => t.name), ["ALVMAR"]);            // typing filters by name
+  assert.equal(T.rankTabs("", "", tabs).length, 7);
+});

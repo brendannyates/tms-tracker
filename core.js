@@ -350,12 +350,41 @@
     return ok.some(a => a.type === "MT" || a.type === "MTR") || fut.filter(a => a.type === "Daily" || a.type === "Taper").length >= ASK_MIN;
   }
   /* a patient with no tab here and no tracker due (needsTracker) but treatments booked here is a guest: tracked at their home clinic,
-     whose tab link the Guest Patients banner asks for. F/U alone stays as it was. g: clinicRole's answer, or { role: "home" }. */
+     whose tab link Today asks for. F/U alone stays as it was. A F/U at another clinic (Post) with no MT or MT redo here makes them
+     that clinic's guest, however many treatments are booked here: no "needs a tracker" flag, and their home is named.
+     g: clinicRole's answer, or { role: "home" }. */
   function noTabRole(g, visits, from) {
     const tx = visits.filter(v => v.here !== false && (v.type === "Daily" || v.type === "Taper"));
-    if (g.role !== "home" || !tx.length || needsTracker(visits, from)) return g;
-    const top = Object.entries(g.by || {}).sort((a, b) => b[1] - a[1])[0];
-    return { ...g, role: "guest", here: tx.length, daily: tx.length, home: top ? top[0] : "", homeCount: top ? top[1] : 0, by: g.by || {} };
+    if (g.role !== "home" || !tx.length) return g;
+    const live = visits.filter(v => v.status !== "No-show" && v.status !== "Cancelled");
+    const mtHere = live.some(v => (v.type === "MT" || v.type === "MTR") && v.here !== false), fu = {};
+    live.filter(v => v.type === "F/U" && v.here === false && v.where).forEach(v => { fu[v.where] = (fu[v.where] || 0) + 1; });
+    const fuTop = Object.entries(fu).sort((a, b) => b[1] - a[1])[0];
+    if (!(fuTop && !mtHere) && needsTracker(visits, from)) return g;
+    const top = fuTop && !mtHere ? [fuTop[0], (g.by || {})[fuTop[0]] || 0] : Object.entries(g.by || {}).sort((a, b) => b[1] - a[1])[0];
+    return { ...g, role: "guest", here: tx.length, daily: tx.length, home: top ? top[0] : "", homeCount: top ? top[1] : 0, by: g.by || {}, fuAway: !!(fuTop && !mtHere) };
+  }
+  /* "Their tab is in this workbook": tabs ranked by how close their name is to the patient's LASFIR (same code, then the same last or
+     first three letters, then the fewest letters apart), filtered by what was typed. tabs: { name, code, ... }. Returns the tabs with
+     near: true for the close ones. */
+  function lev(a, b) {
+    const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) { let p = d[0]; d[0] = i; for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, p + (a[i - 1] === b[j - 1] ? 0 : 1)); p = t; } }
+    return d[b.length];
+  }
+  function rankTabs(code, query, tabs) {
+    const c = String(code || "").toUpperCase(), q = String(query || "").trim().toUpperCase();
+    const score = t => {
+      const k = String(t.code || t.name.split(" ")[0] || "").toUpperCase();
+      if (!c) return 10;
+      if (k === c) return 0;
+      const n = lev(k, c);
+      if (k.slice(0, 3) === c.slice(0, 3)) return 1 + n / 10;
+      if (k.slice(3, 6) === c.slice(3, 6)) return 2 + n / 10;
+      return n <= 2 ? 3 + n : 10 + n;
+    };
+    return tabs.filter(t => !q || t.name.toUpperCase().includes(q)).map(t => ({ ...t, score: score(t) }))
+      .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name)).map(t => ({ ...t, near: t.score < 10 }));
   }
   /* what a tracker cell holds, for the rebuild's side-by-side check: "A6" -> { label: "DOB", date: true }; a log cell names its
      visit row ("E12" -> "Date, log row 3"). Unknown cells are labeled by address. */
@@ -404,10 +433,18 @@
     const out = [], seen = new Set();
     (values || []).slice(1).forEach((r, i) => {
       const name = String((r || [])[0] ?? "").trim().replace(/\s+/g, " "), k = userKey(name);
-      if (!name || seen.has(k)) return; seen.add(k); out.push({ name, row: i + 2, added: r[1] ?? "", updated: r[2] ?? "" });
+      if (!name || seen.has(k)) return; seen.add(k); out.push({ name, row: i + 2, added: r[1] ?? "", updated: r[2] ?? "", set: userSet(r[3]) });
     });
     return out;
   }
+  /* a person's own settings: the Settings (JSON) cell, anything unreadable counts as none */
+  function userSet(json) { try { const o = JSON.parse(String(json ?? "").trim() || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch { return {}; } }
+  /* "Open in full screen whenever I open this workbook": each person's own choice (autoFull in their settings). Excel can only open
+     the add-in with the workbook for everyone (document setting Office.AutoShowTaskpaneWithDocument), so it's on while anyone has
+     theirs on. users = parseUsers(); name/on = a change not saved yet. */
+  const AUTO_SHOW = "Office.AutoShowTaskpaneWithDocument";
+  const autoFullOf = u => !!(u && u.set && u.set.autoFull === true);
+  const autoAny = (users, name, on) => (users || []).some(u => name != null && userKey(u.name) === userKey(name) ? !!on : autoFullOf(u)) || (name != null && !!on);
   /* a typed name for the list: letters, spaces, apostrophes, periods and hyphens, 2 to 40 characters, tidied */
   function cleanUserName(s) {
     const n = String(s || "").trim().replace(/\s+/g, " ");
@@ -442,6 +479,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, cellLabel,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
     copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });
