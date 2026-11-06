@@ -377,6 +377,27 @@ test("cellLabel: names a tracker cell for the rebuild's side-by-side check", () 
   assert.equal(T.cellLabel("Z99").label, "Z99");
 });
 
+test("card and consent line: written, read back, replaced, and kept apart from the copay line", () => {
+  const yes = T.consentLine(true, true, "Pat", "9:42 AM");
+  assert.equal(yes, "LumaPay card on file, verbal copay consent, checked by Pat 9:42 AM");
+  assert.deepEqual(T.consentOf(`Tele; Copay $20.00 collected by Pat 9:40 AM; ${yes}`), { line: yes, card: true, ok: true, by: "Pat", at: "9:42 AM" });
+  const no = T.consentLine(false, false, "Sam", "1:05 PM");
+  assert.equal(no, "No LumaPay card on file, no verbal copay consent, checked by Sam 1:05 PM");
+  const c = T.consentOf(no); assert.equal(c.card, false); assert.equal(c.ok, false); assert.equal(c.by, "Sam");
+  const half = T.consentOf(T.consentLine(true, false, "Sam", "1:05 PM")); assert.equal(half.card, true); assert.equal(half.ok, false);
+  assert.equal(T.consentOf("Copay $20.00 collected by Pat 9:40 AM"), null);
+  assert.equal(T.copayOf(yes), null);
+  const n = T.withConsentLine(`Copay $20.00 collected by Pat 9:40 AM; ${no}`, yes);
+  assert.equal(n, `Copay $20.00 collected by Pat 9:40 AM; ${yes}`);
+  assert.equal(T.withCopayLine(n, "Copay $20.00 not collected by Pat 9:50 AM"), `${yes}; Copay $20.00 not collected by Pat 9:50 AM`);
+  assert.equal(T.withConsentLine(yes, ""), "");
+});
+
+test("Benefits flag cells: Yes, x, TRUE and ticks are on; blank and No are off", () => {
+  for (const v of ["Yes", "yes", "Y", "x", true, "TRUE", "✓"]) assert.equal(T.flagOn(v), true, String(v));
+  for (const v of ["", null, undefined, "No", false, "n"]) assert.equal(T.flagOn(v), false, String(v));
+});
+
 test("noTabRole: a F/U at another clinic with no MT here makes a guest from that clinic, not a new tracker", () => {
   const b = (type, here = true, where = "", status = "Scheduled") => ({ type, here, where: here ? "" : where, date: 10, status });
   const tx = n => Array.from({ length: n }, () => b("Daily"));

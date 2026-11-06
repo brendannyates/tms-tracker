@@ -129,6 +129,19 @@
     return { line: s, kind, amt, by: (s.match(/\bby ([A-Za-z][\w'-]*)/) || [])[1] || "", at: (s.match(/\b(\d{1,2}:\d{2} ?[AP]M)\b/i) || [])[1] || "", confirmed: /confirmed/i.test(s) };
   }
   const withCopayLine = (note, line) => [...String(note ?? "").split("; ").filter(x => x && !COPAY_RE.test(x.trim())), ...(line ? [line] : [])].join("; ");
+  /* card and consent: the one line a technician leaves on a visit's Notes after asking during the session.
+     "LumaPay card on file, verbal copay consent, checked by Priya 9:42 AM"; either half can be "No LumaPay card on file" /
+     "no verbal copay consent". A later answer replaces the line. */
+  const CONSENT_RE = /^(no )?lumapay card\b/i;
+  const consentLine = (card, ok, by, at) => `${card ? "LumaPay card on file" : "No LumaPay card on file"}, ${ok ? "verbal copay consent" : "no verbal copay consent"}${by ? `, checked by ${by}${at ? ` ${at}` : ""}` : ""}`;
+  function consentOf(note) {
+    const s = String(note ?? "").split("; ").map(x => x.trim()).find(x => CONSENT_RE.test(x));
+    if (!s) return null;
+    return { line: s, card: !/^no /i.test(s), ok: !/\bno verbal copay consent\b/i.test(s), by: (s.match(/\bchecked by ([A-Za-z][\w'-]*)/) || [])[1] || "", at: (s.match(/\b(\d{1,2}:\d{2} ?[AP]M)\b/i) || [])[1] || "" };
+  }
+  const withConsentLine = (note, line) => [...String(note ?? "").split("; ").filter(x => x && !CONSENT_RE.test(x.trim())), ...(line ? [line] : [])].join("; ");
+  /* a Benefits-tab flag cell: Yes (or x, TRUE, a tick) is ticked; blank or a missing column is not */
+  const flagOn = v => v === true || /^(y|yes|x|true|✓|✔)$/i.test(String(v ?? "").trim());
   const isTreatment = r => !r.miss && !r.alt && ["MT", "Daily", "Taper", "MTR"].includes(r.type);   // TMS Follow Ups (F/U) never count
   /* delivered treatment visits before today, with a payment due (pay(r) > 0) and no copay line yet */
   const copaysToConfirm = (rows, pay, today) => rows.filter(r => isTreatment(r) && r.delivered && r.date != null && r.date < today && !copayOf(r.note) && (pay(r) ?? 0) > 0).sort((a, b) => a.date - b.date);
@@ -467,5 +480,5 @@
   }
 
   return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
-    copayOf, withCopayLine, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
+    copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });
