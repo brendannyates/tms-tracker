@@ -719,9 +719,6 @@ function renderBanners() {
   const ak = state.asks || []; $("askCount").textContent = ak.length;
   $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, ${g.daily} daily treatments booked here${g.next != null ? `, next ${fmtMon(g.next)}` : ""}.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
   show("askBanner", ak.length > 0);
-  const gl = (state.guests || []).filter(g => !g.link); $("guestCount").textContent = gl.length;
-  $("guestList").innerHTML = gl.map(g => `<div class="nrow"><span><b>${esc(g.code || "Guest")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. ${g.home ? `Home: ${esc(g.home)} (${g.homeCount} chair visit${g.homeCount === 1 ? "" : "s"})` : "No MT here and under 16 treatments, home clinic not on the list"}, ${g.here} here${g.next != null ? `, next here ${fmtMon(g.next)}` : ""}.</span><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(g.home || "their home clinic")}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" data-v="${esc(g.mrn)}">Save link</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button></div>`).join("");
-  show("guestBanner", gl.length > 0);
   fillTplPick();
   if ($("cfgLoc")) $("cfgLoc").placeholder = TmsCore.clinicFromName(state.wbName) ? `From the workbook name: ${TmsCore.clinicFromName(state.wbName)}` : "Type the clinic, for example Castro";
 }
@@ -888,6 +885,20 @@ function floor() {
       visits.push(v);
     }
   }
+  /* guests booked on this clinic's chairs today, from the saved list: on the board like anyone else (start, move, complete), their
+     times on the Sessions sheet under "LASFIR (guest)". Pulses go on their home clinic's tab, so nothing is written to a tab here. */
+  const gby = new Map(); guestVisits(t).forEach(x => gby.set(x.mrn, [...(gby.get(x.mrn) || []), x]));
+  for (const xs of gby.values()) {
+    const g = xs[0].g, tab = guestTab(g), p = { tab, guest: true, code: g.code, mrnRaw: String(g.raw), home: g.home, provider: "", d: { total: 0, txDone: 0 }, rows: [] };
+    for (const { r: x, visit } of TmsCore.visitNames(xs)) {
+      const key = TmsCore.sessKey(t, tab, visit), s = (state.sess && state.sess.rows.get(key)) || null, rc = on.has(x.chair) || cl.some(c => c.id === x.chair) ? x.chair : single, ms = TmsCore.moveState(s, rc, listAt);
+      const v = { key, date: t, visit, guest: g, p, r: { note: "", type: x.type, time: x.time }, tab, row: null, type: x.type, time: x.time, tele: false, alt: false, chairVisit: true, s, rc,
+        chair: ms.chair, moved: ms.moved, settled: ms.settled, from: ms.from, offChair: "", miss: x.status === "No-show", done: !!(s && s.end != null),
+        checkin: s ? s.checkin : null, start: s ? s.start : null, end: s ? s.end : null, len: DEFAULT_LEN, protoLen: null, mtDone: true };
+      if (v.chair && !on.has(v.chair) && ["booked", "waiting"].includes(TmsCore.phase(v))) { v.offChair = v.chair; v.chair = ""; v.moved = false; }
+      visits.push(v);
+    }
+  }
   visits.sort((a, b) => (a.time ?? 1e4) - (b.time ?? 1e4) || a.tab.localeCompare(b.tab));
   return { t, now, chairs: cl, avail: cl.filter(c => !c.off), visits };
 }
@@ -905,13 +916,14 @@ function courseNeeds(p, fl) {
     mtToday: mt.length > 0, schedGiven: p.ben.lastSched != null && mt.length > 0 && p.ben.lastSched >= fl.t });
 }
 const sessNo = v => typeof v.r.tx === "number" ? v.r.tx : v.p.d.txDone + (v.done ? 0 : 1);
+const courseLine = v => v.guest ? `${typeName(v)}, guest from ${guestHome(v.guest)}` : `${typeName(v)}, ${sessNo(v)} of ${v.p.d.total}`;
 const typeName = v => ({ Daily: "Daily", Taper: "Taper", MT: "MT (first session)", MTR: "MT redo", "F/U": "Follow-up" })[v.type] || v.type;
 /* guests (and patients offered a tracker): no tab here, so their chair bookings come from the saved list. They show on Today and
-   Schedule for the chair's sake; pulses, technician and measures go on their home clinic's tab, through the link. */
+   Schedule like anyone else; pulses, technician and measures go on their home clinic's tab, through the link Today asks for. */
 const guestOf = mrn => [...(state.asks || []), ...(state.guests || [])].find(g => g.mrn === mrn);
 const guestVisits = day => ((state.lx && state.lx.gv) || []).filter(x => x.date === day).map(x => ({ ...x, g: guestOf(x.mrn) })).filter(x => x.g).sort((a, b) => (a.time ?? 1e4) - (b.time ?? 1e4));
-const guestLink = g => g.link ? `<a class="btn ghost sm" href="${esc(g.link)}" target="_blank" rel="noopener">Open their tab</a>` : '<button class="btn ghost sm" data-act="guests">Add their link</button>';
-const guestRowToday = x => `<div class="row"><div class="rowmain static"><span class="p">${esc(x.code || "Guest")}</span><span class="w">${clock(x.time) || "–"}</span><span class="muted">MRN: ${esc(String(x.g.raw).replace(/\D/g, "").slice(-4))}</span><span class="f"><span class="muted">Guest from ${esc(x.g.home)}, ${esc(chairLbl(x.chair))}: pulses go on their ${esc(x.g.home)} tab</span></span></div>${guestLink(x.g)}</div>`;
+const guestTab = g => `${g.code || `MRN ${String(g.raw).replace(/\D/g, "").slice(-4)}`} (guest)`;
+const guestHome = g => g.home || "their home clinic";
 /* Today names a patient by LASFIR with the MRN's last four beside it, in grey */
 const mrnTag = p => p.mrnRaw ? `MRN: ${String(p.mrnRaw).replace(/\D/g, "").slice(-4) || p.mrnRaw.slice(-4)}` : "No MRN";
 const where = v => v.alt ? "Other clinic" : v.type === "F/U" ? (v.tele ? "Telehealth" : v.p.provider || "Provider") : v.chair ? chairLbl(v.chair) : "";
@@ -984,8 +996,9 @@ function rowFlag(v, fl) {
   if (v.chairVisit && !v.chair) return '<span class="flag">No chair yet</span>';
   if (ph(v) === "booked" && v.time != null && v.time + 5 < fl.now && !v.tele) return `<span class="flag">${v.type === "F/U" ? "Not seen" : "Not started"}, ${fl.now - v.time} min</span>`;
   if (v.moved) return '<span class="flag">Moved here, not yet in NextGen</span>';
+  if (v.guest) return v.guest.link ? `<span class="muted">${esc(typeName(v))}, guest from ${esc(guestHome(v.guest))}</span>` : `<span class="flag">Guest from ${esc(guestHome(v.guest))}: needs their tracker link</span>`;
   const n = TmsCore.loud(courseNeeds(v.p, fl))[0];
-  return n ? `<span class="${n.bad ? "bad" : "flag"}">${esc(n.t)}</span>` : `<span class="muted">${v.type === "F/U" ? "Follow-up" : `${typeName(v)}, ${sessNo(v)} of ${v.p.d.total}`}</span>`;
+  return n ? `<span class="${n.bad ? "bad" : "flag"}">${esc(n.t)}</span>` : `<span class="muted">${v.type === "F/U" ? "Follow-up" : courseLine(v)}</span>`;
 }
 function rowAction(v) {
   if (v.alt) return "";
@@ -1011,15 +1024,15 @@ function viewToday(fl) {
     const board = states.map(({ c, s }) => {
       const running = s.state === "track" || s.state === "soon", sel = s.v ? state.sel && state.sel.k === s.v.key : state.sel && state.sel.chair === c.id;
       const bar = running ? `<span class="sbar"><i style="width:${(Math.min(1, Math.max(0, (fl.now - s.v.start) / s.v.len)) * 100).toFixed(1)}%"></i></span>` : '<span class="ph"></span>';
-      const who = s.v ? `<b>${esc(s.v.tab)}</b><small>${running ? `${typeName(s.v)}, ${sessNo(s.v)} of ${s.v.p.d.total}` : `In the lobby, booked ${clock(s.v.time) || "no time"}`}</small>`
+      const who = s.v ? `<b>${esc(s.v.tab)}</b><small>${running ? courseLine(s.v) : `In the lobby, booked ${clock(s.v.time) || "no time"}`}</small>`
         : `<b>Open</b><small>${s.next ? `${esc(s.next.tab)} at ${clock(s.next.time) || "no time"}${s.next.time != null && s.next.time < fl.now ? ", not started" : ""}` : "Nothing else booked today"}</small>`;
       const st = TmsCore.chairStatus(s), aria = `${c.label}, ${s.v ? `${s.v.tab}, ${st.replace(/\bmin\b/, "minutes")}` : `open${s.next ? `, ${s.next.tab} at ${clock(s.next.time)}` : ""}`}`;
       return `<button class="crw" ${s.v ? `data-k="${esc(s.v.key)}"` : `data-chair="${esc(c.id)}"`} data-state="${s.state}" aria-pressed="${!!sel}" aria-label="${esc(aria)}">${lantern(running)}<span><b>${esc(c.label)}</b><small class="coil">${esc(c.coil || c.device)}</small></span><span class="who${s.v ? "" : " open"}">${who}</span>${bar}<span class="st">${st}</span></button>`;
     }).join("") || '<p class="empty">Every chair is marked unavailable. Mark one available on Chairs.</p>';
     const rows = rest.map(v => `<div class="row"><button class="rowmain" data-k="${esc(v.key)}" aria-pressed="${!!(state.sel && state.sel.k === v.key)}"><span class="p">${esc(v.tab)}</span><span class="w">${clock(v.time) || "–"}</span><span class="muted">${esc(mrnTag(v.p))}</span><span class="f">${rowFlag(v, fl)}</span></button>${rowAction(v)}</div>`).join("");
-    const gs = guestVisits(fl.t).filter(x => x.time == null || x.time >= fl.now - 30), grows = gs.map(guestRowToday).join(""), nleft = rest.length + gs.length;
+    const nleft = rest.length;
     left = `<div class="stack"><div class="card board" role="group" aria-label="Chairs">${board}</div>
-      <div class="card list"><div class="h"><h2>Still to come</h2><span>${nleft ? `${nleft} left today` : ""}</span></div>${rows + grows || '<p class="empty">Nobody else is booked today.</p>'}</div>
+      <div class="card list"><div class="h"><h2>Still to come</h2><span>${nleft ? `${nleft} left today` : ""}</span></div>${rows || '<p class="empty">Nobody else is booked today.</p>'}</div>
       ${listCheckCard(fl.t)}${varianceCard(fl.t)}</div>`;
   } else {
     const c = fl.avail.find(x => x.id === mode), s = TmsCore.chairState(c.id, fl.visits, fl.now), vs = fl.visits.filter(v => v.chairVisit && v.chair === c.id);
@@ -1028,7 +1041,7 @@ function viewToday(fl) {
       const p2 = ph(v), now = s.v && s.v.key === v.key, past = p2 === "done" || p2 === "missed";
       const icon = p2 === "done" ? '<span class="tick">✓</span>' : p2 === "missed" ? '<span class="xmark">✕</span>' : now ? lantern(p2 === "running") : '<span class="ring"></span>';
       const st = p2 === "done" ? "Done" : p2 === "missed" ? (OUTCOMES.find(k => v.r.note.includes(k)) || "Missed") : now ? TmsCore.chairStatus(s) : "";
-      return `<button class="drow${past ? " past" : ""}" data-k="${esc(v.key)}" ${now ? `data-state="${s.state === "open" ? "track" : s.state}"` : ""} aria-pressed="${!!(state.sel && state.sel.k === v.key)}">${icon}<span class="w">${clock(v.time) || "–"}</span><span class="p">${esc(v.tab)}</span><span>${past ? "" : now ? `<span class="muted">${p2 === "running" ? `${typeName(v)}, ${sessNo(v)} of ${v.p.d.total}` : `In the lobby, booked ${clock(v.time)}`}</span>` : rowFlag(v, fl)}</span><span class="st">${st}</span></button>`;
+      return `<button class="drow${past ? " past" : ""}" data-k="${esc(v.key)}" ${now ? `data-state="${s.state === "open" ? "track" : s.state}"` : ""} aria-pressed="${!!(state.sel && state.sel.k === v.key)}">${icon}<span class="w">${clock(v.time) || "–"}</span><span class="p">${esc(v.tab)}</span><span>${past ? "" : now ? `<span class="muted">${p2 === "running" ? courseLine(v) : `In the lobby, booked ${clock(v.time)}`}</span>` : rowFlag(v, fl)}</span><span class="st">${st}</span></button>`;
     }).join("");
     const done = vs.filter(v => ph(v) === "done").length, todo = vs.filter(v => ["booked", "waiting"].includes(ph(v)) && !(s.v && s.v.key === v.key)).length;
     sub = `${esc(c.label)}: ${s.v ? (s.state === "late" ? `<strong>${esc(s.v.tab)} ${TmsCore.chairStatus(s).toLowerCase()}</strong>` : `${esc(s.v.tab)}, ${TmsCore.chairStatus(s).toLowerCase()}`) : "open now"}, ${done} done, ${todo} still to come`;
@@ -1072,7 +1085,7 @@ function detailHtml(fl) {
     const s = TmsCore.chairState(c.id, fl.visits, fl.now), nx = s.next;
     return `<div class="dh"><div><div class="name">${esc(c.label)}<span class="loc">open</span></div><div class="meta">${esc([c.device, c.coil].filter(Boolean).join(", "))}</div></div></div>
       <p class="body">${nx ? `${esc(nx.tab)} is booked here at ${clock(nx.time) || "no set time"}${nx.time != null && nx.time < fl.now ? " and hasn't started" : ""}.` : "Nothing else booked on this chair today."}</p>
-      ${nx ? `<button class="btn primary" data-act="start" data-k="${esc(nx.key)}">Start ${esc(nx.tab)}'s session</button><div class="section"><div class="h"><h2>${esc(nx.tab)}'s course</h2><span>${nx.p.d.txDone} of ${nx.p.d.total} done</span></div>${strip(nx.p, false)}${facts(nx.p, true)}</div>` : ""}`;
+      ${nx ? `<button class="btn primary" data-act="start" data-k="${esc(nx.key)}">Start ${esc(nx.tab)}'s session</button>${nx.guest ? `<p class="body">Guest from ${esc(guestHome(nx.guest))}: their pulses go on their tab there.</p>` : `<div class="section"><div class="h"><h2>${esc(nx.tab)}'s course</h2><span>${nx.p.d.txDone} of ${nx.p.d.total} done</span></div>${strip(nx.p, false)}${facts(nx.p, true)}</div>`}` : ""}`;
   }
   const v = findVisit(sel.k); if (!v) return "";
   const p = v.p, p2 = ph(v), c = fl.avail.find(x => x.id === v.chair), cs = c ? TmsCore.chairState(c.id, fl.visits, fl.now) : null, s = cs && cs.v && cs.v.key === v.key ? cs : null;
@@ -1119,6 +1132,7 @@ function detailHtml(fl) {
     if (v.chair && !(primary && primary[1] === "move")) ghosts.push(["Move to another chair", "move"]);
     ghosts.push(["Record missed", "miss"]);
   }
+  if (v.guest) return guestDetail(v, { lead, cls, primary, tl, ghosts, p2 });
   if (!v.alt && v.type !== "F/U" && p2 !== "missed") ghosts.push([v.type === "MT" ? "Print course schedule" : "Print schedule", "print"]);
   const moved = v.moved || (v.settled && v.chair) ? `<div class="notice${v.moved ? "" : " ok"}"><p>Moved from ${esc(chairLbl(v.from))} to ${esc(chairLbl(v.chair))}.${v.moved ? ` NextGen still has ${esc(chairLbl(v.from))}; move it there too.` : " Updated in NextGen."}</p><label class="check"><input type="checkbox" data-ngk="${esc(v.key)}"${v.moved ? "" : " checked"}> Moved in NextGen</label></div>` : "";
   const bidf = p.d.bidfToday ? `<div class="notice"><p><b>BIDF info needed.</b> Enter the ${esc(p.d.bidf.join("; "))}.</p><div class="actions" style="margin:4px 0 6px"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Enter benefits</button></div></div>` : "";
@@ -1132,6 +1146,25 @@ function detailHtml(fl) {
     <div class="actions">${ghosts.map(([l, a]) => `<button class="btn ghost sm" data-act="${a}" ${K}${a === "print" && v.type === "MT" ? ' data-v="all"' : ""}>${esc(l)}</button>`).join("")}</div>${payline}
     <div class="section"><div class="h"><h2>Course</h2><span>${p.status === "Tapering" ? "Tapering" : `${Math.max(0, p.d.total - p.d.txDone)} left`}</span></div>
       ${strip(p, v.chairVisit && ["booked", "waiting", "running"].includes(p2))}${scores(p, v.r.measX && !v.r.measVal)}${facts(p, true)}</div>`;
+}
+
+/* a guest's card on Today: the same start, move and complete as anyone, but no tab here. Their tracker link is asked for until
+   saved, and the tab picker and Track here instead are one press away. o: what detailHtml worked out for the visit. */
+function guestDetail(v, o) {
+  const g = v.guest, home = guestHome(g), K = `data-k="${esc(v.key)}"`, V = `data-v="${esc(g.mrn)}"`;
+  let { lead, cls, primary } = o; const ghosts = o.ghosts.filter(([, a]) => a === "move" || a === "undoEnd");
+  if (o.p2 === "missed") { lead = `No-show in NextGen at ${clock(v.time) || "today"}. Record it on their ${home} tab`; cls = "soon"; primary = null; }
+  else if (o.p2 === "done") { lead = `Session done${v.end != null ? ` at ${clock(v.end)}` : ""}. Pulses go on their ${home} tab`; cls = "ready"; primary = null; }
+  else if (o.p2 === "running") primary = ["Complete session", "end"];
+  const link = g.link ? `<a class="btn ${primary ? "ghost sm" : "primary"}" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a>` : "";
+  const ask = g.link ? `<p class="body">Pulses, technician and measures go on their tab on the ${esc(home)} tracker, not in this workbook.</p><div class="actions">${link}<button class="btn mute sm" data-act="guestLink" ${V}>Change the link</button></div>`
+    : `<div class="notice"><p><b>Ask for their tracker link.</b> Pulses, technician and measures go on their tab at ${esc(home)}, not in this workbook. Paste the link to that tab.</p><div class="actions" style="margin:4px 0 6px"><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" ${V}>Save link</button></div></div>`;
+  return `<div class="dh"><div><div class="name">${esc(g.code || v.tab)}<span class="loc">${esc(mrnTag(v.p))}</span></div><div class="meta">${esc(typeName(v))}, guest from ${esc(home)}${v.chair ? ` · ${esc(chairLbl(v.chair))}` : ""}</div></div></div>
+    <p class="lead ${cls}">${esc(lead)}</p>${o.tl}
+    ${primary ? `<button class="btn primary" data-act="${primary[1]}" ${K}${primary[2] ? " disabled" : ""}>${esc(primary[0])}</button>` : ""}
+    <div class="actions">${ghosts.map(([l, a]) => `<button class="btn ghost sm" data-act="${a}" ${K}>${esc(l)}</button>`).join("")}</div>
+    <div class="section"><div class="h"><h2>Their tracker</h2><span>${esc(home)}</span></div>${ask}
+      <div class="actions"><button class="btn ghost sm" data-act="useTab" ${V}>Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" ${V}>Track here instead</button></div></div>`;
 }
 
 /* ---------- Schedule: a day by chair, or the week ---------- */
@@ -1169,22 +1202,20 @@ function viewSchedule(fl) {
     }
     close(); return out;
   };
-  /* guests' chair bookings here, from the saved list: they take the chair, but open their home clinic's tab */
-  const gents = guestVisits(day).filter(x => x.time != null).map(x => ({ guest: x, p: { tab: x.code || "Guest" }, start: x.time, end: x.time + DEFAULT_LEN }));
-  const guestBlk = e => { const x = e.guest, len = e.end - e.start, side = e.cols > 1 ? `;left:calc(4px + (100% - 8px) * ${e.col} / ${e.cols});right:auto;width:calc((100% - 8px) / ${e.cols} - 3px)` : "";
-    const attrs = x.g.link ? `data-act="guestOpen" data-v="${esc(x.mrn)}"` : 'data-act="guests"';
-    return `<button class="blk guest${e.cols > 1 ? " dbl" : ""}" ${attrs} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, guest from ${esc(x.g.home)}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}Guest, ${esc(x.g.home)}${e.cols > 1 ? '<br><span class="flag">Double-booked</span>' : ""}</button>`; };
-  const blocks = lane => pack(lane.id === "prov" ? ent.prov : ent.chair.filter(e => chairFor(e) === lane.id).concat(gents.filter(e => (cl.some(c => c.id === e.guest.chair) ? e.guest.chair : "") === lane.id))).map(e => {
-    if (e.guest) return guestBlk(e);
-    const v = isToday ? fl.visits.find(x => x.tab === e.p.tab && x.row === e.r.row) : null, p2 = v ? ph(v) : e.r.delivered ? "done" : "booked";
+  /* guests' chair bookings here, from the saved list: blocks like anyone's. Today's are the board's own visits (start, move, complete);
+     another day's ask for their tracker link, or open it */
+  const gents = guestVisits(day).filter(x => x.time != null).map(x => { const gv = isToday ? fl.visits.find(v => v.guest && v.guest.mrn === x.mrn && v.time === x.time) || null : null;
+    return { guest: x, gv, chair: gv ? gv.chair : cl.some(c => c.id === x.chair) ? x.chair : single && cl.some(c => c.id === single) ? single : "", p: { tab: gv ? gv.tab : guestTab(x.g) }, r: { type: x.type, delivered: false }, start: x.time, end: x.time + DEFAULT_LEN }; });
+  const blocks = lane => pack(lane.id === "prov" ? ent.prov : ent.chair.filter(e => chairFor(e) === lane.id).concat(gents.filter(e => e.chair === lane.id))).map(e => {
+    const v = e.guest ? e.gv : isToday ? fl.visits.find(x => x.tab === e.p.tab && x.row === e.r.row) : null, p2 = v ? ph(v) : e.r.delivered ? "done" : "booked";
     const cs = v && v.chair && lane.id !== "prov" ? TmsCore.chairState(v.chair, fl.visits, fl.now) : null, live = cs && cs.v && cs.v.key === v.key;
     const k = p2 === "done" || p2 === "missed" ? "past" : live ? (cs.state === "open" ? "track" : cs.state) : "";
-    const lab = p2 === "done" ? "Done" : live ? TmsCore.chairStatus(cs) : e.r.type === "MT" ? "MT, mapping" : e.r.type === "MTR" ? "MT redo" : e.r.type === "F/U" ? (e.r.tele ? "Tele F/U" : "F/U") : "Treatment";
+    const lab = p2 === "done" ? "Done" : live ? TmsCore.chairStatus(cs) : e.guest ? `Guest, ${guestHome(e.guest.g)}` : e.r.type === "MT" ? "MT, mapping" : e.r.type === "MTR" ? "MT redo" : e.r.type === "F/U" ? (e.r.tele ? "Tele F/U" : "F/U") : "Treatment";
     const len = e.end - e.start, dbl = e.cols > 1 && lane.id !== "prov" && lane.id !== "";
     const side = e.cols > 1 ? `;left:calc(4px + (100% - 8px) * ${e.col} / ${e.cols});right:auto;width:calc((100% - 8px) / ${e.cols} - 3px)` : "";
-    return `<button class="blk ${k}${dbl ? " dbl" : ""}" ${v ? `data-k="${esc(v.key)}" data-go="today"` : `data-act="opentab" data-t="${esc(e.p.tab)}" data-row="${e.r.row}"`} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, ${esc(lab)}${dbl ? ", double-booked" : ""}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}${esc(lab)}${v && v.moved ? " (moved)" : ""}${dbl ? '<br><span class="flag">Double-booked</span>' : ""}</button>`;
+    return `<button class="blk ${k}${e.guest ? " guest" : ""}${dbl ? " dbl" : ""}" ${v ? `data-k="${esc(v.key)}" data-go="today"` : e.guest ? `data-act="${e.guest.g.link ? "guestOpen" : "guestLink"}" data-v="${esc(e.guest.mrn)}"` : `data-act="opentab" data-t="${esc(e.p.tab)}" data-row="${e.r.row}"`} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, ${esc(lab)}${dbl ? ", double-booked" : ""}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}${esc(lab)}${v && v.moved ? " (moved)" : ""}${dbl ? '<br><span class="flag">Double-booked</span>' : ""}</button>`;
   }).join("");
-  const used = lanes.filter(l => l.id !== "" || ent.chair.some(e => chairFor(e) === "") || gents.some(e => !cl.some(c => c.id === e.guest.chair)));
+  const used = lanes.filter(l => l.id !== "" || ent.chair.some(e => chairFor(e) === "") || gents.some(e => e.chair === ""));
   let hrs = ""; for (let m = start + 60; m < end; m += 60) hrs += `<div class="hr" style="top:${(m - start) * pxm}px"></div>`;
   let tm = ""; for (let m = start; m <= end; m += 60) tm += `<span style="top:${(m - start) * pxm}px">${clock(m)}</span>`;
   const nowLine = isToday && fl.now >= start && fl.now <= end ? `<div class="nowline" style="top:${(fl.now - start) * pxm}px"></div>` : "";
@@ -2078,13 +2109,45 @@ async function startSession(v) {
   state.sel = { k: v.key };
   if (!await sessWrite(v, { start: nowMin(), ...(v.checkin == null ? { checkin: nowMin() } : {}) }, `${v.tab}'s session started in ${chairLbl(v.chair)}.`)) return;
   const nv = findVisit(v.key) || v;
+  if (nv.guest) { if (!nv.guest.link) mGuestLink(nv.guest.mrn, true); return; }   // no note or MT here: their home tab has them
   if ((nv.type === "MT" || nv.type === "MTR") && !nv.mtDone) mMt(nv); else mNote(nv);
+}
+/* a guest's tracker link: asked when their session starts (until saved), from their card, or from another day's Schedule block */
+function mGuestLink(mrn, starting) {
+  const g = guestOf(mrn); if (!g) return toast("That patient isn't a guest on the latest list anymore. Refresh to see the latest.", true);
+  const home = guestHome(g); state.mctx = { mrn };
+  showModal(`<h2 id="mtitle">${starting ? "Session started. " : ""}Link to ${esc(g.code || "their")} tab at ${esc(home)}</h2>
+    <p class="sub">${esc(g.code || "This patient")} is a guest from ${esc(home)}, so their pulses, technician and measures go on their tab on the ${esc(home)} tracker, not in this workbook. Ask the technician for the link: on that tracker, right-click a cell on their tab, choose Link to this Cell, and paste it here. It's saved on the ${GUEST_SHEET} sheet.</p>
+    ${fld("Link to their tab", `<input id="mGuestUrl" value="${esc(g.link || "")}" placeholder="https://…" autocomplete="off">`)}
+    <div class="actions"><button class="btn ghost sm" data-act="useTab" data-v="${esc(g.mrn)}">Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button></div>
+    ${mfoot("Save link", "doGuestLink")}`);
+}
+/* completing a guest's session: the pulses go on their home clinic's tab (opened from here); only the end time is saved here */
+function mGuestEnd(v) {
+  const g = v.guest, home = guestHome(g); state.mctx = { k: v.key, mrn: g.mrn };
+  showModal(`<h2 id="mtitle">Complete ${esc(g.code || v.tab)}'s session</h2>
+    <p class="sub">${esc(g.code || "This patient")} is a guest from ${esc(home)}. Enter the pulses, technician and any PHQ-9 and GAD-7 on their tab on the ${esc(home)} tracker; nothing is written to a tab in this workbook.</p>
+    ${g.link ? `<p><a class="btn ghost" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a></p>`
+      : fld(`Link to their tab at ${esc(home)} (ask the technician)`, '<input id="mGuestUrl" placeholder="https://…" autocomplete="off">')}
+    <label class="check"><input type="checkbox" id="mGuestDone"> Pulses entered on their ${esc(home)} tab</label>
+    <div class="actions"><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Their tab is in this workbook</button></div>
+    ${mfoot("Complete session", "doGuestEnd")}`);
+}
+async function doGuestEnd() {
+  const m = state.mctx || {}, v = findVisit(m.k); if (!v || !v.guest) return closeModal();
+  const url = mval("mGuestUrl");
+  if (!$("mGuestDone").checked) return merr(`Enter the pulses on their ${guestHome(v.guest)} tab first, then tick the box.`);
+  if (url && !/^https:\/\/\S+$/i.test(url)) return merr("Paste the full link to their tab (it starts with https://), or leave it blank.");
+  closeModal();
+  if (url) await saveGuestLink(v.guest.mrn, url);
+  await sessWrite(v, { end: nowMin() }, `${v.guest.code || v.tab}'s session is complete. Pulses are on their ${guestHome(v.guest)} tab.`);
 }
 /* reopening an ended session clears the pulses, technician and copay line the add-in wrote, unless the chair has had a session since */
 async function undoEnd(v) {
   const fl = state.fl, c = fl.chairs.find(x => x.id === v.chair);
   if (!c || c.off) return toast(`${chairLbl(v.chair)} is unavailable, so this session can't be reopened.`, true);
   if (fl.visits.some(x => x !== v && x.chair === v.chair && x.start != null && x.start >= (v.start ?? 0))) return toast(`${chairLbl(v.chair)} has had a session since. Correct this one on the tab.`, true);
+  if (v.guest) { await sessWrite(v, { end: null }, "Undone. The session is running again."); return; }   // nothing on a tab here to clear
   try {
     const note = withCopay(v.r.note, "");
     await writeCells(v.tab, [[`F${v.row}`, ""], [`H${v.row}`, ""], [`J${v.row}`, ""], [`B${v.row}`, ""], ...(note !== v.r.note ? [[`S${v.row}`, note]] : [])], at(v.r));
@@ -2245,8 +2308,8 @@ async function syncGuests() {
 async function saveGuestLink(mrn, url) {
   if (POPOUT) return callPane("saveGuestLink", [mrn, url]);
   url = String(url || "").trim();
-  if (!/^https:\/\/\S+$/i.test(url)) return toast("Paste the full link to their tab (it starts with https://).", true);
-  const g = (state.guests || []).find(x => x.mrn === mrn); if (!g) return;
+  if (!/^https:\/\/\S+$/i.test(url)) { toast("Paste the full link to their tab (it starts with https://).", true); return false; }
+  const g = guestOf(mrn); if (!g) return false;
   try {
     await Excel.run(async ctx => {
       const ws = await guestSheet(ctx), { by, next } = await readGuests(ctx, ws), row = by.has(mrn) ? by.get(mrn).row : next;
@@ -2254,8 +2317,9 @@ async function saveGuestLink(mrn, url) {
       ws.getRange(`H${row}`).hyperlink = { address: url, textToDisplay: `${g.code || "Their"} tab at ${g.home || "their home clinic"}` };
       await ctx.sync();
     });
-    g.link = url; state.guestLinks = { ...(state.guestLinks || {}), [mrn]: url }; toast(`Link saved for ${g.code || "the guest"}${g.home ? ` (${g.home})` : ""}.`); renderBanners(); if (state.view === "today") renderDash();
-  } catch (e) { fail(e); }
+    g.link = url; state.guestLinks = { ...(state.guestLinks || {}), [mrn]: url }; toast(`Link saved for ${g.code || "the guest"}${g.home ? ` (${g.home})` : ""}.`); renderBanners(); if (state.view === "today" || state.view === "schedule") renderDash();
+    return true;
+  } catch (e) { fail(e); return false; }
 }
 
 /* ---------- Settings > Use another tab as New Template: the chosen tab is renamed New Template and the current one deleted.
@@ -3213,25 +3277,36 @@ async function verifyGo() {
   } catch (e) { fail(e); }
 }
 function verifyKeep() { const x = (state.mctx || {}).verify; if (x) toast(`Kept ${x.old}. Fix ${x.name} by hand, then delete the old tab.`); verifyNext(); }
-/* Use existing tab: a patient offered a tracker (New patients, Create a tracker here?, a guest) goes onto a tab already in the workbook
-   instead of a new one. Only tabs with no MRN, or this one, are offered, the same LASFIR first. The MRN goes in A4 (and the LASFIR in A2
-   when it's blank); a tab in an earlier layout is rebuilt from New Template with its data moved over, and checked as Match New Template does. */
+/* Use existing tab (on a guest's card: "Their tab is in this workbook"): a patient offered a tracker (New patients, Create a tracker
+   here?, a guest) goes onto a tab already in the workbook instead of a new one. Every tracker tab is in the dropdown, the ones whose name
+   is close to the LASFIR first (core.js rankTabs), and typing filters it; a tab holding another patient's MRN is shown but can't be
+   picked. The MRN goes in A4 (and the LASFIR in A2 when it's blank). The tab's layout is checked: an earlier layout is rebuilt from New
+   Template with its data moved over, one that has drifted gets Match New Template, and the Edit log says which. */
 function useTabAsk(mrn) {
   if (POPOUT) return toast("Use this from the task pane.", true);
   const y = state.pendingNew.find(z => z.mrn === mrn) || [...(state.asks || []), ...(state.guests || [])].find(z => z.mrn === mrn); if (!y) return;
   if (!state.templateOk) return toast(state.templateWhy, true, true);
-  const cur = state.tabs.map(t => { const p = state.patients.find(q => q.tab === t.name); return { name: t.name, code: t.code, mrn: p ? p.mrn : "", old: false }; });
-  const tabs = [...cur, ...state.old.map(n => ({ name: n, code: n.split(" ")[0], mrn: "", old: true }))].filter(t => !t.mrn || t.mrn === mrn)
-    .sort((a, b) => (b.code === y.code) - (a.code === y.code) || a.name.localeCompare(b.name));
-  if (!tabs.length) return toast("Every tracker tab already has an MRN. Create a tracker instead.", true);
-  state.mctx = { use: y };
-  showModal(`<h2 id="mtitle">Use an existing tab for ${esc(y.code || "this patient")}</h2><p class="sub">MRN ending ${esc(String(y.raw).slice(-4))} goes in A4 of the tab you pick. A tab in an earlier layout is rebuilt from New Template with its data moved over; any field that doesn't copy cleanly is shown side by side for you to check before the old tab is deleted.</p>
-    <div class="qrow"><span>Tab</span><select id="useTabSel" aria-label="Tab">${tabs.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.mrn ? " (this MRN)" : " (no MRN)"}${t.old ? ", earlier layout" : ""}</option>`).join("")}</select></div>
+  const cur = state.tabs.map(t => { const p = state.patients.find(q => q.tab === t.name); return { name: t.name, code: t.code, mrn: p ? p.mrn : "", mrnRaw: p ? String(p.mrnRaw || p.mrn || "") : "", old: false }; });
+  const tabs = [...cur, ...state.old.map(n => ({ name: n, code: n.split(" ")[0], mrn: "", mrnRaw: "", old: true }))];
+  if (!tabs.some(t => !t.mrn || t.mrn === mrn)) return toast("Every tracker tab already has another patient's MRN. Create a tracker instead.", true);
+  const g = guestOf(mrn); state.mctx = { use: y, useTabs: tabs };
+  showModal(`<h2 id="mtitle">${esc(y.code || "This patient")}'s tab in this workbook</h2><p class="sub">${g ? `If ${esc(y.code || "this guest")}'s tab is here rather than at ${esc(guestHome(g))}, pick it. ` : ""}Tabs with names like ${esc(y.code || "theirs")} come first; type to search. MRN ending ${esc(String(y.raw).slice(-4))} goes in A4 of the tab you pick. Its layout is checked against New Template: an earlier layout is rebuilt with its data moved over (any field that doesn't copy cleanly is shown side by side before the old tab is deleted), and the change is on the Edit log.</p>
+    ${fld("Search tabs", '<input id="useTabQ" placeholder="Type part of a tab name" autocomplete="off">')}
+    <div class="qrow"><span>Tab</span><select id="useTabSel" aria-label="Tab">${useTabOpts(y, tabs, "")}</select></div>
     ${mfoot("Use this tab", "useTabGo")}`);
 }
+function useTabOpts(y, tabs, q) {
+  const r = TmsCore.rankTabs(y.code, q, tabs), other = t => t.mrn && t.mrn !== y.mrn;
+  const lab = t => `${t.name}${t.mrn === y.mrn ? " (this MRN)" : other(t) ? ` (MRN ending ${t.mrnRaw.replace(/\D/g, "").slice(-4)}, another patient)` : " (no MRN)"}${t.old ? ", earlier layout" : state.fix.has(t.name) ? ", needs Match New Template" : ""}`;
+  const opt = t => `<option value="${esc(t.name)}"${other(t) ? " disabled" : ""}>${esc(lab(t))}</option>`, near = r.filter(t => t.near), rest = r.filter(t => !t.near);
+  if (!r.length) return '<option value="">No tab matches</option>';
+  return (near.length ? `<optgroup label="Similar to ${esc(y.code || "this patient")}">${near.map(opt).join("")}</optgroup>` : "") + (rest.length ? `<optgroup label="${near.length ? "Other tabs" : "Tabs"}">${rest.map(opt).join("")}</optgroup>` : "");
+}
 async function useTabGo() {
-  const y = (state.mctx || {}).use, name = ($("useTabSel") || {}).value; if (!y || !name) return;
-  const rebuild = state.old.includes(name), match = !rebuild && state.fix.has(name);
+  const m = state.mctx || {}, y = m.use, name = ($("useTabSel") || {}).value; if (!y) return;
+  if (!name) return merr("Pick a tab, or clear the search to see them all.");
+  const picked = (m.useTabs || []).find(t => t.name === name); if (picked && picked.mrn && picked.mrn !== y.mrn) return merr(`${name} has another patient's MRN.`);
+  const rebuild = state.old.includes(name), match = !rebuild && state.fix.has(name), g = guestOf(y.mrn);
   let res = null;
   try {
     await Excel.run(async ctx => {
@@ -3242,11 +3317,14 @@ async function useTabGo() {
       if (y.code && String(hd.values[0][0] ?? "").trim() === "") ws.getRange("A2").values = [[y.code]];
       await ctx.sync();
       if (rebuild) { await benSheet(ctx); res = await rebuildTab(ctx, name); } else if (match) await matchTab(ctx, name);
-      await addEdits(ctx, [{ tab: name, kind: "tab", what: `Assigned MRN ending ${String(y.raw).slice(-4)} from the appointment list${rebuild ? "; rebuilt from New Template (earlier layout)" : match ? "; matched New Template" : ""}`, undo: null }]);
+      await addEdits(ctx, [{ tab: name, kind: "tab", what: `Assigned MRN ending ${String(y.raw).slice(-4)} from the appointment list${g ? ` (was a guest from ${guestHome(g)})` : ""}${rebuild ? "; rebuilt from New Template (earlier layout)" : match ? "; matched New Template" : "; layout matches New Template"}`, undo: null }]);
       await ctx.sync();
     });
     closeModal();
     state.pendingNew = state.pendingNew.filter(x => x.mrn !== y.mrn);
+    /* a guest's session already on the board today carries over to the tab, so it isn't started again */
+    const gt = g && guestTab(g), carry = gt && state.sess ? [...state.sess.rows.values()].filter(r => r.tab === gt && r.date === todaySerial()) : [];
+    if (carry.length) try { await writeSess(carry.map(r => ({ key: TmsCore.sessKey(r.date, name, r.visit), date: r.date, tab: name, visit: r.visit, set: { chair: r.chair, ng: r.ng, tick: r.tick, at: r.at, checkin: r.checkin, start: r.start, end: r.end } }))); } catch (e) { console.error(e); }
     await refresh();
     toast(res && !res.deleted ? `${y.code || "The patient"} is on ${name}. Check the fields that didn't copy over.` : `${y.code || "The patient"} is on ${name}.`);
     if (res && !res.deleted) { state.verify = [res]; showVerify(); }
@@ -3336,7 +3414,7 @@ function dontAsk(mrn) {
   const a = (state.asks || []).find(x => x.mrn === mrn); if (!a) return;
   state.noAsk = [...new Set([...noAskList(), mrn])]; saveSetting("tms_noask", state.noAsk);
   state.asks = state.asks.filter(x => x.mrn !== mrn); state.guests = [...(state.guests || []), a];
-  toast(`${a.code || "That patient"} won't be asked about again. They're on the ${GUEST_SHEET} sheet: add the link to their ${a.home} tab.`);
+  toast(`${a.code || "That patient"} won't be asked about again. They're a guest now: Today asks for the link to their ${a.home} tab when they're in the chair.`);
   renderBanners(); syncGuests(); renderDash();
 }
 function startTracker(mrn) {
@@ -3659,7 +3737,8 @@ async function buildPlan(quiet) {
   const hasTab = (mrn, code) => state.patients.some(p => p.mrn === mrn || (!p.mrn && code && p.code === code));
   /* "ask" (MT elsewhere, 16+ dailies here) is offered a tracker here until someone says Don't ask again; then it's a guest. Until a
      tab exists both are tracked at home: no tab, no import, their bookings on Today and Schedule marked as guests. No tab, no MT
-     here and fewer than 16 treatments here is a guest too, its home clinic's link asked for on the Guest Patients banner. */
+     here and fewer than 16 treatments here is a guest too, and so is one with a F/U at another clinic and no MT here (core.js
+     noTabRole). Today asks for a guest's home clinic link when they're on the schedule. */
   const noAsk = new Set(noAskList());
   const roles = new Map([...roleIn].map(([mrn, x]) => { const g = hasTab(mrn, x.code) ? { role: "home" } : TmsCore.noTabRole(split ? TmsCore.clinicRole(x.visits) : { role: "home" }, x.visits, from); return [mrn, g.role === "ask" && noAsk.has(mrn) ? { ...g, role: "guest" } : g]; }));
   const roleOf = mrn => (roles.get(mrn) || { role: "home" }).role, awayRole = r => r === "guest" || r === "ask";
@@ -3684,6 +3763,7 @@ async function buildPlan(quiet) {
          no chair counts, since there's no tab here. */
       if (awayRole(role)) {
         if (sts !== "Cancelled" && date >= from - 31) {
+          names.add(pv);   // a chair here, even if only guests are booked on it
           let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
           const k = `${mrn}|${date}|${ev.type}|${time}`;
           if (!apKey.has(k)) { apKey.add(k); ap.push({ mrn, code: lasfir(r), date, time, type: ev.type, tele: ev.tele, guest: true }); gv.push({ mrn, code: lasfir(r), date, time, type: ev.type, chair: pv, status: sts }); }
@@ -4124,7 +4204,8 @@ Office.onReady(info => {
       dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
-      guests: () => { state.dismissed.delete("guestBanner"); delete state.snoozeMem.guestBanner; renderBanners(); const b = $("guestBanner"); b.hidden = false; b.scrollIntoView({ block: "start" }); },
+      guestLink: () => mGuestLink(v), doGuestLink: () => saveGuestLink(m.mrn, mval("mGuestUrl")).then(okd => { if (okd) closeModal(); }),
+      doGuestEnd, guests: () => mGuestLink(v),
       saveMrn: () => { const x = String((document.querySelector(`[data-mrnin="${CSS.escape(t)}"]`) || {}).value || "").trim();
         if (!/^\d[\d-]{2,}$/.test(x)) return toast("Enter the MRN from NextGen (digits).", true);
         const dup = state.patients.find(p => p.tab !== t && p.mrn === normMrn(x) && p.code !== (state.patients.find(q => q.tab === t) || {}).code);
@@ -4133,7 +4214,7 @@ Office.onReady(info => {
       reimport: () => { show("imp"); buildPlan(); }, goimport: () => show("imp"),
       mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(state.dash === "week" ? 7 * state.weekOffset : state.schedOffset), addPt: () => { resetAddPatient(); show("add"); },
       /* today's visits */
-      start: needV(startSession), end: needV(mEnd), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),
+      start: needV(startSession), end: needV(x => x.guest ? mGuestEnd(x) : mEnd(x)), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),
       fudone: needV(x => sessWrite(x, { end: nowMin(), ...(x.checkin == null ? { checkin: nowMin() } : {}) }, `${x.tab}'s follow-up marked done.`)), undoEnd: needV(undoEnd), ngdone: () => setNgTick(k, true),
       classify: () => freebieModal(t, row), freebie: () => freebieModal(t, row), undoMiss: () => undoMiss(t, row), print: () => printModal(t, v || "14"), opentab: () => openCourse(t), course: () => openCourse(t),
       /* Patients */
@@ -4208,7 +4289,8 @@ Office.onReady(info => {
     if (el.matches("[data-elf]")) { state.elogTab = el.value; return renderDash(); }
     if (el.dataset.dk) draftInput(el);
   });
-  document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
+  document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target);
+    if (e.target.id === "useTabQ" && state.mctx && state.mctx.use) $("useTabSel").innerHTML = useTabOpts(state.mctx.use, state.mctx.useTabs || [], e.target.value); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
   $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = () => setupClick(false); $("btnMeas").onclick = placeMeasuresClick;
   $("btnTheme").onclick = () => setTheme($("btnTheme").getAttribute("aria-pressed") === "true" ? "light" : "dark");
   $("cfgTheme").onchange = e => setTheme(e.target.value);
