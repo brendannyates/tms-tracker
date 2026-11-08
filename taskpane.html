@@ -47,8 +47,9 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .brand span{display:flex;flex-direction:column;min-width:0;line-height:1.25}
 .brand b{font-size:14px;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .brand small{font-size:12.5px;color:var(--muted)}
-/* full screen only: the Dev Update bell's home, right of the name and level with the page title (dev-updates.js) */
-.brand .du-home{margin:-6px -6px -6px auto;position:relative;top:0}
+/* full screen only: the Dev Update bell's home (dev-updates.js), right of the name. Pinned to the top so it sits level with the
+   page's first line (title and toolbar, or a banner above them) however many lines the workbook name takes */
+.brand .du-home{align-self:flex-start;margin:5px -6px -16px auto}
 .item{display:flex;justify-content:space-between;align-items:center;width:100%;min-height:44px;padding:10px 12px;border-radius:10px;font-size:15px;transition:background .2s}
 .item:hover{background:var(--surface-3)}
 .item[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
