@@ -235,7 +235,7 @@ function checkWho() {
   if (u) { if (state.user !== u.name) applyUser(u.name); maybeAutoFull(); return; }
   if ($("who").hidden) showWho(false);
 }
-/* full screen on open: once per session, in the pane, as soon as we know who's at the desk (today's pick, or the pick at the
+/* full screen on open: once per session, in the pane, as soon as we know who's using it (today's pick, or the pick at the
    prompt). Only that person's own choice counts; everyone else just gets the pane. */
 function maybeAutoFull() {
   if (POPOUT || state.autoDone || !state.user) return; state.autoDone = true;
@@ -264,7 +264,7 @@ function syncAutoShow() {
 }
 async function saveAutoFull(name, on) {
   if (POPOUT) return callPane("saveAutoFull", [name, on]);
-  if (!name) throw new Error("Pick who's at the desk first.");
+  if (!name) throw new Error("Enter your name first.");
   await saveUserSet(name, { autoFull: !!on });
   return syncAutoShow();
 }
@@ -277,9 +277,9 @@ async function autoFullClick(on) {
 }
 function showWho(switching) {
   const here = (whoMem().used) || {}, list = TmsCore.pickOrder(state.users, POPOUT ? {} : here), empty = !list.length;
-  $("whoBody").innerHTML = `<h2 id="whoT">Who's using the tracker?</h2>
-    <p class="sub">Pick your name for today on this computer. It signs the Edit log and fills in Treating technician; you can still change that on any entry.</p>
-    ${empty ? `<p class="hint">No one is on this workbook's list yet. Add yourself below.</p>` : `<div class="wholist">${list.map(u => `<button class="whobtn" data-who="${esc(u.name)}"><span>${esc(u.name)}</span>${u.here ? `<span class="tag">On this computer</span>` : ""}</button>`).join("")}</div>`}
+  $("whoBody").innerHTML = `<div class="whohero"><h1 id="whoT">Enter your name</h1>
+    <p class="sub">${empty ? "Nobody has added their name to this workbook yet. Add yours to start." : "Pick yours below, or add it if you’re new. Teams posts and the log say who did what."}</p></div>
+    ${empty ? "" : `<div class="wholist">${list.map(u => `<button class="whobtn" data-who="${esc(u.name)}"><span>${esc(u.name)}</span>${u.here ? `<span class="tag">On this computer</span>` : ""}</button>`).join("")}</div>`}
     <details class="whonew"${empty ? " open" : ""}><summary>I'm not on the list</summary>
       <label class="fld" for="whoNew"><span>Your name (first name and last initial, for example Alex P.)</span><input id="whoNew" maxlength="40" autocomplete="off" spellcheck="false"></label>
       <p class="err" id="whoErr" role="alert"></p><button class="btn primary" data-whoadd>Add me and continue</button></details>
@@ -287,6 +287,9 @@ function showWho(switching) {
   $("who").hidden = false;
   const f = $("whoBody").querySelector(empty ? "#whoNew" : ".whobtn"); if (f) f.focus();
 }
+/* the loading screen goes once the first read is done (or after 20 s, so it can never trap anyone) */
+function bootDone() { const b = $("boot"); if (b) b.remove(); }
+setTimeout(bootDone, 20000);
 function hideWho() { $("who").hidden = true; $("whoBody").innerHTML = ""; }
 /* a new name goes on the list (or the same name already there is used) */
 async function addUser(name) {
@@ -524,10 +527,11 @@ async function refresh() {
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
     if (pop.dlg) sendSnap();
     checkWho();
+    bootDone();
     syncActiveSheet();
     /* once a session: visit logs edited by hand get the formatting that follows their dates (hand-colored rows stay) */
     if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
-  } catch (e) { fail(e); }
+  } catch (e) { fail(e); bootDone(); }
 }
 const num = (v, d) => (v === "" || v == null || isNaN(Number(v))) ? d : Number(v);
 
@@ -4064,6 +4068,7 @@ function sendSnap() {
 function sendParts(k, s) { const n = Math.ceil(s.length / CHUNK) || 1, seq = Date.now() + Math.random(); for (let i = 0; i < n; i++) toChild({ k, seq, i, n, part: s.slice(i * CHUNK, (i + 1) * CHUNK) }); }
 const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
+  bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
@@ -4141,6 +4146,7 @@ const FULL = POPOUT;
 function syncFs() {
   document.body.classList.toggle("fs", FULL);
   $("btnFull").textContent = FULL ? "Exit full screen" : "Full screen";
+  { const f = TBAR && TBAR.querySelector("#tbFull"), l = FULL ? "Exit full screen" : "Full screen"; if (f) { f.dataset.tip = l; f.setAttribute("aria-label", l); } }
   $("conn").lastChild.textContent = FULL ? "Saving through the task pane" : "Connected to the workbook";
 }
 /* settings live in the document, which only the task pane can save */
@@ -4168,9 +4174,20 @@ function openCourse(tab) {
 }
 /* appearance is per computer (localStorage), like the Today view; the pane and full screen share it */
 const themeOf = () => document.documentElement.dataset.theme || "light";
+const TB_ICON = {"sun":"<svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg>","moon":"<svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z\"/></svg>"};
+/* the toolbar sits in the visible page header (Today, Patients, Import, Settings, Add patient, the patient view); one copy, moved */
+const TBAR = document.getElementById("tbar");   // kept: a header redraw can drop it from the page
+function placeTools() {
+  const tb = TBAR; if (!tb) return;
+  const pv = $("ptView"), sec = pv && !pv.hidden ? pv : $("v-" + state.view), h = sec && sec.querySelector("header.top");
+  if (h && tb.parentNode !== h) h.appendChild(tb);
+}
+let placeRaf = 0;
+new MutationObserver(() => { if (!placeRaf) placeRaf = requestAnimationFrame(() => { placeRaf = 0; placeTools(); }); }).observe(document.documentElement, { childList: true, subtree: true });
 function syncTheme() {
-  const t = themeOf(), dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches), b = $("btnTheme"), c = $("cfgTheme");
-  if (b) b.setAttribute("aria-pressed", String(dark));
+  const t = themeOf(), dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches), b = TBAR && TBAR.querySelector("#btnTheme"), c = $("cfgTheme");
+  if (b) { const tl = dark ? "Light mode" : "Dark mode"; b.setAttribute("aria-pressed", String(dark)); b.classList.toggle("is-dark", dark); b.dataset.tip = tl; b.setAttribute("aria-label", "Switch to " + tl.toLowerCase());
+    b.innerHTML = dark ? `<span class="tcur">${TB_ICON.moon}</span><span class="tsl">/</span><span class="tgo">${TB_ICON.sun}</span>` : `<span class="tcur">${TB_ICON.sun}</span><span class="tsl">/</span><span class="tgo">${TB_ICON.moon}</span>`; }
   if (c) c.value = t;
 }
 function setTheme(t) {
@@ -4350,7 +4367,8 @@ Office.onReady(info => {
   document.addEventListener("input", e => { if (e.target.dataset.dk && e.target.tagName !== "SELECT") draftInput(e.target);
     if (e.target.id === "useTabQ" && state.mctx && state.mctx.use) $("useTabSel").innerHTML = useTabOpts(state.mctx.use, state.mctx.useTabs || [], e.target.value); if (e.target.id === "prFrom" || e.target.id === "prTo") { document.querySelectorAll("[data-prq]").forEach(b => b.setAttribute("aria-pressed", "false")); prCount($("modalBody").querySelector("[data-act=doPrint]").dataset.t); } });
   $("refresh").onclick = () => refresh(); $("btnApRebuild").onclick = () => rebuildActiveClick(); $("btnSetup").onclick = () => setupClick(false); $("btnMeas").onclick = placeMeasuresClick;
-  $("btnTheme").onclick = () => setTheme($("btnTheme").getAttribute("aria-pressed") === "true" ? "light" : "dark");
+  $("btnTheme").onclick = () => { const b = $("btnTheme"); setTheme(b.getAttribute("aria-pressed") === "true" ? "light" : "dark"); b.classList.remove("swap"); void b.offsetWidth; b.classList.add("swap"); setTimeout(() => b.classList.remove("swap"), 450); };
+  $("tbFull").onclick = fullScreen;
   $("cfgTheme").onchange = e => setTheme(e.target.value);
   window.addEventListener("storage", e => { if (e.key === "tms_theme") { document.documentElement.dataset.theme = e.newValue || "light"; syncTheme(); } });
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);

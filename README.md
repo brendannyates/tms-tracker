@@ -26,7 +26,7 @@ Tested with fictional patients:
 | `benefits.js` | Sohar benefits import: matching and plan (pure functions). |
 | `tests/` | Tests for `core.js` and `benefits.js` (`npm test`). |
 | `schedule.html` | The patient schedule printout, shown over the add-in: print or save as PDF. |
-| `dev-updates.js`, `dev-updates.css`, `dev-updates.json` | Dev Update notices: a pop-up the first time someone opens the tracker after a change, and the bell (top right) with the history. Add an entry to `dev-updates.json` (newest first, never reuse an `id`) with each change staff will notice. Shared with the other MHS add-ins. |
+| `dev-updates.js`, `dev-updates.css`, `dev-updates.json` | Dev Update notices: a pop-up the first time someone opens the tracker after a change, and the bell with the history. The bell docks in the page toolbar (`#tbar`: refresh, full screen, sun / moon, then `.du-slot`), which `placeTools()` moves into the visible page header. Screens without a toolbar (loading, name screen) float it top right, draggable, stepping 6 px off any card whose button ends up under it. Add an entry to `dev-updates.json` (newest first, never reuse an `id`) with each change staff will notice. Shared with the other MHS add-ins. |
 | `assets/` | Ribbon icons (from the logo mark), the clinic logo used on printouts, and the NextGen export icon shown in the report directions. |
 | `scripts/set-host.mjs` | Rewrites whatever host the manifest currently points to. |
 | `package.json` | Helper scripts: `certs`, `start`, `validate`, `check`, `set-host`. |
@@ -127,7 +127,7 @@ Chair cards (resource name, device, coil, today's count, last service) with **Ma
 
 ### Settings
 
-Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, Appearance (Light, Dark or Match Windows; saved on this computer, also in the rail as Dark mode), the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Replan measures and pulse totals**, **Rebuild Active Patients sheet**), and **Use another tab as New Template**: a dropdown of the workbook's other tabs (not patient tabs or the add-in's own sheets); after a confirmation the chosen tab is renamed New Template and the old one is deleted (logged, no undo; version history has it).
+Its own screen: clinic location, device, warning days, recent-visit window, whether selecting a visit opens its tab, Appearance (Light, Dark or Match Windows; saved on this computer, also the sun / moon icon at the top right), the cutoff for updates, and the workbook tools (**Match New Template**, **Fix visit-log formatting**, **Replan measures and pulse totals**, **Rebuild Active Patients sheet**), and **Use another tab as New Template**: a dropdown of the workbook's other tabs (not patient tabs or the add-in's own sheets); after a confirmation the chosen tab is renamed New Template and the old one is deleted (logged, no undo; version history has it).
 
 ### Full screen
 

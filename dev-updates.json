@@ -1,6 +1,16 @@
 {
   "updates": [
     {
+      "id": "2026-11-07-bell-name-screen",
+      "date": "2026-11-07",
+      "bullets": [
+        "Changed: Refresh, full screen and light/dark mode are now icons at the top right of each page, with this bell right after them. Point at an icon to see what it does.",
+        "New: Light/dark shows sun / moon. The one on the right is the mode you switch to, and they swap places when you press it.",
+        "Changed: The tracker shows a short loading screen while it reads the workbook, then asks you to \"Enter your name\". Anyone can be using it, not just the tech at the chair.",
+        "Changed: On the name screen your names sit under the heading with more room, and a long list scrolls instead of being cut off."
+      ]
+    },
+    {
       "id": "2026-11-05-card-consent",
       "date": "2026-11-05",
       "bullets": [

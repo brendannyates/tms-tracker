@@ -30,13 +30,14 @@ The manifest file only tells Excel where the add-in lives. It contains no patien
 
 ## Who's using the tracker
 
-Each workbook keeps its own list of people (the hidden **TMS User Settings** sheet). The first time you open the tracker each day on a computer, it asks **Who's using the tracker?**
+Each workbook keeps its own list of people (the hidden **TMS User Settings** sheet). The first time you open the tracker each day on a computer, it reads the workbook (a short loading screen), then asks you to **Enter your name**. Anyone can be using it: a tech, an RN or a provider.
 
 - Pick your name. Nobody is picked for you. Names already used on this computer in this workbook are listed first, tagged **On this computer**.
 - Not on the list? Select **I'm not on the list**, type your first name and last initial, and select **Add me and continue**.
 - Your name fills in **Treating technician**, **By** and your note initials (you can still change them on any entry) and signs the Edit log.
 - Someone else taking over? Select your name at the bottom of the menu (or **Settings > You > Switch user**).
 - Full screen uses the name picked in the task pane and never asks.
+- Top right of every page: **Refresh**, **Full screen**, light/dark (sun / moon: press the one on the right) and the Dev Update bell. Point at an icon for its name. On the loading and name screens, which have no toolbar, the bell floats top right and can be dragged.
 - Want the tracker in full screen every time? Tick **Settings > You > Open in full screen whenever I open this workbook**. It's saved with your name. Excel can only open the tracker with the workbook for everyone, so while anyone has this on, the tracker opens by itself beside the sheet for everyone else, and in full screen once the person who turned it on is picked.
 
 Another clinic's workbook has its own list, so your name never shows up there unless you add it.
@@ -64,7 +65,7 @@ The menu runs down the left in full screen and across the top in the panel.
 | Patients | A course is marked Complete on its own once every approved treatment is done (36 of 36, 15 of 15). Every tracker tab, sorted by what needs doing. Filters: Needs attention (the default), All active, Follow-up not scheduled, No upcoming visit, Tapering, Paused, Complete, Discontinued. **Add patient** is here. The number beside Patients in the menu counts patients that need attention; it turns red when one needs action now. |
 | Chairs | Each chair's device, coil, last service and today's count, with **Mark unavailable**; the chair hours from Clinic Schedule; the protocol list. |
 | Import | The NextGen appointment list and Sohar benefits. |
-| Settings | Clinic settings, Appearance (Light, Dark or Match Windows, for this computer) and the workbook tools. **Dark mode** in the menu switches it too. |
+| Settings | Clinic settings, Appearance (Light, Dark or Match Windows, for this computer) and the workbook tools. The sun / moon icon at the top right switches it too. |
 
 **Refresh** re-reads every tab. **Full screen** floats the tracker over the Excel page; **Exit full screen** closes it. Keep the panel open while you use it: full screen saves through the panel.
 
@@ -248,7 +249,7 @@ The sheet is view only and is rebuilt whenever something changes. Make changes o
 | A banner says tabs were left untouched | Its layout doesn't match the template. Use **Match New Template**, or check that A1 says PATIENT: and A3 says MRN:. |
 | Match New Template says New Template needs fixing | The message (on the banner, the button and Settings) says which cells are off and what they read. Fix them on New Template, for example Time in T8 and Freebie Count in J6, then select Refresh. |
 | The schedule doesn't show | Choose Print schedule again; it opens over the add-in, not in a separate window. |
-| Numbers look out of date | Select **Refresh** in the menu. The board moves on its own every 30 seconds and picks up other people's check-ins and moves then. |
+| Numbers look out of date | Select **Refresh** (the circular arrow at the top right). The board moves on its own every 30 seconds and picks up other people's check-ins and moves then. |
 | "The visit on row N has moved on the tab" | Someone imported a list that re-sorted the tab. Nothing was saved. Select **Refresh** and do it again. |
 | Active Patients didn't change | It skips the rewrite when nothing changed. Use **Settings > Rebuild Active Patients sheet**. |
 | The Appt List tab couldn't be read | Import the list again. |
