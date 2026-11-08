@@ -4182,8 +4182,14 @@ function placeTools() {
   const pv = $("ptView"), sec = pv && !pv.hidden ? pv : $("v-" + state.view), h = sec && sec.querySelector("header.top");
   if (h && tb.parentNode !== h) h.appendChild(tb);
 }
+/* the Dev Update bell's home: right of the rail name, in full screen only, and not while the loading or name screen is up */
+function placeHome() {
+  const br = document.querySelector(".rail .brand"), h = br && br.querySelector(".du-home"), want = FULL && !$("boot") && $("who").hidden;
+  if (want && !h && br) br.insertAdjacentHTML("beforeend", '<span class="du-home" aria-hidden="true"></span>');
+  else if (!want && h) h.remove();
+}
 let placeRaf = 0;
-new MutationObserver(() => { if (!placeRaf) placeRaf = requestAnimationFrame(() => { placeRaf = 0; placeTools(); }); }).observe(document.documentElement, { childList: true, subtree: true });
+new MutationObserver(() => { if (!placeRaf) placeRaf = requestAnimationFrame(() => { placeRaf = 0; placeTools(); placeHome(); }); }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
 function syncTheme() {
   const t = themeOf(), dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches), b = TBAR && TBAR.querySelector("#btnTheme"), c = $("cfgTheme");
   if (b) { const tl = dark ? "Light mode" : "Dark mode"; b.setAttribute("aria-pressed", String(dark)); b.classList.toggle("is-dark", dark); b.dataset.tip = tl; b.setAttribute("aria-label", "Switch to " + tl.toLowerCase());

@@ -1,6 +1,16 @@
 {
   "updates": [
     {
+      "id": "2026-11-08-bell-home",
+      "date": "2026-11-08",
+      "bullets": [
+        "Changed: The Dev Update bell now lives in full screen only, right of the tracker name at the top left. It is gone from the side pane.",
+        "Changed: A red dot on the bell means something new. Nothing pops up any more: click the bell to read it, and the dot clears.",
+        "Changed: You can still drag the bell away; drop it near its spot and it goes back.",
+        "Changed: The sun and moon on the light/dark button are whole again."
+      ]
+    },
+    {
       "id": "2026-11-08-bell-float",
       "date": "2026-11-08",
       "bullets": [

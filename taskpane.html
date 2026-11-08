@@ -9,7 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="dev-updates.css">
+<link rel="stylesheet" href="dev-updates.css?v=2">
 <style>
 /* MHS tracker design tokens (shared with ESK Tracker). Every colour comes from these variables, so dark mode follows. */
 :root{
@@ -47,6 +47,8 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .brand span{display:flex;flex-direction:column;min-width:0;line-height:1.25}
 .brand b{font-size:14px;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .brand small{font-size:12.5px;color:var(--muted)}
+/* full screen only: the Dev Update bell's home, right of the name and level with the page title (dev-updates.js) */
+.brand .du-home{margin:-6px -6px -6px auto;position:relative;top:0}
 .item{display:flex;justify-content:space-between;align-items:center;width:100%;min-height:44px;padding:10px 12px;border-radius:10px;font-size:15px;transition:background .2s}
 .item:hover{background:var(--surface-3)}
 .item[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
@@ -78,11 +80,8 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .ibtn.theme.swap .tgo{animation:tmsswapR .38s cubic-bezier(.3,.7,.3,1)}
 @keyframes tmsswapL{from{transform:translateX(12px) rotate(-90deg);opacity:1}}
 @keyframes tmsswapR{from{transform:translateX(-12px) rotate(90deg);opacity:.6}}
-/* half and half: the left half of where you are, the slash, the right half of the mode to press */
-.ibtn.theme{gap:0;padding:0 9px}.ibtn.theme svg{width:20px;height:20px}
-.ibtn.theme .tcur svg{clip-path:inset(0 50% 0 0)}.ibtn.theme .tgo svg{clip-path:inset(0 0 0 50%)}
-.ibtn.theme .tcur{margin-right:-8px;opacity:.6}.ibtn.theme .tgo{margin-left:-8px}
-.ibtn.theme .tsl{position:relative;z-index:1;padding:0 1px}
+/* both symbols whole, the same 18px as the other toolbar icons */
+.ibtn.theme svg{width:18px;height:18px}
 h1{margin:0;font-size:28px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
 h2{margin:0;font-size:15px;font-weight:600}
 h3{margin:18px 0 0;font-size:15px;font-weight:600}
@@ -731,7 +730,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 <div id="toast" role="status"></div>
 <script src="benefits.js"></script>
 <script src="core.js"></script>
-<script src="dev-updates.js"></script>
-<script src="taskpane.js"></script>
+<script src="dev-updates.js?v=2"></script>
+<script src="taskpane.js?v=2"></script>
 </body>
 </html>

@@ -37,7 +37,8 @@ Each workbook keeps its own list of people (the hidden **TMS User Settings** she
 - Your name fills in **Treating technician**, **By** and your note initials (you can still change them on any entry) and signs the Edit log.
 - Someone else taking over? Select your name at the bottom of the menu (or **Settings > You > Switch user**).
 - Full screen uses the name picked in the task pane and never asks.
-- Top right of every page: **Refresh**, **Full screen**, light/dark (sun / moon: press the one on the right) and the Dev Update bell. Point at an icon for its name. On the loading and name screens, which have no toolbar, the bell floats top right and can be dragged.
+- Top right of every page: **Refresh**, **Full screen** and light/dark (sun / moon: press the one on the right). Point at an icon for its name.
+- In full screen the Dev Update bell sits right of the tracker name at the top left. A red dot means something new: click the bell to read it. You can drag it away; drop it near its spot to put it back.
 - Want the tracker in full screen every time? Tick **Settings > You > Open in full screen whenever I open this workbook**. It's saved with your name. Excel can only open the tracker with the workbook for everyone, so while anyone has this on, the tracker opens by itself beside the sheet for everyone else, and in full screen once the person who turned it on is picked.
 
 Another clinic's workbook has its own list, so your name never shows up there unless you add it.
