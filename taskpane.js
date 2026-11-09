@@ -29,9 +29,15 @@ const BEN_COLS = { MRN: "A", Patient: "B", W1: "C", W4: "D", W5: "E", W6: "F", W
 const BEN_HDR = ["MRN", "Patient", "BIDF estimate", "Deductible remaining", "Out-of-pocket max remaining", "MTR approved", "Extensions added (90868)", "Last schedule provided",
   "MT PR", "Daily PR", "MTR PR", "F/U in-office PR", "F/U telehealth PR", "MT before ded.", "Daily before ded.", "MTR before ded.", "F/U in-office before ded.", "F/U telehealth before ded.", "Last updated",
   "LumaPay card on file", "Verbal copay consent"];
+/* the common benefits block (the same columns as Eligibility Checks), after the TMS-owned columns: keys E0, E1 ... from column V.
+   Only the eligibility feed writes them, quietly (Last updated in S stays the staff benefits date); no PR formula reads them. */
+SoharBenefits.COMMON.forEach(([h], i) => { let s = ""; for (let n = BEN_HDR.length + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; BEN_COLS["E" + i] = s; BEN_HDR.push(h); });
+const COMMON_KEYS = SoharBenefits.COMMON.map((_, i) => "E" + i);
 const BEN_KEYS = Object.keys(BEN_COLS).filter(k => /^[WXY]\d+$/.test(k)), BEN_STAMP = "BEN_STAMP";
-/* Card and Consent (T, U) are per-patient flags the technician ticks during a session; a workbook without those columns reads them as unticked */
+/* Card and Consent (T, U) are per-patient flags the technician ticks during a session; a workbook without those columns reads them as unticked.
+   The common block's headers are added the same way, the first time the feed writes them. */
 const BEN_FLAGS = ["Card", "Consent"];
+const ELIG_SHEET = "Eligibility Checks";
 const isBenKey = a => a === BEN_STAMP || BEN_KEYS.includes(a) || BEN_FLAGS.includes(a);
 const BLANK_ROW = { pr: null, tx: "", tech: "", date: null, time: null, pulses: [null, null, null], delivered: false, type: "", miss: false, action: "", alt: false, note: "", tele: false, freebie: "", phq: "", gad: "", measX: false, measVal: false };
 const C = { pr: 0, tech: 1, tx: 2, date: 4, L: 5, R: 7, O: 9, type: 11, miss: 12, action: 14, phq: 15, gad: 16, alt: 17, note: 18, time: 19 }; // 0-based in A:T
@@ -75,7 +81,8 @@ const atClinic = s => TmsCore.atClinic(s, clinic());
 const homeHere = h => TmsCore.homeHere(h, clinic());
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT },
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT, eligUrl: "" },
+  elig: [], wrongKind: "", kindChecked: false,
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", user: "", users: [], usersRead: false, whoKey: "", adminUntil: 0, apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
   view: "today", ptOpen: null, ptPast: false, ptPick: null, weekOffset: 0, schedOffset: 0, dash: "day", ptTab: null, cfilter: "needs", file: null, plan: null, codeEdited: false, courseEdited: false,
@@ -404,9 +411,17 @@ function parseLog(vals, vt) {
 async function refresh() {
   if (POPOUT) return callPane("refresh", []);
   try {
+    /* an ESK or IVK tracker opened with this add-in by mistake: say so and add or change nothing (checked before first launch writes anything) */
+    if (!state.kindChecked) await Excel.run(async ctx => {
+      ctx.workbook.load("name"); const s = ctx.workbook.worksheets; s.load("items/name"); await ctx.sync();
+      const k = SoharBenefits.trackerKind(s.items.map(x => x.name), ctx.workbook.name); state.kindChecked = true; state.wrongKind = k === "ESK" || k === "IVK" ? k : "";
+    });
+    if (state.wrongKind) return renderWrongTracker();
     await firstLaunch();
     await Excel.run(async ctx => {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || ""; state.sheetNames = sheets.items.map(s => s.name);
+      const elW = sheets.items.find(s => s.name.toLowerCase() === ELIG_SHEET.toLowerCase()), el = elW ? elW.getUsedRangeOrNullObject(true) : null;
+      if (el) { el.load("values"); await ctx.sync(); state.elig = el.isNullObject ? [] : eligRows(el.values); } else state.elig = [];
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
       const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), j6: s.getRange("J6"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
@@ -531,7 +546,60 @@ async function refresh() {
     syncActiveSheet();
     /* once a session: visit logs edited by hand get the formatting that follows their dates (hand-colored rows stay) */
     if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
+    /* the eligibility feed, once a day per workbook, when its flow URL is set (quiet: a failure waits for the Pull button) */
+    if (!state.eligTried) { state.eligTried = true; let day = ""; try { day = Office.context.document.settings.get("tms_elig_day") || ""; } catch { /* settings unavailable */ }
+      if (eligUrlOk() && day !== TmsCore.dayKey()) pullElig(false).catch(e => console.error(e)); }
   } catch (e) { fail(e); bootDone(); }
+}
+
+/* ---------- Eligibility feed: the 7 AM rotation's Eligibility History.csv, served by a Power Automate flow whose URL is in Settings.
+   Rows for this tracker's MRNs go to the hidden Eligibility Checks sheet (replaced each pull); each MRN's current row fills the
+   common block on its Benefits row. The TMS-owned columns (BIDF, D and E, PR) are never written here. ---------- */
+const eligUrlOk = () => /^https:\/\/[^\/\s?#]+\.(?:powerplatform\.com|logic\.azure\.com)(?::\d+)?\/\S+$/i.test(String(state.cfg.eligUrl || "").trim());
+function eligRows(values) {
+  const v = values || [], h = (v[0] || []).map(x => String(x ?? "").trim());
+  if (!h.includes("MRN") || !h.includes("Sohar ID")) return [];
+  return v.slice(1).filter(r => r.some(c => c !== "" && c != null)).map(r => Object.fromEntries(h.map((k, i) => [k, String(r[i] ?? "").trim()])));
+}
+async function pullElig(manual) {
+  if (POPOUT) return callPane("pullElig", [manual]);
+  if (!eligUrlOk()) { if (manual) toast("Add the eligibility feed URL in Settings first.", true); return; }
+  let text;
+  try {
+    const r = await fetch(String(state.cfg.eligUrl).trim(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tracker: "TMS", clinic: clinic() || "" }) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    text = await r.text();
+  } catch (e) { if (manual) toast(`Couldn't reach the eligibility feed (${e.message}). Nothing changed.`, true); return; }
+  const f = SoharBenefits.parseFeed(text);
+  if (f.error) { if (manual) toast(f.error, true); return; }
+  const mine = new Set(state.patients.map(p => p.mrn).filter(Boolean));
+  const rows = f.rows.filter(r => mine.has(SoharBenefits.normMrn(r.MRN))), cur = SoharBenefits.currentByMrn(rows);
+  const stamp = new Date().toLocaleString("en-US", { month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  await Excel.run(async ctx => {
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(ELIG_SHEET); await ctx.sync();
+    if (ws.isNullObject) ws = ctx.workbook.worksheets.add(ELIG_SHEET);
+    ws.getRange().clear();
+    const cols = SoharBenefits.FEED_COLS, data = [cols, ...rows.map(r => cols.map(c => r[c] ?? ""))];
+    const rg = ws.getRange(`A1:${colLetter(cols.length - 1)}${data.length}`); rg.numberFormat = data.map(r => r.map(() => "@")); rg.values = data;
+    ws.visibility = Excel.SheetVisibility.hidden;
+    const entries = [];
+    for (const [mrn, r] of cur) {
+      const p = state.patients.filter(x => x.mrn === mrn).sort((a, b) => b.course - a.course)[0]; if (!p) continue;
+      SoharBenefits.COMMON.forEach(([, src], i) => entries.push({ mrn, mrnVal: p.mrnVal, tab: p.tab, key: "E" + i, v: src ? r[src] ?? "" : stamp, quiet: true }));
+    }
+    await writeBen(ctx, entries); await ctx.sync();
+  });
+  state.elig = rows;
+  saveSetting("tms_elig_day", TmsCore.dayKey());
+  if (manual) toast(`Eligibility pulled: ${cur.size} patient${cur.size === 1 ? "" : "s"}, ${rows.length} pull${rows.length === 1 ? "" : "s"}.`);
+  renderDash(); if (pop.dlg) sendSnap();
+}
+/* the TMS Tracker opened in an ESK or IVK workbook: one plain screen, nothing added */
+function renderWrongTracker() {
+  const b = $("boot"); if (!b) return;
+  b.innerHTML = `<div class="bootin" role="alert"><h1>This is the wrong tracker</h1>
+    <p class="sub">This workbook is an ${esc(state.wrongKind)} tracker. The TMS Tracker add-in only works in a TMS patient tracker, so it hasn't added or changed anything here.</p>
+    <p class="sub">Close this pane and open the ${esc(state.wrongKind)} Tracker add-in instead.</p></div>`;
 }
 const num = (v, d) => (v === "" || v == null || isNaN(Number(v))) ? d : Number(v);
 
@@ -1662,7 +1730,28 @@ function ptBen(p) {
     ["Last updated", p.benUpdated != null ? fmtDateY(p.benUpdated) : "Never"], ["Plan year", ro, d.rollover ? (d.rollover.bad ? "bad" : "flag") : ""]];
   return `<div class="h"><h2>Benefits</h2><span class="actions" style="margin:0"><button class="btn ghost sm" data-act="ben" data-t="${esc(p.tab)}">Edit benefits</button><button class="btn ghost sm" data-act="goimport">Re-run eligibility</button></span></div>
     <div class="g2c">${factList(left)}${factList(right)}</div>
-    <p class="hint">OOPM met: Edit benefits and enter 0 in Out-of-pocket max remaining. Copay checks stop until the plan year ends. Re-run eligibility in the Sohar tool, then Import > Import Sohar benefits.</p>`;
+    <p class="hint">OOPM met: Edit benefits and enter 0 in Out-of-pocket max remaining. Copay checks stop until the plan year ends. Re-run eligibility in the Sohar tool, then Import > Import Sohar benefits.</p>
+    ${eligPullsHtml(p)}`;
+}
+/* every eligibility pull for this MRN (hidden Eligibility Checks sheet), newest first, each linked to Sohar with its related pulls */
+function eligPullsHtml(p) {
+  const L = p.mrn ? SoharBenefits.pullsFor(state.elig, p.mrn) : [];
+  const pullBtn = eligUrlOk() ? `<button class="btn ghost sm" data-act="eligpull">Pull eligibility</button>` : "";
+  const head = `<div class="h" style="margin-top:14px"><h2>Eligibility pulls</h2><span class="actions" style="margin:0">${pullBtn}</span></div>`;
+  if (!L.length) return `${head}<p class="body">${eligUrlOk() ? "No eligibility pulls yet." : "No eligibility pulls yet. Add the eligibility feed URL in Settings to fill this in."}</p>`;
+  const when = s => { const t = Date.parse(s); return t ? new Date(t).toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" }) : esc(s); };
+  const amt = v => v === "" || v == null ? "" : money(Number(String(v).replace(/[$,]/g, ""))) || esc(v);
+  const items = L.map(r => {
+    const ok = r.Kind === "Verification" && /^complete\.eligible/i.test(r["Sohar Status"]);
+    const status = r["Sohar Link"] ? `<a href="${esc(r["Sohar Link"])}" target="_blank" rel="noopener">${esc(r["Sohar Status"] || "Open in Sohar")}</a>` : esc(r["Sohar Status"]);
+    const rel = String(r["Related Sohar IDs"] || "").split(/[;,\s]+/).filter(Boolean).map((id, i) => `<a href="${esc(SoharBenefits.soharUrl(id))}" target="_blank" rel="noopener">related ${i + 1}</a>`).join(", ");
+    const facts = [r["Sohar Payer"] && `${esc(r["Sohar Payer"])}${r.Plan ? `, ${esc(r.Plan)}` : ""}`, r.Copay !== "" && r.Copay != null && `copay ${amt(r.Copay)}`,
+      r["Deductible Remaining"] !== "" && `deductible left ${amt(r["Deductible Remaining"])}`, r["OOP Remaining"] !== "" && `OOP left ${amt(r["OOP Remaining"])}`,
+      r["Projected Patient Responsibility"] && `projected ${esc(r["Projected Patient Responsibility"])}`].filter(Boolean).join(" · ");
+    return `<li class="pull"><div><b>${when(r["Pulled At"])}</b> ${esc(r.Kind)}: <span class="tag${ok ? "" : " amb"}">${ok ? "Eligible" : "Check"}</span> ${status}</div>
+      ${facts ? `<div class="sub2">${facts}</div>` : ""}${rel ? `<div class="sub2">Related pulls: ${rel}</div>` : ""}</li>`;
+  }).join("");
+  return `${head}<ol class="pulls">${items}</ol>`;
 }
 function ptFin(p) {
   const b = p.ben, d = p.d, Y = d.planYear;
@@ -2475,7 +2564,7 @@ async function writeBen(ctx, entries) {
   if (!entries.length) return;
   const ws = await benSheet(ctx), B = state.ben, touched = new Map();
   /* a workbook from before the card and consent columns gets their headers the first time one is written */
-  for (const k of new Set(entries.map(e => e.key).filter(k => BEN_FLAGS.includes(k)))) {
+  for (const k of new Set(entries.map(e => e.key).filter(k => BEN_FLAGS.includes(k) || COMMON_KEYS.includes(k)))) {
     const i = colIndex(BEN_COLS[k]); if (!B.hdr) B.hdr = [];
     if (String(B.hdr[i] ?? "").trim() !== BEN_HDR[i]) {
       const h = ws.getRange(`${BEN_COLS[k]}1`); h.values = [[BEN_HDR[i]]];
@@ -4061,7 +4150,7 @@ function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m))
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
     skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
-    edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
+    elig: state.elig || [], edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
 /* dialog messages are size-limited, so anything big goes in CHUNK-sized parts the window puts back together */
@@ -4071,7 +4160,7 @@ function applySnap(o) {
   bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
     pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
-    edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
+    elig: o.elig || [], edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
   rpc.snapWait.splice(0).forEach(f => f());
@@ -4088,7 +4177,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -4201,7 +4290,7 @@ function setTheme(t) {
   try { localStorage.setItem("tms_theme", t); } catch { /* this session only */ }
   syncTheme();
 }
-const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff" };
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
 const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 /* re-renders replace the markup, so focus goes back to the same control (by its data attributes), else to the card's next step */
@@ -4291,7 +4380,7 @@ Office.onReady(info => {
         const dup = state.patients.find(p => p.tab !== t && p.mrn === normMrn(x) && p.code !== (state.patients.find(q => q.tab === t) || {}).code);
         if (dup) return toast(`That MRN is already on ${dup.tab}. Check NextGen.`, true);
         return writeCells(t, [["A4", x]]).then(() => { toast(`${t}: MRN saved to A4.`); return refresh(); }).catch(fail); },
-      reimport: () => { show("imp"); buildPlan(); }, goimport: () => show("imp"),
+      reimport: () => { show("imp"); buildPlan(); }, goimport: () => show("imp"), eligpull: () => pullElig(true),
       mkSched: () => mkSchedSheet(), schedSheet: () => writeChairSheet(state.dash === "week" ? 7 * state.weekOffset : state.schedOffset), addPt: () => { resetAddPatient(); show("add"); },
       /* today's visits */
       start: needV(startSession), end: needV(x => x.guest ? mGuestEnd(x) : mEnd(x)), mt: needV(mMt), miss: needV(mMiss), move: needV(mMove), note: needV(mNote), fumeas: needV(mFuMeas),

@@ -100,5 +100,67 @@
     return ops;
   }
 
-  return { parseSoharBenefits, planBenefits, benefitOps, normMrn };
+  // ---------- Eligibility feed (contract v1: Eligibility History.csv from the 7 AM rotation, served by a Power Automate flow) ----------
+  const FEED_COLS = ["Pulled At", "LASFIR", "MRN", "Per Nbr", "Clinic", "Kind", "Sohar Status", "Sohar Payer", "Plan", "Network", "Coverage Level", "Coverage Start", "Coverage End",
+    "Copay", "Coinsurance", "Deductible", "Deductible Remaining", "Deductible Status", "OOP Max", "OOP Remaining", "OOP Status", "Benefit Flag",
+    "Sohar ID", "Sohar Link", "Related Sohar IDs", "Projected Patient Responsibility", "Estimate Note", "Source"];
+  /* The common benefits block every tracker keeps, appended after the TMS-owned Benefits columns: [header, feed column].
+     Deductible and OOP remaining here are Sohar's current numbers; the TMS-owned columns D and E stay the amounts at the
+     start of the course (column A's PR formula reads those), so the feed never writes D or E. */
+  const COMMON = [["Sohar Payer", "Sohar Payer"], ["Plan", "Plan"], ["Network", "Network"], ["Coverage Level", "Coverage Level"], ["Coverage Start", "Coverage Start"],
+    ["Coverage End", "Coverage End"], ["Copay", "Copay"], ["Coinsurance", "Coinsurance"], ["Deductible", "Deductible"], ["Deductible remaining (Sohar)", "Deductible Remaining"],
+    ["Deductible Status", "Deductible Status"], ["OOP Max", "OOP Max"], ["OOP remaining (Sohar)", "OOP Remaining"], ["OOP Status", "OOP Status"], ["Benefit Flag", "Benefit Flag"],
+    ["Sohar Status", "Sohar Status"], ["Sohar Date", "Pulled At"], ["Sent As", "Kind"], ["Sohar ID", "Sohar ID"], ["Sohar Link", "Sohar Link"], ["Related Sohar IDs", "Related Sohar IDs"],
+    ["Projected Patient Responsibility", "Projected Patient Responsibility"], ["Estimate Note", "Estimate Note"], ["Last Checked", null]];
+
+  /** Quoted CSV text -> 2D rows (BOM, CRLF, "" escapes). */
+  function parseCsv(text) {
+    const t = String(text ?? "").replace(/^﻿/, ""), rows = []; let row = [], f = "", q = false;
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (q) { if (c === '"') { if (t[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+      else if (c === '"') q = true; else if (c === ",") { row.push(f); f = ""; }
+      else if (c === "\n") { row.push(f.replace(/\r$/, "")); rows.push(row); row = []; f = ""; } else f += c;
+    }
+    if (f || row.length) { row.push(f.replace(/\r$/, "")); rows.push(row); }
+    return rows.filter((r) => r.some((c) => c !== ""));
+  }
+  /** The flow's response (CSV text, or JSON wrapping it as {body} / {csv} / {content}) -> {rows: [{col: value}]} or {error}. */
+  function parseFeed(text) {
+    let t = String(text ?? "");
+    if (/^\s*[{"]/.test(t)) { try { const j = JSON.parse(t); t = typeof j === "string" ? j : j.body ?? j.csv ?? j.content ?? ""; } catch { /* plain CSV */ } }
+    const g = parseCsv(t), h = (g[0] || []).map((x) => String(x).trim());
+    if (!["MRN", "Sohar ID", "Pulled At", "Kind"].every((c) => h.includes(c))) return { error: "That isn't the eligibility feed. The flow should return Eligibility History.csv. Nothing changed." };
+    return { rows: g.slice(1).map((r) => Object.fromEntries(h.map((k, i) => [k, String(r[i] ?? "").trim()]))) };
+  }
+  const pulledAt = (r) => Date.parse(r["Pulled At"]) || 0;
+  /** Feed rows -> Map(normalized MRN -> the row that counts): the newest eligible verification, else the newest of any kind. */
+  function currentByMrn(rows) {
+    const out = new Map();
+    for (const r of [...(rows || [])].sort((a, b) => pulledAt(b) - pulledAt(a))) {
+      const k = normMrn(r.MRN); if (!k) continue;
+      const elig = r.Kind === "Verification" && /^complete\.eligible/i.test(r["Sohar Status"]);
+      const c = out.get(k); if (!c || (elig && !c.elig)) out.set(k, { row: r, elig });
+    }
+    return new Map([...out].map(([k, v]) => [k, v.row]));
+  }
+  /** One MRN's pulls, newest first. */
+  const pullsFor = (rows, mrn) => (rows || []).filter((r) => normMrn(r.MRN) === normMrn(mrn)).sort((a, b) => pulledAt(b) - pulledAt(a));
+  /** Sohar page for an id. The feed doesn't say whether a related id is a verification or a discovery, so related ids link as
+      verifications unless the caller knows better (Sohar shows "not found" for the wrong kind; the row's own link is exact). */
+  const soharUrl = (id, kind) => `https://app.soharhealth.com/${/disc/i.test(kind || "") ? "discovery" : "verifications"}/${encodeURIComponent(id)}`;
+
+  /** Which tracker this workbook is: sheet names first (strongest), then the file name. "unknown" is a new or empty workbook. */
+  function trackerKind(sheetNames, wbName) {
+    const s = new Set((sheetNames || []).map(norm)), w = String(wbName || "");
+    if (s.has("ivktrackerdata")) return "IVK";
+    if (s.has("eskvisitlog") || (s.has("inventory") && s.has("masterpatienttracker"))) return "ESK";
+    if (["newtemplate", "h1template", "h7template", "protocols", "clinicschedule"].some((n) => s.has(n))) return "TMS";
+    if (/esketamine|spravato|\besk\b/i.test(w)) return "ESK";
+    if (/\bivk\b|iv ketamine/i.test(w)) return "IVK";
+    if (/\btms\b|magv|brainsway|pt\.? tracking/i.test(w)) return "TMS";
+    return "unknown";
+  }
+
+  return { parseSoharBenefits, planBenefits, benefitOps, normMrn, FEED_COLS, COMMON, parseCsv, parseFeed, currentByMrn, pullsFor, soharUrl, trackerKind };
 });
