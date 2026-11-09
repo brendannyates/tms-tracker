@@ -125,13 +125,19 @@
     if (f || row.length) { row.push(f.replace(/\r$/, "")); rows.push(row); }
     return rows.filter((r) => r.some((c) => c !== ""));
   }
-  /** The flow's response (CSV text, or JSON wrapping it as {body} / {csv} / {content}) -> {rows: [{col: value}]} or {error}. */
+  /** The flow's response -> {rows: [{col: value}]} or {error}. Accepts CSV text, JSON wrapping it as {body} / {csv} / {content},
+      and {csv, rows}: rows are the Sohar webhook's table rows (tblEligFeed), merged by Sohar ID, the newer Pulled At winning.
+      Table rows without a Sohar ID (Excel's blank first row) are skipped. */
   function parseFeed(text) {
-    let t = String(text ?? "");
-    if (/^\s*[{"]/.test(t)) { try { const j = JSON.parse(t); t = typeof j === "string" ? j : j.body ?? j.csv ?? j.content ?? ""; } catch { /* plain CSV */ } }
+    let t = String(text ?? ""), extra = [];
+    if (/^\s*[{"]/.test(t)) { try { const j = JSON.parse(t); t = typeof j === "string" ? j : j.body ?? j.csv ?? j.content ?? ""; if (j && Array.isArray(j.rows)) extra = j.rows; } catch { /* plain CSV */ } }
     const g = parseCsv(t), h = (g[0] || []).map((x) => String(x).trim());
-    if (!["MRN", "Sohar ID", "Pulled At", "Kind"].every((c) => h.includes(c))) return { error: "That isn't the eligibility feed. The flow should return Eligibility History.csv. Nothing changed." };
-    return { rows: g.slice(1).map((r) => Object.fromEntries(h.map((k, i) => [k, String(r[i] ?? "").trim()]))) };
+    if (!["MRN", "Sohar ID", "Pulled At", "Kind"].every((c) => h.includes(c)) && !extra.length) return { error: "That isn't the eligibility feed. The flow should return Eligibility History.csv. Nothing changed." };
+    const rows = g.slice(1).map((r) => Object.fromEntries(h.map((k, i) => [k, String(r[i] ?? "").trim()])));
+    const byId = new Map(); const keep = (r) => { const id = r["Sohar ID"]; if (!id) return; const c = byId.get(id); if (!c || pulledAt(r) >= pulledAt(c)) byId.set(id, r); };
+    rows.forEach(keep);
+    extra.forEach((o) => keep(Object.fromEntries(FEED_COLS.map((c) => [c, String((o && o[c]) ?? "").trim()]))));
+    return { rows: [...byId.values()] };
   }
   const pulledAt = (r) => Date.parse(r["Pulled At"]) || 0;
   /** Feed rows -> Map(normalized MRN -> the row that counts): the newest eligible verification, else the newest of any kind. */
