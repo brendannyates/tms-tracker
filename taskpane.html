@@ -494,6 +494,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 .per{display:grid;grid-template-columns:1.4fr 1fr repeat(4,.8fr);gap:8px;align-items:center;margin-top:8px}
 .per.hdr{font-size:12.5px;color:var(--muted)}
 /* loading, then the name screen: full page, the hero, then the names; a long list scrolls instead of being clipped */
+.pulls{list-style:none;margin:6px 0 0;padding:0}.pulls .pull{padding:8px 0;border-top:1px solid var(--surface-3)}.pulls .pull:first-child{border-top:0}.pulls .sub2{margin-top:2px;font-weight:400}.tag.amb{background:var(--warn-soft);color:var(--warn)}
 .boot{position:fixed;inset:0;z-index:70;display:flex;overflow:auto;background:var(--bg);padding:24px}
 .bootin{margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center}
 .bootin h1{margin:22px 0 0;font-size:30px}.bootin .sub{margin:6px 0 0}
@@ -657,7 +658,9 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
           <label class="fld" for="cfgRecent"><span>Recent visit window (days)</span><input id="cfgRecent" type="number" min="1"></label>
           <label class="fld" for="cfgOpenTab"><span>Selecting a visit on Today</span><select id="cfgOpenTab"><option value="on">Also opens their Excel tab at that visit</option><option value="off">Shows the visit card only</option></select></label>
           <label class="fld" for="cfgCutoff"><span>Updates and Match New Template leave out trackers with no visit since</span><input id="cfgCutoff" type="date"></label>
+          <label class="fld" for="cfgElig"><span>Eligibility feed URL (the Power Automate flow that returns Eligibility History)</span><input id="cfgElig" type="url" placeholder="https://...powerplatform.com/..." autocomplete="off"></label>
         </div>
+        <p class="hint">The feed fills the Benefits tab's Sohar columns and each patient's Eligibility pulls once a day. Keep the URL private: anyone with it can read the feed. <button class="btn ghost sm" data-act="eligpull" type="button">Pull eligibility now</button></p>
         <p class="hint" id="cutoffNote"></p>
       </div>
       <div class="card form">
