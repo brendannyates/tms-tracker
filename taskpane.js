@@ -566,7 +566,7 @@ async function pullElig(manual) {
   if (!eligUrlOk()) { if (manual) toast("Add the eligibility feed URL in Settings first.", true); return; }
   let text;
   try {
-    const r = await fetch(String(state.cfg.eligUrl).trim(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tracker: "TMS", clinic: clinic() || "" }) });
+    const r = await fetch(String(state.cfg.eligUrl).trim(), { method: "POST", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify({ tracker: "TMS", clinic: clinic() || "" }) });   // text/plain: a simple request, no CORS preflight
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     text = await r.text();
   } catch (e) { if (manual) toast(`Couldn't reach the eligibility feed (${e.message}). Nothing changed.`, true); return; }
