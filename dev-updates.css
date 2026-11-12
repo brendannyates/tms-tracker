@@ -1,15 +1,15 @@
 /* Dev Update bell (dev-updates.js), shared by the MHS add-ins (keep byte-identical). Colours come from the add-in's tokens,
    with the light tracker values as fallbacks. */
-.devupd{position:fixed;top:14px;left:16px;z-index:40;font-family:var(--font,"IBM Plex Sans",system-ui,"Segoe UI",sans-serif);color:var(--ink,#1B211F)}
-.du-bell{position:relative;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:var(--surface,#FFFFFF);color:var(--muted,#66706B);box-shadow:var(--shadow,0 1px 2px rgba(16,24,20,.05),0 12px 32px -14px rgba(16,24,20,.14));border:0;cursor:pointer;touch-action:none}
+.devupd{position:relative;display:block;width:44px;height:44px;z-index:40;font-family:var(--font,"IBM Plex Sans",system-ui,"Segoe UI",sans-serif);color:var(--ink,#1B211F)}
+.du-bell{position:relative;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:var(--surface,#FFFFFF);color:var(--muted,#66706B);box-shadow:var(--shadow,0 1px 2px rgba(16,24,20,.05),0 12px 32px -14px rgba(16,24,20,.14));border:0;cursor:pointer}
 .du-bell:hover,.du-bell[aria-expanded="true"]{color:var(--accent,#1E6B59)}
-/* at home beside the add-in's name: a plain icon like the toolbar's, no floating disc */
-.devupd.du-athome .du-bell{background:none;box-shadow:none;border-radius:12px}
-.devupd.du-athome .du-bell:hover,.devupd.du-athome .du-bell[aria-expanded="true"]{background:var(--surface-3,#F0F1EE)}
+/* beside the add-in's name: a plain icon like the toolbar's, no floating disc */
+.devupd .du-bell{background:none;box-shadow:none;border-radius:12px}
+.devupd .du-bell:hover,.devupd .du-bell[aria-expanded="true"]{background:var(--surface-3,#F0F1EE)}
 /* new: a red dot until the history is opened */
 .du-dot{position:absolute;top:9px;right:10px;width:9px;height:9px;border-radius:50%;background:var(--danger,#B3261E);box-shadow:0 0 0 2px var(--surface,#FFFFFF)}
-.devupd.du-athome .du-dot{box-shadow:0 0 0 2px var(--bg,var(--surface,#FFFFFF))}
-.du-panel{position:absolute;top:52px;right:0;width:min(360px,calc(100vw - 48px));box-sizing:border-box;max-height:min(70vh,560px);overflow:auto;padding:6px 16px 14px;background:var(--surface,#FFFFFF);border-radius:16px;box-shadow:var(--shadow,0 1px 2px rgba(16,24,20,.05),0 12px 32px -14px rgba(16,24,20,.14));font-size:14px;line-height:1.45}
+.devupd .du-dot{box-shadow:0 0 0 2px var(--bg,var(--surface,#FFFFFF))}
+.du-panel{position:fixed;top:60px;left:12px;width:min(360px,calc(100vw - 24px));box-sizing:border-box;max-height:min(70vh,560px);overflow:auto;padding:6px 16px 14px;background:var(--surface,#FFFFFF);border-radius:16px;box-shadow:var(--shadow,0 1px 2px rgba(16,24,20,.05),0 12px 32px -14px rgba(16,24,20,.14));font-size:14px;line-height:1.45}
 .du-head{position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;padding:8px 0;background:var(--surface,#FFFFFF)}
 .du-head b{font-weight:600}
 .du-head button{min-height:44px;padding:0 12px;border-radius:10px;border:0;background:none;color:var(--accent,#1E6B59);font:inherit;font-weight:600;cursor:pointer}
@@ -21,13 +21,8 @@
 .devupd li+li{margin-top:3px}
 .devupd[hidden],.devupd [hidden]{display:none!important}
 .devupd :focus-visible{outline:2px solid var(--accent,#1E6B59);outline-offset:3px}
-/* dragging; the history opens towards the middle of the window */
-.devupd.du-drag .du-bell{cursor:grabbing;background:var(--surface,#FFFFFF);box-shadow:0 8px 28px -8px rgba(16,24,20,.35)}
-.devupd.du-left .du-panel{right:auto;left:0}
-.devupd.du-up .du-panel{top:auto;bottom:52px}
-/* the add-in's home spot right of its top-left name: holds the bell's room, the bell itself is fixed over it */
-.du-home{display:inline-block;flex:none;width:44px;height:44px}
+/* the add-in's home spot right of its top-left name; the bell sits inside it */
+.du-home{display:inline-flex;flex:none;width:44px;height:44px;align-items:center;justify-content:center}
 /* hover label (also used by the add-in's toolbar buttons via [data-tip]) */
-.du-bell[data-tip]:hover::after,.du-bell[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);right:0;white-space:nowrap;padding:5px 9px;border-radius:8px;background:var(--ink,#1B211F);color:var(--surface,#FFFFFF);font-size:12px;font-weight:500;line-height:1.2;pointer-events:none;z-index:60}
-.devupd.du-left .du-bell[data-tip]:hover::after,.devupd.du-left .du-bell[data-tip]:focus-visible::after{right:auto;left:0}
+.du-bell[data-tip]:hover::after,.du-bell[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:0;white-space:nowrap;padding:5px 9px;border-radius:8px;background:var(--ink,#1B211F);color:var(--surface,#FFFFFF);font-size:12px;font-weight:500;line-height:1.2;pointer-events:none;z-index:60}
 .du-bell[aria-expanded="true"]::after{display:none}
