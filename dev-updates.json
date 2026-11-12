@@ -1,6 +1,13 @@
 {
   "updates": [
     {
+      "id": "2026-11-12-bell-static",
+      "date": "2026-11-12",
+      "bullets": [
+        "Changed: In full screen, this bell sits next to the TMS name at the top left and stays there."
+      ]
+    },
+    {
       "id": "2026-11-08-bell-home",
       "date": "2026-11-08",
       "bullets": [

@@ -4274,7 +4274,7 @@ function placeTools() {
 /* the Dev Update bell's home: right of the rail name, in full screen only, and not while the loading or name screen is up */
 function placeHome() {
   const br = document.querySelector(".rail .brand"), h = br && br.querySelector(".du-home"), want = FULL && !$("boot") && $("who").hidden;
-  if (want && !h && br) br.insertAdjacentHTML("beforeend", '<span class="du-home" aria-hidden="true"></span>');
+  if (want && !h && br) br.insertAdjacentHTML("beforeend", '<span class="du-home"></span>');
   else if (!want && h) h.remove();
 }
 let placeRaf = 0;
