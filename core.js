@@ -63,13 +63,81 @@
     return rc || "";
   }
 
+  /* NextGen's event names: "TMS Treatment Unilateral", "TMS Theta Tx Bilateral" (theta burst says Tx, not Treatment), "MT MagV",
+     "MT Redo", "TMS Follow Up", "Telepsych TMS F/U". Anything else is not a TMS visit (null). */
+  function mapEvent(ev) {
+    const s = String(ev ?? "").toLowerCase();
+    if (/tele/.test(s)) return { type: "F/U", tele: true };
+    if (/follow|f\/u/.test(s)) return { type: "F/U", tele: false };
+    if (/redo|mtr/.test(s)) return { type: "MTR", tele: false };
+    if (/\bmt\b/.test(s)) return { type: "MT", tele: false };
+    if (/treatment|\btx\b|theta|\btbs\b/.test(s)) return { type: "Daily", tele: false };
+    return null;
+  }
+
   /* missed treatments in a row, most recent first; visits not yet entered (no pulses, not missed) neither count nor break it */
-  function missStreak(rows, today) {
-    const past = rows.filter(r => r.date != null && r.date <= today && r.type && r.type !== "F/U" && !r.alt && (r.miss || r.delivered))
-      .sort((a, b) => a.date - b.date || (a.time ?? 0) - (b.time ?? 0));
-    let n = 0;
-    for (let i = past.length - 1; i >= 0 && past[i].miss; i--) n++;
-    return n;
+  const pastTx = (rows, today) => rows.filter(r => r.date != null && r.date <= today && r.type && r.type !== "F/U" && !r.alt && (r.miss || r.delivered))
+    .sort((a, b) => a.date - b.date || (a.time ?? 0) - (b.time ?? 0));
+  function missRun(rows, today) {
+    const past = pastTx(rows, today), run = [];
+    for (let i = past.length - 1; i >= 0 && past[i].miss; i--) run.unshift(past[i]);
+    return run;
+  }
+  const missStreak = (rows, today) => missRun(rows, today).length;
+
+  /* ---------- telephone notes to the provider (written in NextGen; the add-in logs that it was done in Notes, S) ----------
+     "Tel note to Dr. Smith 11/11 (missed 2)" starts one; "Tel note entry 11/12 (missed 3)" adds to it;
+     "Tel note to Dr. Smith 11/14 (F/U 11/6 not rebooked)" is for a follow-up that was missed or cancelled and not rebooked. */
+  const TEL_MISS = /^tel note (?:to|entry)\b[^;]*\(missed (\d+)\)/i;
+  const telMissLine = (prov, day, n, entry) => entry ? `Tel note entry ${day} (missed ${n})` : `Tel note to ${prov ? `Dr. ${prov}` : "the provider"} ${day} (missed ${n})`;
+  const telFuLine = (prov, day, fuDay) => `Tel note to ${prov ? `Dr. ${prov}` : "the provider"} ${day} (F/U ${fuDay} not rebooked)`;
+  const notesOf = r => String(r.note ?? "").split("; ").map(x => x.trim());
+  /* two or more missed treatments in a row need a telephone note to the provider; each miss after that, a new entry on it.
+     Returns null under 2, else { n, logged (the miss count the last logged line covered), due, first, run, add (misses not yet on it) } */
+  function telNote(rows, today) {
+    const run = missRun(rows, today), n = run.length;
+    if (n < 2) return null;
+    let logged = 0;
+    run.forEach(r => notesOf(r).forEach(s => { const m = s.match(TEL_MISS); if (m) logged = Math.max(logged, +m[1]); }));
+    logged = Math.min(logged, n);
+    return { n, logged, due: logged < n, first: logged === 0, run, add: run.slice(logged) };
+  }
+  /* business days after from, up to to (serials; Saturday and Sunday don't count) */
+  const wday = s => (s + 6) % 7;   // 0 Sunday, for serials counted from Dec 30, 1899
+  function bizDays(from, to) { let n = 0; for (let d = from + 1; d <= to; d++) { const w = wday(d); if (w > 0 && w < 6) n++; } return n; }
+  /* a follow-up missed (x in M) or cancelled in NextGen, with no follow-up booked or done after it: rebook it; after REBOOK_DAYS
+     business days a telephone note goes to the provider. cx: cancelled F/U from the saved list { date, mod }. lbl: serial -> "m/d",
+     to find the logged line. Only the last 30 days count. */
+  const REBOOK_DAYS = 2, REBOOK_LOOK = 30;
+  function fuRebook(rows, cx, today, lbl) {
+    const evs = rows.filter(r => r.type === "F/U" && r.miss && r.date != null && r.date <= today).map(r => ({ date: r.date, kind: "missed", start: r.date, row: r.row }));
+    (cx || []).forEach(c => {
+      if (c.date == null || evs.some(e => e.date === c.date)) return;
+      if (rows.some(r => r.type === "F/U" && !r.miss && r.date === c.date)) return;   // rebooked the same day
+      evs.push({ date: c.date, kind: "cancelled", start: Math.min(today, c.mod ?? c.date), row: null });   // the clock starts when it was cancelled
+    });
+    const fu = rows.filter(r => r.type === "F/U" && !r.miss && r.date != null), all = rows.flatMap(notesOf);
+    return evs.filter(e => e.start >= today - REBOOK_LOOK && !fu.some(r => r.date > e.date))
+      .map(e => ({ ...e, telDue: bizDays(e.start, today) >= REBOOK_DAYS, logged: all.some(s => /^tel note to\b/i.test(s) && s.includes(`(F/U ${lbl(e.date)} not rebooked)`)) }))
+      .sort((a, b) => a.date - b.date);
+  }
+  /* follow-ups through the course: one between the MT and the MT redo (or treatment 15 with no MT redo booked), one around
+     treatments 20 to 27, and one within 7 days of the last treatment (D2), either side. A window counts once its treatments are
+     dated; a gap shows only while the window hasn't passed. Returns [{ k, label, from, to }] */
+  const FU_END = 7;
+  function fuGaps(rows, total, today) {
+    const live = r => r.date != null && !r.miss;
+    const txd = rows.filter(r => live(r) && ["MT", "Daily", "Taper", "MTR"].includes(r.type)).sort((a, b) => a.date - b.date || (a.time ?? 0) - (b.time ?? 0));
+    const mt = txd.find(r => r.type === "MT"); if (!mt) return [];
+    const at = k => { const r = txd.slice(txd.indexOf(mt))[k - 1]; return r ? r.date : null; };
+    const mtr = txd.find(r => r.type === "MTR" && r.date > mt.date), fus = rows.filter(r => live(r) && r.type === "F/U");
+    const win = [];
+    const aTo = mtr ? mtr.date : at(15);
+    if (aTo != null) win.push({ k: "mtr", label: mtr ? "between the MT and the MT redo" : "between the MT and treatment 15", from: mt.date, to: aTo });
+    if (total >= 27 && at(20) != null) win.push({ k: "mid", label: "around treatments 20 to 27", from: at(20), to: at(27) ?? at(20) + 9 });
+    const last = at(total);
+    if (last != null) win.push({ k: "end", label: `within ${FU_END} days of the last treatment`, from: last - FU_END, to: last + FU_END });
+    return win.filter(w => w.to >= today && !fus.some(f => f.date >= w.from && f.date <= w.to));
   }
 
   /* Needs for one course, from the checks taskpane.js already makes (p.d) plus today's floor (x). Red (bad) is kept for what blocks
@@ -83,6 +151,16 @@
     if (d.stale) add("stale", `No visit in ${rec}+ days, last ${d.lastTx != null ? f(d.lastTx) : "none"}`, ["Pause or discontinue", "statuspick"], { bad: true });
     const streak = missStreak(p.rows, x.today);
     if (streak >= 3) add("missed", `Missed ${streak} in a row`, ["Call to reschedule", "call"], { bad: true });
+    /* telephone notes to the provider: 2+ missed in a row, then an entry for each miss after; a follow-up not rebooked */
+    const dr = p.provider ? `Dr. ${p.provider}` : "the provider", tel = d.tel;
+    if (tel && tel.due) add("telnote", tel.first ? `Missed ${tel.n} in a row: telephone note to ${dr}` : `Missed again ${tel.add.map(r => f(r.date)).join(", ")}: add to the telephone note`,
+      [tel.first ? "Write telephone note" : "Add to telephone note", "telnote"], { bad: true });
+    (d.fuRebook || []).forEach(e => {
+      if (e.telDue && e.logged) return;
+      add("furebook", e.telDue ? `Follow-up ${f(e.date)} ${e.kind}, not rebooked: telephone note to ${dr}` : `Follow-up ${f(e.date)} ${e.kind}: rebook it`,
+        e.telDue ? ["Write telephone note", "telfu"] : ["Rebook in NextGen", "opentab"], { bad: e.telDue, v: e.date, row: e.row });
+    });
+    if (A) (d.fuGaps || []).forEach(w => add("fugap", `No follow-up booked ${w.label} (${f(w.from)} to ${f(w.to)})`, ["Book in NextGen", "opentab"], { v: w.k }));
     if (A) d.authFlags.forEach(t => add("auth", t, /^Auth starts|MT redo/.test(t) ? ["Open", "opentab"] : ["Add extension", "ext"], { bad: /expired|past auth|authorized \(D2\)/i.test(t) }));
     (x.moved || []).forEach(v => add("ng", `Moved to ${v.chairLabel}${v.dayLabel ? ` on ${v.dayLabel}` : ""}, not yet in NextGen`, ["Mark moved in NextGen", "ngdone"], { key: v.key }));
     (x.noChair || []).forEach(v => add("nochair", `No chair for ${v.timeLabel}`, ["Choose a chair", "move"], { key: v.key }));
@@ -333,36 +411,54 @@
     const top = most(chair.filter(v => !v.here)), daily = chair.filter(v => v.here && (v.type === "Daily" || v.type === "Taper")).length;
     const out = (role, home) => ({ role, here, daily, home: home || "", homeCount: home ? by[home] || 0 : top[1], by });
     const mts = visits.filter(v => (v.type === "MT" || v.type === "MTR") && v.here != null), mtOut = mts.filter(v => !v.here);
-    if (mts.length) {
-      if (mts.length - mtOut.length >= mtOut.length) return out("home");
-      const away = most(mtOut)[0];
-      return !here ? out("none", away) : daily >= ASK_MIN ? out("ask", away) : out("guest", away);
+    const mtHere = mts.length > 0 && mts.length - mtOut.length >= mtOut.length;
+    if (!chair.length) {
+      if (mts.length) return mtHere ? out("home") : out("none", most(mtOut)[0]);
+      return visits.some(v => v.here) || !visits.some(v => v.here === false) ? out("home") : out("none", most(visits)[0]);
     }
-    if (!chair.length) return visits.some(v => v.here) || !visits.some(v => v.here === false) ? out("home") : out("none", most(visits)[0]);
-    if (!here) return out("none", top[0]);
-    return here >= top[1] ? out("home") : out("guest", top[0]);
+    /* most treatments booked at another clinic: the tab is there, whatever the MT */
+    if (top[1] > here) return here ? out("guest", top[0]) : out("none", top[0]);
+    if (!mts.length || mtHere) return out("home");
+    /* the MT elsewhere, most treatments here: a tie stays with the MT; 16+ here is a course booked here (a tracker here), fewer a guest */
+    const away = most(mtOut)[0];
+    if (top[1] === here) return out("guest", away);
+    return daily >= ASK_MIN ? out("ask", away) : out("guest", away);
   }
   /* whether a patient with no tab here is offered one (the New patients banner). appts: { date, status, type, here } per booking,
      here false when it names another clinic. An MT or MT redo here (kept or booked), or ASK_MIN or more treatments booked here from
      today on. F/U alone never does, nor does an MT at another clinic. */
   function needsTracker(appts, from) {
     const ok = appts.filter(a => a.status !== "No-show" && a.status !== "Cancelled" && a.here !== false), fut = ok.filter(a => a.date >= from);
-    return ok.some(a => a.type === "MT" || a.type === "MTR") || fut.filter(a => a.type === "Daily" || a.type === "Taper").length >= ASK_MIN;
+    const tx = a => a.type === "Daily" || a.type === "Taper";
+    /* an MT here, 16+ treatments booked from today, or 16+ kept and booked here in all (a course mostly done here) */
+    return ok.some(a => a.type === "MT" || a.type === "MTR") || fut.filter(tx).length >= ASK_MIN || ok.filter(tx).length >= ASK_MIN;
   }
-  /* a patient with no tab here and no tracker due (needsTracker) but treatments booked here is a guest: tracked at their home clinic,
-     whose tab link Today asks for. F/U alone stays as it was. A F/U at another clinic (Post) with no MT or MT redo here makes them
-     that clinic's guest, however many treatments are booked here: no "needs a tracker" flag, and their home is named.
+  /* a patient with no tab here and no tracker due (needsTracker) but treatments booked here is a guest: intermittent treatments
+     here, tracked at their home clinic. F/U alone stays as it was. Follow-ups never decide (they're on the provider's schedule,
+     often at another location), but with no chair visit elsewhere on the list they name the guest's home clinic.
      g: clinicRole's answer, or { role: "home" }. */
   function noTabRole(g, visits, from) {
     const tx = visits.filter(v => v.here !== false && (v.type === "Daily" || v.type === "Taper"));
-    if (g.role !== "home" || !tx.length) return g;
-    const live = visits.filter(v => v.status !== "No-show" && v.status !== "Cancelled");
-    const mtHere = live.some(v => (v.type === "MT" || v.type === "MTR") && v.here !== false), fu = {};
+    if (g.role !== "home" || !tx.length || needsTracker(visits, from)) return g;
+    const live = visits.filter(v => v.status !== "No-show" && v.status !== "Cancelled"), fu = {};
     live.filter(v => v.type === "F/U" && v.here === false && v.where).forEach(v => { fu[v.where] = (fu[v.where] || 0) + 1; });
-    const fuTop = Object.entries(fu).sort((a, b) => b[1] - a[1])[0];
-    if (!(fuTop && !mtHere) && needsTracker(visits, from)) return g;
-    const top = fuTop && !mtHere ? [fuTop[0], (g.by || {})[fuTop[0]] || 0] : Object.entries(g.by || {}).sort((a, b) => b[1] - a[1])[0];
-    return { ...g, role: "guest", here: tx.length, daily: tx.length, home: top ? top[0] : "", homeCount: top ? top[1] : 0, by: g.by || {}, fuAway: !!(fuTop && !mtHere) };
+    const chairTop = Object.entries(g.by || {}).sort((a, b) => b[1] - a[1])[0], fuTop = Object.entries(fu).sort((a, b) => b[1] - a[1])[0];
+    const top = chairTop || (fuTop ? [fuTop[0], 0] : null);
+    return { ...g, role: "guest", here: tx.length, daily: tx.length, home: top ? top[0] : "", homeCount: top ? top[1] : 0, by: g.by || {}, fuAway: !chairTop && !!fuTop };
+  }
+  /* the MRN on a tab's first rows, wherever it sits: "MRN: 0012345" in one cell, or a value right of or below a cell reading MRN
+     (A3 "MRN:" over A4 on New Template, B3 beside it on older tabs). A bare number elsewhere isn't taken: auth dates and counts
+     are numbers too. grid: the rows' values (A1:T4). Returned as normMrn would: letters and digits, no leading zeros. */
+  function mrnsIn(grid) {
+    const out = new Set(), norm = v => String(v ?? "").toUpperCase().replace(/\.0+$/, "").replace(/[^A-Z0-9]/g, "").replace(/^0+/, "");
+    const ok = v => /^\d{2,12}$/.test(norm(v)) || /^[A-Z]{0,3}\d{3,12}$/.test(norm(v));
+    const g = grid || [];
+    g.forEach((row, i) => (row || []).forEach((c, j) => {
+      const s = String(c ?? "").trim(), m = s.match(/^mrn\s*[:#]?\s*(\S.*)$/i);
+      if (m && ok(m[1])) out.add(norm(m[1]));
+      else if (/^mrn\s*[:#]?$/i.test(s)) [(row || [])[j + 1], (g[i + 1] || [])[j]].forEach(v => { if (String(v ?? "").trim() && ok(v)) out.add(norm(v)); });
+    }));
+    return [...out];
   }
   /* "Their tab is in this workbook": tabs ranked by how close their name is to the patient's LASFIR (same code, then the same last or
      first three letters, then the fewest letters apart), filtered by what was typed. tabs: { name, code, ... }. Returns the tabs with
@@ -479,6 +575,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, telNote, telMissLine, telFuLine, bizDays, fuRebook, REBOOK_DAYS, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
     copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });

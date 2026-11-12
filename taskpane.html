@@ -636,6 +636,13 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
         <label for="file" class="fld"><span>Appointment list</span></label>
         <input type="file" id="file" accept=".csv,.xlsx,.xls">
         <div id="savedList" class="hint" hidden><span id="savedListMsg"></span> <button class="btn ghost sm" data-act="previewSaved">Preview again</button></div>
+        <div id="extBox" style="margin-top:14px">
+          <p><b>Other clinics' lists</b> (after this clinic's)</p>
+          <p class="hint">Add the same ALL TMS report from the clinics your patients are also treated at. Only rows for patients booked here are kept, on the Other Clinic Lists tab. They decide where a patient's tab belongs (most treatments booked) and fill in visits elsewhere on tabs here, marked Alt Clinic; nothing on them goes on this clinic's schedule.</p>
+          <label for="extFile" class="fld"><span>Other clinics' appointment lists</span></label>
+          <input type="file" id="extFile" accept=".csv,.xlsx,.xls" multiple>
+          <div id="extMsg" class="hint"></div>
+        </div>
         <div id="planBox" hidden><div id="planBody" style="margin-top:12px"></div></div>
       </div>
       <div class="card form">

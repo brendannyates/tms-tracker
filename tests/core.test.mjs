@@ -326,7 +326,9 @@ test("clinicRole: the MT and MT redo decide home; 16+ dailies here asks; no MT f
   const mt = (here, type = "MT") => ({ chair: false, here, where: here ? "" : "Post", type });
   const dailies = (n, here) => Array.from({ length: n }, () => c(here));
   assert.equal(T.ASK_MIN, 16);
-  assert.equal(T.clinicRole([mt(true), c(false), c(false), c(true)]).role, "home");           // MT here: home, whatever the dailies
+  assert.equal(T.clinicRole([mt(true), c(false), c(false), c(true)]).role, "guest");          // MT here, most treatments at Post: Post carries the tab
+  assert.equal(T.clinicRole([mt(true), c(false), c(true)]).role, "home");                     // MT here, a tie: the MT decides
+  assert.equal(T.clinicRole([mt(false), c(false), c(true)]).role, "guest");                   // MT at Post, a tie: Post's
   assert.equal(T.clinicRole([mt(false), mt(true, "MTR")]).role, "home");                      // tie between MT and MTR stays here
   const g = T.clinicRole([mt(false), ...dailies(15, true), c(false)]);
   assert.deepEqual([g.role, g.home, g.daily], ["guest", "Post", 15]);                          // MT at Post, 15 dailies here
@@ -398,12 +400,13 @@ test("Benefits flag cells: Yes, x, TRUE and ticks are on; blank and No are off",
   for (const v of ["", null, undefined, "No", false, "n"]) assert.equal(T.flagOn(v), false, String(v));
 });
 
-test("noTabRole: a F/U at another clinic with no MT here makes a guest from that clinic, not a new tracker", () => {
+test("noTabRole: a F/U at another clinic names an intermittent guest's home, but never outweighs a course booked here", () => {
   const b = (type, here = true, where = "", status = "Scheduled") => ({ type, here, where: here ? "" : where, date: 10, status });
   const tx = n => Array.from({ length: n }, () => b("Daily"));
   const g = T.noTabRole({ role: "home" }, [...tx(20), b("F/U", false, "Post")], 10);
-  assert.deepEqual([g.role, g.home, g.fuAway], ["guest", "Post", true]);                         // 20 here + F/U at Post: Post's guest, no tracker flag
-  assert.equal(T.noTabRole({ role: "home" }, [...tx(5), b("F/U", false, "Post")], 10).home, "Post");   // under 16: home named, not unknown
+  assert.equal(g.role, "home");                                                                   // 20 treatments here: their tracker is here, the F/U location doesn't decide
+  const h = T.noTabRole({ role: "home" }, [...tx(5), b("F/U", false, "Post")], 10);
+  assert.deepEqual([h.role, h.home, h.fuAway], ["guest", "Post", true]);                         // 5 here: a guest, home named from the F/U
   assert.equal(T.noTabRole({ role: "home" }, [b("MT"), ...tx(5), b("F/U", false, "Post")], 10).role, "home");   // MT here: still this clinic's
   assert.equal(T.noTabRole({ role: "home" }, [...tx(20), b("F/U", false, "Post", "Cancelled")], 10).role, "home");   // a cancelled F/U doesn't count
   assert.equal(T.noTabRole({ role: "home" }, [...tx(20), b("F/U", true)], 10).role, "home");     // F/U here: unchanged
@@ -420,4 +423,76 @@ test("rankTabs: same LASFIR first, then the same last or first three letters, fi
   assert.equal(r.find(t => t.name === "ZEDKIM").near, false);
   assert.deepEqual(T.rankTabs("SMIJAN", "alv", tabs).map(t => t.name), ["ALVMAR"]);            // typing filters by name
   assert.equal(T.rankTabs("", "", tabs).length, 7);
+});
+
+test("mapEvent: theta burst \"Tx\" visits are treatments, as are the other NextGen TMS events", () => {
+  const t = e => (T.mapEvent(e) || {}).type ?? null;
+  assert.equal(t("TMS Theta Tx Bilateral"), "Daily");
+  assert.equal(t("TMS Theta Tx Unilateral"), "Daily");
+  assert.equal(t("TMS Treatment Unilateral"), "Daily");
+  assert.equal(t("MT MagV"), "MT");
+  assert.equal(t("MT Redo BW H7"), "MTR");
+  assert.equal(t("TMS Follow Up"), "F/U");
+  assert.equal(T.mapEvent("Telepsych TMS F/U").tele, true);
+  assert.equal(t("Med Management"), null);
+});
+
+test("needsTracker: 16+ treatments here in all (a course mostly done here) needs a tracker", () => {
+  const b = (type, date, status = "Kept", here = true) => ({ type, here, date, status });
+  const past = Array.from({ length: 14 }, (_, i) => b("Daily", i + 1)), fut = [b("Daily", 20, "Scheduled"), b("Daily", 21, "Scheduled")];
+  assert.equal(T.needsTracker([...past, ...fut], 20), true);
+  assert.equal(T.needsTracker([...past.slice(2), ...fut], 20), false);
+  assert.equal(T.noTabRole({ role: "home" }, [...past, ...fut], 20).role, "home");
+});
+
+test("mrnsIn: the MRN by its label in the first rows, never a bare number such as a date serial", () => {
+  assert.deepEqual(T.mrnsIn([["PATIENT:", "", "", 36], ["SMIJAN"], ["MRN:", "", "", "", "", 46300], [12345]]), ["12345"]);   // A3 over A4
+  assert.deepEqual(T.mrnsIn([["MRN: 0045678"]]), ["45678"]);
+  assert.deepEqual(T.mrnsIn([["", ""], ["", ""], ["MRN", "00789"]]), ["789"]);                 // B3 beside it
+  assert.deepEqual(T.mrnsIn([[46300, 36], ["Auth", 46400]]), []);
+});
+
+test("telNote: 2 missed in a row starts a telephone note; each miss after adds an entry; a treatment ends the run", () => {
+  const r = (date, o = {}) => ({ date, type: "Daily", delivered: !o.miss, miss: false, note: "", ...o });
+  assert.equal(T.telNote([r(1), r(2, { miss: true })], 5), null);
+  const a = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true })], 5);
+  assert.deepEqual([a.n, a.due, a.first], [2, true, true]);
+  const logged = T.telMissLine("Smith", "1/3", 2);
+  assert.equal(logged, "Tel note to Dr. Smith 1/3 (missed 2)");
+  const b = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true, note: logged })], 5);
+  assert.equal(b.due, false);
+  const c = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true, note: logged }), r(4, { miss: true })], 5);
+  assert.deepEqual([c.n, c.due, c.first, c.add.map(x => x.date)], [3, true, false, [4]]);
+  assert.equal(T.telMissLine("Smith", "1/4", 3, true), "Tel note entry 1/4 (missed 3)");
+  assert.equal(T.telNote([r(1, { miss: true }), r(2, { miss: true }), r(3)], 5), null);       // treated since
+});
+
+test("fuRebook: a missed or cancelled F/U not rebooked asks to rebook, then after 2 business days a telephone note", () => {
+  const lbl = s => `d${s}`, mon = 46328;   // Monday, Nov 2, 2026
+  assert.equal(T.bizDays(mon, mon + 4), 4); assert.equal(T.bizDays(mon + 4, mon + 7), 1);   // Fri to Mon is one business day
+  const fu = (date, o = {}) => ({ date, type: "F/U", miss: false, note: "", row: 20, ...o });
+  const a = T.fuRebook([fu(mon, { miss: true })], [], mon + 1, lbl);
+  assert.deepEqual(a.map(e => [e.kind, e.telDue]), [["missed", false]]);
+  assert.equal(T.fuRebook([fu(mon, { miss: true })], [], mon + 2, lbl)[0].telDue, true);
+  assert.deepEqual(T.fuRebook([fu(mon, { miss: true }), fu(mon + 7)], [], mon + 3, lbl), []);   // rebooked
+  const c = T.fuRebook([], [{ date: mon + 7, mod: mon }], mon + 2, lbl);                       // cancelled ahead: the clock starts at the cancellation
+  assert.deepEqual(c.map(e => [e.kind, e.telDue]), [["cancelled", true]]);
+  const line = T.telFuLine("Smith", "x", lbl(mon + 7));
+  assert.equal(T.fuRebook([{ date: mon, type: "Daily", note: line }], [{ date: mon + 7, mod: mon }], mon + 2, lbl)[0].logged, true);
+  assert.deepEqual(T.fuRebook([fu(mon - 40, { miss: true })], [], mon, lbl), []);               // older than 30 days
+});
+
+test("fuGaps: a follow-up between the MT and MT redo, around treatments 20 to 27, and within 7 days of the last", () => {
+  const rows = [{ date: 100, type: "MT" }];
+  for (let i = 2; i <= 36; i++) rows.push({ date: 100 + i, type: i === 10 ? "MTR" : "Daily" });
+  const at = k => rows[k - 1].date;
+  assert.deepEqual(T.fuGaps(rows, 36, 90).map(w => w.k), ["mtr", "mid", "end"]);
+  const ok = [...rows, { date: at(5), type: "F/U" }, { date: at(23), type: "F/U" }, { date: at(36) + 5, type: "F/U", tele: true }];
+  assert.deepEqual(T.fuGaps(ok, 36, 90), []);
+  assert.deepEqual(T.fuGaps([...ok.slice(0, -1), { date: at(36) + 9, type: "F/U" }], 36, 90).map(w => w.k), ["end"]);   // 9 days after: too late
+  assert.deepEqual(T.fuGaps([...ok.slice(0, -1), { date: at(36) - 6, type: "F/U", miss: true }], 36, 90).map(w => w.k), ["end"]);   // a missed one doesn't count
+  assert.deepEqual(T.fuGaps(rows, 36, at(28)).map(w => w.k), ["end"]);                       // windows already past don't show
+  assert.deepEqual(T.fuGaps(rows.slice(0, 18), 36, 90).map(w => w.k), ["mtr"]);              // treatment 20 not booked yet
+  assert.equal(T.fuGaps(rows.filter(r => r.type !== "MTR"), 36, 90)[0].label, "between the MT and treatment 15");
+  assert.deepEqual(T.fuGaps([{ date: 100, type: "Daily" }], 36, 90), []);                   // no MT, no plan
 });

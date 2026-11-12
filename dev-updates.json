@@ -8,6 +8,22 @@
       ]
     },
     {
+      "id": "2026-11-11-castro-chairs-telnotes",
+      "date": "2026-11-11",
+      "bullets": [
+        "Fixed: Theta burst visits (\"TMS Theta Tx\" in NextGen) now import. They were skipped, about a quarter of Castro's chair bookings on both chairs.",
+        "Changed: A patient's tab belongs where most of their treatments are booked. The MT only decides a tie. An MT booked at Post with the course booked on Castro's chairs is Castro's.",
+        "Changed: A tab counts when its first rows show the patient's MRN by its label, even if the MRN isn't in A4 or the tab is named differently.",
+        "New: Everyone booked on our chairs shows on Today and Schedule with their LASFIR, MRN (last four) and time, tab or not. A guest's tracker link is on their card, not a red flag, and Don't ask again stops the ask for good.",
+        "New: Import > Other clinics' lists. Add the same ALL TMS report from other clinics after this one. Their visits for our patients fill in as Alt Clinic rows and help decide where a tab belongs; none go on our schedule.",
+        "New: A treatment on another clinic's chair is marked Alt Clinic and stays off our chairs. It shows on our schedule only when the patient's MT is here.",
+        "New: Provider (E2) comes from NextGen's Rendering column.",
+        "New: 2 missed in a row asks for a telephone note to the provider, with a draft to copy into NextGen. Each miss after that asks for a new entry on it.",
+        "New: A follow-up missed or cancelled asks to rebook it. If it's still not rebooked 2 business days later, it asks for a telephone note to the provider.",
+        "New: Patients flags a follow-up not booked between the MT and MT redo, around treatments 20 to 27, or within 7 days of the last treatment."
+      ]
+    },
+    {
       "id": "2026-11-08-bell-home",
       "date": "2026-11-08",
       "bullets": [
