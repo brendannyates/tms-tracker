@@ -427,6 +427,21 @@ test("tabName: the standard names, and the same written by hand", () => {
   for (const n of ["MOOSAM (old)", "COMPLETED", "Pending>", "DB80 Template", "Old Template", "Standard + Specialty Tx"]) assert.equal(T.tabName(n), null, n);
 });
 
+test("misdated: pulses a day off NextGen's kept visit pair with it; real gaps and cancelled visits don't", () => {
+  const r = (row, date, o = {}) => ({ row, date, type: "Daily", delivered: true, miss: false, alt: false, ...o });
+  const a = (date, status = "Kept", type = "Daily") => ({ date, status, type });
+  const rows = [r(10, 100, { type: "MT" }), r(11, 101, { type: "MT", delivered: false }), r(12, 104), r(13, 105)];
+  assert.deepEqual(T.misdated(rows, [a(101, "Kept", "MT"), a(104), a(105)], 90, 110), []);              // NextGen's MT day already has its own row
+  const b = [r(10, 100, { type: "MT" }), r(12, 104), r(13, 105)];
+  assert.deepEqual(T.misdated(b, [a(101, "Kept", "MT"), a(104), a(105)], 90, 110), [{ row: 10, date: 100, to: 101, type: "MT" }]);
+  assert.deepEqual(T.misdated(b, [a(105, "Kept", "MT"), a(104), a(105)], 90, 110), []);                 // 5 days away: not a slip
+  assert.deepEqual(T.misdated(b, [a(101, "Cancelled", "MT"), a(104), a(105)], 90, 110), []);            // a cancelled visit isn't a match
+  assert.deepEqual(T.misdated(b, [a(101, "Kept", "F/U"), a(104), a(105)], 90, 110), []);                // another kind of visit
+  const two = [r(20, 200), r(21, 201)];                                                                    // two rows, one kept visit
+  assert.deepEqual(T.misdated(two, [a(202)], 190, 210).map(x => x.row), [21]);
+  assert.deepEqual(T.misdated(b, [a(101, "Kept", "MT")], null, 110), []);
+});
+
 test("rankTabs: same LASFIR first, then the same last or first three letters, filtered by what's typed", () => {
   const tabs = ["ZEDKIM", "SMIJAN 2", "SMIBOB", "SMYJAN", "ALVMAR", "DOEJAN", "SMIJAM"].map(name => ({ name, code: name.split(" ")[0] }));
   const r = T.rankTabs("SMIJAN", "", tabs);

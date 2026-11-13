@@ -506,11 +506,14 @@ async function refresh1() {
       if (!state.readOnly && (d4s.length || a4s.length)) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); a4s.forEach(l => { l.a4.numberFormat = [[A4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
-      state.patients = []; state.tabs = []; state.fix = new Map();
+      state.patients = []; state.tabs = []; state.fix = new Map(); state.prStretch = [];
       for (const l of L) {
         const a10 = String(l.a10.formulas[0][0] || ""), end = endOf(l.log.values.map(r => r[1]), a10), sumA = (l.log.values[end + 1 - LOG_FIRST] || [])[0];
         /* what Match New Template would change: the layout, a PR formula that doesn't read the Benefits tab or stops short of the
            log, a summary row without its checkbox, or (New Template) the benefits block still on the tab */
+        /* a row added by hand just above TX SUMMARY is outside the PR formula's range (Excel doesn't stretch it there): that alone
+           is mended on refresh (stretchPr) rather than asking for Match New Template */
+        if (l.layout === 3 && /Benefits!/.test(a10) && prEnd(a10) != null && prEnd(a10) !== end && l.name !== "New Template" && !stale.has(l.name)) (state.prStretch = state.prStretch || []).push({ tab: l.name, end, was: prEnd(a10) });
         const f = { layout: l.layout === 2, pr: !/Benefits!/.test(a10) || prEnd(a10) !== end, sum: typeof sumA !== "boolean", block: l.name === "New Template" && String(l.cost.values[0][0]).trim().toLowerCase() === "code" };
         if (Object.values(f).some(Boolean) && !stale.has(l.name)) state.fix.set(l.name, f);
         if (l.name === "New Template") continue;
@@ -574,6 +577,7 @@ async function refresh1() {
     if (state.asks) state.asks = state.asks.filter(x => !tabbed(x));
     if (state.guests) state.guests = state.guests.filter(x => !tabbed(x));
     if (state.noTab) state.noTab = state.noTab.filter(x => !tabbed(x));
+    if (state.prStretch.length && !state.readOnly) { try { await stretchPr(state.prStretch); } catch (e) { console.error(e); } }
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
     if (mtrFix.length && !state.readOnly) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
@@ -1079,6 +1083,8 @@ function floor() {
 const ph = v => TmsCore.phase(v);
 const findVisit = k => (state.fl || (state.fl = floor())).visits.find(v => v.key === k);
 /* pulses on the tab with no NextGen visit that day, against the whole saved list (latest course only; past Expected visits count) */
+/* pulses a day or so off NextGen's kept visit, against the whole saved list (latest course only) */
+const misdatedRows = p => { const a = state.apptAll && p.mrn && state.apptAll.get(p.mrn); return a && !state.patients.some(q => q.mrn === p.mrn && q.course > p.course) ? TmsCore.misdated(p.rows, a, state.apptLo, todaySerial()) : []; };
 const noApptRows = p => { const a = state.apptAll && p.mrn && state.apptAll.get(p.mrn); return a && !state.patients.some(q => q.mrn === p.mrn && q.course > p.course) ? TmsCore.pulsesNoAppt(p.rows, a, state.apptLo, todaySerial()) : []; };
 function courseNeeds(p, fl) {
   const vs = fl.visits.filter(v => v.tab === p.tab), mt = vs.filter(v => v.type === "MT" && !v.miss);
@@ -1086,7 +1092,7 @@ function courseNeeds(p, fl) {
     moved: vs.filter(v => v.moved).map(v => ({ key: v.key, chairLabel: chairLbl(v.chair) })).concat(state.sess ? [...state.sess.rows].filter(([, r]) => r.tab === p.tab && r.date < fl.t && TmsCore.moveState(r, "", null).moved)
       .map(([key, r]) => ({ key, chairLabel: chairLbl(r.chair), dayLabel: fmtMon(r.date) })) : []),
     noChair: vs.filter(v => v.chairVisit && !v.chair && ["booked", "waiting"].includes(ph(v))).map(v => ({ key: v.key, timeLabel: clock(v.time) || "today" })),
-    noAppt: noApptRows(p),
+    noAppt: noApptRows(p), misdated: misdatedRows(p),
     mtToday: mt.length > 0, schedGiven: p.ben.lastSched != null && mt.length > 0 && p.ben.lastSched >= fl.t });
 }
 const sessNo = v => typeof v.r.tx === "number" ? v.r.tx : v.p.d.txDone + (v.done ? 0 : 1);
@@ -2465,6 +2471,19 @@ async function doTel() {
     toast(`Logged on ${m.t}, ${rs.map(r => fmtMon(r.date)).join(", ")}: ${m.line}.`); renderDash();
   } catch (e) { fail(e); }
 }
+/* Move to the NextGen date: the treated row's date (E) becomes the day NextGen has the kept visit, then the log is put back in
+   date order when that moved it out of place. Logged on the Edit log, so it can be undone. */
+async function moveDate(tab, row, to) {
+  const p = state.patients.find(x => x.tab === tab), r = p && p.rows.find(x => x.row === row); to = +to;
+  if (!r || !to) return toast("That row has changed. Refresh to see the latest.", true);
+  try {
+    await applyOps([{ tab, a: `E${row}`, v: [[to]] }], [{ tab, ...at(r) }], { kind: "edit", what: `Moved the ${fmtMon(r.date)} pulses (row ${row}) to ${fmtMon(to)}, NextGen's date for the visit` });
+    await refresh();
+    const q = state.patients.find(x => x.tab === tab), dated = q ? q.rows.filter(x => x.date != null) : [];
+    if (dated.some((x, i) => i && x.date < dated[i - 1].date)) await fixCheck(tab, "sort");
+    toast(`${tab}: the pulses from ${fmtMon(r.date)} are on ${fmtMon(to)} now.`);
+  } catch (e) { fail(e); }
+}
 async function logCall(tab, outcome, note) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
   const r = p.rows.filter(x => x.miss && x.date != null).sort(cmp).pop(); if (!r) return toast("No missed visit on the tab to note the call on.", true);
@@ -3728,8 +3747,24 @@ function setupClick(force) {
     <p class="sub">To get a deleted tab back, use the workbook's version history (File > Info > Previous versions).</p>
     <div class="mfoot"><button class="btn mute" data-mclose>Cancel</button><button class="btn primary" data-act="setupGo">Rebuild and delete</button></div>`);
 }
+/* the PR formula over the whole log again (only cells that hold it; a typed amount stays), for tabs where a hand-added row fell
+   outside its range. Logged on the Edit log. */
+async function stretchPr(list) {
+  if (POPOUT || !list.length) return;
+  await Excel.run(async ctx => {
+    const got = list.map(x => { const r = ctx.workbook.worksheets.getItem(x.tab).getRange(`A${LOG_FIRST}:A${x.end}`); r.load("formulas"); return { ...x, r }; });
+    await ctx.sync();
+    got.forEach(x => { x.r.formulas = x.r.formulas.map((v, i) => [isPrFormula(v[0]) ? prF(LOG_FIRST + i, x.end) : v[0]]); });
+    await addEdits(ctx, got.map(x => ({ tab: x.tab, kind: "auto", what: `Payment formula (A) stretched to row ${x.end}: a row added below row ${x.was} was outside it`, undo: null })));
+    await ctx.sync();
+  });
+  list.forEach(x => { const f = state.fix.get(x.tab); if (f) { f.pr = false; if (!Object.values(f).some(Boolean)) state.fix.delete(x.tab); } });
+}
+let matching = false;   // one Match New Template at a time: a second press while it runs did it all again
 async function setupColumns(force) {
   if (POPOUT) return callPane("setupColumns", [force]);
+  if (matching) return toast("Match New Template is already running. It takes a few seconds per tab.");
+  matching = true; const btn = $("btnSetup"); if (btn) btn.disabled = true;
   try {
     if (!state.templateOk) return toast(state.templateWhy, true, true);
     const stale = new Set(state.stale), courseOf = n => (state.patients.find(p => p.tab === n) || { course: 0 }).course;
@@ -3765,6 +3800,7 @@ async function setupColumns(force) {
     await refresh();
     if (kept.length) { state.verify = kept; showVerify(); }
   } catch (e) { fail(e); }
+  finally { matching = false; if (btn) btn.disabled = false; }
 }
 /* a rebuilt tab whose cells didn't all read back the same: each field, old tab and new tab side by side, for someone to confirm
    before the old tab is deleted. Keeping it leaves "NAME (old)". One tab at a time, from state.verify. */
@@ -4139,6 +4175,8 @@ function renderExt() {
 }
 function planTab(p, appts, from, to, o) {
   const R = p.rows.map(r => ({ ...r, _o: r }));
+  /* pulses typed a day or so off NextGen's kept visit (core.js misdated): that visit gets no second row; Patients asks to move it */
+  const mis = TmsCore.misdated(p.rows, appts, o.listLo ?? null, o.today ?? from), misKept = new Set(mis.map(m => `${m.to}|${lpool(m.type)}`));
   const st = { cleared: 0, miss: 0, none: 0, unrecorded: 0, exempt: 0, unclass: 0, types: 0, sameCancel: 0, early: 0, earlyNew: 0, noMod: 0, elsewhere: 0, unmissed: 0, dup: 0, treated: 0 };
   const tag = (r, t) => { if (!r.note.split("; ").includes(t)) r.note = r.note ? `${r.note}; ${t}` : t; };
   const untag = (r, t) => { r.note = r.note.split("; ").filter(x => x !== t).join("; "); };
@@ -4216,6 +4254,7 @@ function planTab(p, appts, from, to, o) {
         const m = missed.findIndex(r => r.date === e.date && sameTime(r, e)); if (m >= 0) { missed.splice(m, 1); continue; }
         const ai = altR.findIndex(r => r.date === e.date); if (ai >= 0) { altR.splice(ai, 1); continue; }
         if (e.date < from && rows.some(r => poolOf(r) === pool && r.date === e.date)) continue;
+        if (e.status === "Kept" && misKept.has(`${e.date}|${lpool(e.type)}`)) continue;   // its pulses are on a nearby row
         const r = free.shift(); if (!r) { left.push(e); continue; }
         if (e.date < from) f.past++;
         r.date = e.date; r.time = e.time; r.miss = false; r.freebie = ""; r.note = TmsCore.dropKaiser(r.note);
@@ -4290,7 +4329,7 @@ function planTab(p, appts, from, to, o) {
   const dates = rows.filter(r => r.date !== was(r).date && r.date != null).map(r => r.date);
   // rows whose formatting must follow (see formatLogs): new rows, rows whose date changed, and rows the re-sort fills with another visit
   const touched = [...new Set([...ins.map(x => x.row), ...ops.filter(([a]) => /^E\d+$/.test(a)).map(([a]) => +a.slice(1)), ...(arrange ? order.map((s, i) => s !== i ? LOG_FIRST + i : 0).filter(Boolean) : [])])];
-  return { name: p.tab, ops, ins, arrange, resorted, renum, touched, added: ins.length, set: dates.length, ...st, changed: ops.length > 0 || ins.length > 0 || !!arrange, reflow: moved || multi || ins.length > 0 || resorted };
+  return { name: p.tab, ops, ins, arrange, resorted, renum, touched, added: ins.length, set: dates.length, ...st, misdated: mis, changed: ops.length > 0 || ins.length > 0 || !!arrange, reflow: moved || multi || ins.length > 0 || resorted };
 }
 async function buildPlan(quiet) {
   if (!state.file) return;
@@ -4439,7 +4478,8 @@ async function buildPlan(quiet) {
     if (p.mrn) { const c = latest.get(p.mrn); if (!c || p.course > c.course) latest.set(p.mrn, p); }
     const cc = latestCode.get(p.code); if (!cc || p.course > cc.course) latestCode.set(p.code, p);
   }
-  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, split, keptPast, ours: loc => !loc || atClinic(loc) };
+  const listDays = state.file.rows.map(r => toSerial(cell(r, "mDate"))).filter(x => x != null), listLo = listDays.length ? Math.min(...listDays) : null;
+  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, split, keptPast, listLo, ours: loc => !loc || atClinic(loc) };
   const plans = [], disc = [];
   if (!ps) { state.apptBy = new Map(); state.apptTo = maxDate; const ds = state.file.rows.map(r => toSerial(cell(r, "mDate"))).filter(x => x != null); state.apptLo = ds.length ? Math.min(...ds) : null;   // apptLo: the list's first day
     /* every booking per MRN, past Expected ones included, for pulses with no NextGen visit (noApptRows) */
@@ -4495,6 +4535,8 @@ function renderPlan() {
   if (disc.length) h += `<div class="item amb" style="margin-top:6px">Discontinued on the tracker but still booked in NextGen, so not updated: ${disc.map(esc).join(", ")}. Cancel the visits in NextGen, or start a new course tab.</div>`;
   const pv = ch.filter(p => p.e2).length;
   if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report${state.file.map.mRend >= 0 ? "'s Rendering column" : ""} on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
+  const mis = plans.filter(p => p.misdated && p.misdated.length);
+  if (mis.length) h += `<div class="item amb" style="margin-top:6px">Pulses a day or so off NextGen's date, so no second row was added for NextGen's day: ${mis.map(p => `${esc(p.name)} ${p.misdated.map(m => `${fmtMon(m.date)} (NextGen ${fmtMon(m.to)})`).join(", ")}`).join("; ")}. Check each on Patients: Move to the NextGen date, or fix NextGen.</div>`;
   const el = ch.filter(p => p.elsewhere);
   if (el.length) h += `<div class="sub" style="margin-top:6px">Treatments booked on another clinic's chair, marked Alt Clinic (R) so they stay off this clinic's chairs: ${el.map(p => `${esc(p.name)} ${p.elsewhere}`).join(", ")}.</div>`;
   if (!ps && state.ext && state.ext.rows.length) h += `<div class="sub" style="margin-top:6px">Other clinics' lists: ${esc(state.ext.files.join(", "))}, ${state.ext.rows.length} rows for patients booked here. They decide where a patient's tab belongs and fill in their visits elsewhere; none go on this clinic's schedule.${state.clinicSplit && !state.clinicSplit.on ? " Not used: this list doesn't name the clinic." : ""}</div>`;
@@ -4890,7 +4932,7 @@ Office.onReady(info => {
       ptSchedView: () => { const p = state.patients.find(y => y.tab === t), nx = p && p.d.next; closePt(); state.dash = "day"; show("schedule"); if (nx) toast(`${t}'s next visit: ${fmtDay(nx.date)}, ${clock(nx.time) || "no time"}.`); },
       copayToday: () => copayToday(t, row, v), copayMark: () => copayMark(t, v),
       pvProtoSave: () => { const name = ($("pvProto") || {}).value, site = ($("pvSite") || {}).value; if (!name) return toast("Select the protocol to confirm.", true); saveProtocol(t, [{ name, site: TmsCore.SITE_CELL[site] || "Left" }]); },
-      pastpulses: () => mPastPulses(t, row), editPulses: () => mEditPulses(t, row), doEditPulses, copayChange: () => { state.copayEdit = `${t}|${row}`; renderPt(); },
+      movedate: () => moveDate(t, row, v), pastpulses: () => mPastPulses(t, row), editPulses: () => mEditPulses(t, row), doEditPulses, copayChange: () => { state.copayEdit = `${t}|${row}`; renderPt(); },
       consentSave: () => consentToday(t, row), consentChange: () => { state.consentEdit = `${t}|${row}`; renderPt(); },
       finishYes: () => { const { t: tab, k: key } = m; closeModal(); setStatus(tab, "Complete").then(() => { const nv = key && findVisit(key); if (nv && !state.copied.has(nv.key)) mNote(nv); }); },
       finishNo: () => { const nv = m.k && findVisit(m.k); closeModal(); if (nv && !state.copied.has(nv.key)) mNote(nv); }, pasttech: () => mPastTech(t, row), pastmeas: () => mPastMeas(t, row),

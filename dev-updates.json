@@ -1,6 +1,15 @@
 {
   "updates": [
     {
+      "id": "2026-11-13-misdated-pulses-match",
+      "date": "2026-11-13",
+      "bullets": [
+        "Changed: When pulses are on a day NextGen doesn't have and NextGen's visit is a day or so away, an import no longer adds a second row. Patients shows the pair with Move to NextGen's date.",
+        "Fixed: A row added by hand at the bottom of a visit log no longer brings back the Match New Template banner. Refresh stretches the payment formula over it.",
+        "Fixed: Pressing Match New Template again while it runs no longer runs it twice."
+      ]
+    },
+    {
       "id": "2026-11-13-read-only",
       "date": "2026-11-13",
       "bullets": [
