@@ -426,7 +426,7 @@ async function refresh() {
       const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET), dgW = sheetOf(DIG_SHEET);
       const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:${colLetter(BEN_HDR.length - 1)}${BEN_LAST}`) : null;
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
-      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null, dg = dgW ? dgW.getRange(`A${DIG_FIRST}:E${DIG_LAST}`) : null;
+      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null, dg = dgW ? dgW.getRange(`A${DIG_FIRST}:F${DIG_LAST}`) : null;
       [prv, cs, bn, ss, sc, us, dg].forEach(r => r && r.load("values")); await ctx.sync();
       state.digest = readDigest(dg ? dg.values : null);
       state.users = TmsCore.parseUsers(us ? us.values : null); state.usersRead = true;
@@ -794,9 +794,11 @@ function renderBanners() {
   if (o) msg.push(`${o} tab${o === 1 ? " is" : "s are"} in the earlier layout (${state.old.map(esc).join(", ")}) and will be rebuilt from New Template. The earlier tab is deleted once its entries are copied over`);
   $("setupMsg").innerHTML = msg.join(". ") + "." + (state.templateWhy ? " " + esc(state.templateWhy) : "");
   show("setup", n + o > 0);
-  $("newPtList").innerHTML = state.pendingNew.map(newPtItem).join("");
-  $("newPtCount").textContent = state.pendingNew.length;
-  show("newPtBanner", state.pendingNew.length > 0);
+  const npShown = state.pendingNew.filter(x => !newHidden(x)), npHid = state.pendingNew.length - npShown.length;
+  $("newPtList").innerHTML = npShown.map(newPtItem).join("") + (npHid ? `<p class="hint" style="margin:8px 0 0">${npHid} more snoozed or dismissed: pick them under Patients > Add patient.</p>` : "");
+  $("newPtCount").textContent = npShown.length;
+  show("newPtBanner", npShown.length > 0);
+  fillDetected();
   const nm = noMrn(); $("mrnCount").textContent = nm.length;
   $("mrnList").innerHTML = nm.map(p => { const s = (p.mrn && p.mrnRaw) || (state.codeMrn && state.codeMrn.get(p.code)) || ""; return `<div class="nrow"><span><b>${esc(p.tab)}</b> ${esc(p.status || "no status")}${p.mrn ? ", MRN from the tab's first rows filled in" : s ? ", MRN from NextGen filled in" : ""}</span><input class="sm" data-mrnin="${esc(p.tab)}" value="${esc(s)}" placeholder="MRN" aria-label="MRN for ${esc(p.tab)}" inputmode="numeric" autocomplete="off" style="width:110px"><button class="btn ghost sm" data-act="saveMrn" data-t="${esc(p.tab)}">Save to A4</button></div>`; }).join("");
   show("mrnBanner", nm.length > 0);
@@ -818,7 +820,41 @@ function renderBanners() {
 }
 /* tabs still in progress, with a visit in the recent-visit window or later, whose MRN (A4) is blank */
 const noMrn = () => { const t = todaySerial(); return state.patients.filter(p => !String(p.mrnVal ?? "").trim() && (p.status === "" || ACTIVE.includes(p.status)) && !state.stale.includes(p.tab) && p.rows.some(r => r.date != null && r.date >= t - state.cfg.recentDays)); };
-const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(x.mrn)}">Use existing tab</button></div>`;
+const newPtItem = x => `<div class="nprow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span>
+  <span class="npmid"><button class="btn primary sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button></span>
+  <span class="npend"><button class="btn mute sm" data-act="useTab" data-v="${esc(x.mrn)}">Use existing tab</button><select class="sm" data-newsnz="${esc(x.mrn)}" aria-label="Snooze ${esc(x.code || "this patient")}"><option value="">Snooze</option><option value="3h">3 hours</option><option value="1d">1 day</option><option value="7d">7 days</option><option value="date">Until a date…</option></select><button class="btn mute sm" data-act="newNo" data-v="${esc(x.mrn)}">Don't ask again</button></span></div>`;
+/* per patient, saved on the workbook so it holds for everyone: snoozed until a time (tms_newsnooze, MRN -> ms), or dismissed for
+   good (tms_newno). Either way they stay pickable under Add patient > Already detected in NextGen. */
+const newSnz = () => { if (!POPOUT) try { state.newSnz = Office.context.document.settings.get("tms_newsnooze") || state.newSnz || {}; } catch { /* settings unavailable */ } return state.newSnz || {}; };
+const newNoList = () => { if (!POPOUT) try { state.newNo = Office.context.document.settings.get("tms_newno") || state.newNo || []; } catch { /* settings unavailable */ } return state.newNo || []; };
+const newHidden = x => newNoList().includes(x.mrn) || (newSnz()[x.mrn] || 0) > Date.now();
+function snoozeNew(mrn, until) {
+  const now = Date.now(), keep = Object.fromEntries(Object.entries(newSnz()).filter(([, t]) => t > now));
+  state.newSnz = { ...keep, [mrn]: until }; saveSetting("tms_newsnooze", state.newSnz);
+  const x = state.pendingNew.find(y => y.mrn === mrn); toast(`${(x && x.code) || "That patient"} snoozed until ${new Date(until).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}.`); renderBanners();
+}
+function dismissNew(mrn) {
+  state.newNo = [...new Set([...newNoList(), mrn])]; saveSetting("tms_newno", state.newNo);
+  const x = state.pendingNew.find(y => y.mrn === mrn); toast(`${(x && x.code) || "That patient"} won't be asked about again. Pick them under Add patient if they need a tracker later.`); renderBanners();
+}
+function onNewSnooze(el) {
+  const mrn = el.dataset.newsnz, v = el.value; el.value = ""; if (!v) return;
+  if (v === "date") { state.mctx = { mrn }; return showModal(`<h2 id="mtitle">Snooze until a date</h2><p class="sub">The patient comes back on the New patients banner that morning.</p>${fld("Snooze until", `<input type="date" id="mNewSnz" min="${serialToInput(todaySerial() + 1)}">`)}${mfoot("Snooze", "doNewSnz")}`); }
+  snoozeNew(mrn, Date.now() + { "3h": 3 * 3600e3, "1d": 864e5, "7d": 7 * 864e5 }[v]);
+}
+function doNewSnz() {
+  const v = $("mNewSnz").value; if (!v) return merr("Choose a date.");
+  const [y, mo, d] = v.split("-").map(Number), until = new Date(y, mo - 1, d, 0, 0).getTime(); if (until <= Date.now()) return merr("Choose a date after today.");
+  closeModal(); snoozeNew(state.mctx.mrn, until);
+}
+/* Add patient from scratch: every patient already detected in NextGen (snoozed and dismissed too), soonest booked first */
+function fillDetected() {
+  const sel = $("apDetected"); if (!sel) return;
+  const list = state.pendingNew.slice().sort((a, b) => (a.first ? a.first.date : 1e9) - (b.first ? b.first.date : 1e9) || String(a.code).localeCompare(String(b.code)));
+  const tag = x => newNoList().includes(x.mrn) ? ", dismissed" : (newSnz()[x.mrn] || 0) > Date.now() ? ", snoozed" : "";
+  sel.innerHTML = `<option value="">${list.length ? "Start from scratch, or pick a patient" : "None detected on the appointment list"}</option>` + list.map(x => `<option value="${esc(x.mrn)}">${esc(x.code || "New patient")} · MRN ending ${esc(x.last4)} · next ${x.first ? `${fmtMon(x.first.date)} (${esc(x.first.type)})` : "not booked"}${tag(x)}</option>`).join("");
+  $("apDetectedWrap").hidden = !list.length;
+}
 
 /* ---------- v2 screens: Today (the chair board), Schedule, Patients and Chairs, on the design language ESK Tracker shares
    (tokens and components live in taskpane.html). The reads and writes are the same as before; core.js holds the floor rules.
@@ -2403,79 +2439,100 @@ async function setStatus(tab, val) {
 }
 
 /* ---------- weekly clinician digest: each rendering clinician's patients in treatment, sent Fridays by 4 PM ----------
-   Who is listed follows the Active Patients sheet (Pending Start, In Progress, Tapering, Paused or blank), grouped by E2, the
-   rendering clinician with their credential. The week runs Monday to Friday: this week's kept, missed and cancelled visits, and
-   what's booked next week. The Clinician Digest sheet holds each clinician's email and whether they get it (Send weekly digest:
-   Yes or No, to opt someone out), and when it was last sent and by whom. The CC (Settings) goes on every digest.
+   Who is listed follows the Active Patients sheet (Pending Start, In Progress, Tapering, Paused or blank), plus anyone who completed
+   this week (D2 reached, or Complete, with the last treatment this week), grouped by E2, the rendering clinician with their
+   credential. Clinicians rendering at this location (their own MT, MT redo or F/U visits on this clinic's list) come first and get
+   the digest unless opted out; external providers are listed after them and opted out unless someone ticks them. The week runs
+   Monday to Friday: this week's kept, missed and cancelled visits (and the PHQ-9 and GAD-7 recorded each day), and what's booked
+   next week. The Clinician Digest sheet holds each clinician's email, Send weekly digest (Yes or No), when it was last sent and by
+   whom, and whether they're this location's. The CC (Settings) goes on every digest.
    The add-in can't send mail from Excel on the web: Copy digest puts the formatted digest on the clipboard, Open email starts a
    new email with To, CC and subject filled in, the technician pastes and sends, then Mark sent. Patients by LASFIR and MRN. */
-const DIG_SHEET = "Clinician Digest", DIG_HEAD = 4, DIG_FIRST = 5, DIG_LAST = 200, DIG_HDR = ["Clinician", "Email", "Send weekly digest", "Last sent", "Sent by"];
-const DIG_DUE = 16 * 60, NO_CLIN = "No clinician in E2";   // Friday 4 PM
+const DIG_SHEET = "Clinician Digest", DIG_HEAD = 4, DIG_FIRST = 5, DIG_LAST = 200, DIG_HDR = ["Clinician", "Email", "Send weekly digest", "Last sent", "Sent by", "Renders at"];
+const DIG_DUE = 16 * 60, NO_CLIN = "No clinician in E2", DIG_LOCAL_MIN = 3;   // Friday 4 PM; own visits on the list to count as this location's
 const digKey = n => String(n || "").trim().replace(/\s+/g, " ").toLowerCase();
 function readDigest(values) {
   const out = [];
   (values || []).forEach((r, i) => { const name = String((r || [])[0] ?? "").trim(); if (!name) return;
-    out.push({ name, email: String(r[1] ?? "").trim(), send: !/^(n|no|false|0)$/i.test(String(r[2] ?? "").trim()), sent: typeof r[3] === "number" && r[3] > 20000 ? r[3] : null, by: String(r[4] ?? "").trim(), row: DIG_FIRST + i }); });
+    out.push({ name, email: String(r[1] ?? "").trim(), send: !/^(n|no|false|0)$/i.test(String(r[2] ?? "").trim()), sent: typeof r[3] === "number" && r[3] > 20000 ? r[3] : null, by: String(r[4] ?? "").trim(), at: String(r[5] ?? "").trim(), row: DIG_FIRST + i }); });
   return out;
 }
 const digWeek = t => { const mon = weekStart(t) + 1; return { mon, days: [0, 1, 2, 3, 4].map(i => mon + i), next: [7, 8, 9, 10, 11].map(i => mon + i) }; };
-const digListed = p => onSched(p) && (p.status === "" || AP_SHOW.includes(p.status));
-/* one patient's line: this week's codes (as on Active Patients, plus C for a cancelled treatment), what happened, the course, the
-   follow-ups, and next week: what's booked (ev) and what needs the clinician (alert) */
+const digDone = p => p.d.txDone >= p.d.total || /^complete$/i.test(String(p.status).trim());
+/* listed: in treatment as on Active Patients, or completed this week; a course that finished before this week drops off */
+const digListed = (p, w) => onSched(p) && (digDone(p) ? p.d.lastTx != null && p.d.lastTx >= w.days[0] && p.d.lastTx <= w.days[4] : p.status === "" || AP_SHOW.includes(p.status));
+/* this location's clinicians: own visits on this clinic's list. With no list read, nobody is external. */
+const digLocal = name => { const pv = state.lx && state.lx.provs; if (!pv) return true; const k = digKey(name); return Object.entries(pv).some(([n, c]) => digKey(n) === k && c >= DIG_LOCAL_MIN); };
+const measText = r => [["PHQ-9", r.phq], ["GAD-7", r.gad]].filter(([, v]) => String(v ?? "").trim() !== "" && !/^x$/i.test(String(v).trim())).map(([k, v]) => `${k} ${v}`);
+/* one patient's line: each weekday's code (MT, MTR, F/U, X missed, C cancelled, Alt, a dot for a treatment) with the scores recorded
+   that day, this week's kept of booked, the course (kept of D2) and the last measures, the follow-ups, and next week: what's booked
+   (ev) and what needs the clinician (alert) */
 function digPatient(p, w, t) {
   const d = p.d, rows = p.rows, f = fmtMon, end = w.next[4], inW = (r, ds) => r.date != null && ds.includes(r.date);
   const txCx = d.txCx || [], c = state.lx && p.mrn ? state.lx.c[p.mrn] : null, fuCx = c && c.fuCx ? c.fuCx.map(e => e.date) : [];
-  const code = day => dayCode(p, day) || (txCx.includes(day) ? "C" : "");
-  const kept = rows.filter(r => inW(r, w.days) && r.delivered && r.type !== "F/U").length, missed = rows.filter(r => inW(r, w.days) && r.miss).length;
-  const cancelled = txCx.filter(x => w.days.includes(x)).length + fuCx.filter(x => w.days.includes(x)).length;
+  const dayOf = day => {
+    const rs = rows.filter(r => r.date === day); if (!rs.length) return { code: txCx.includes(day) ? "C" : "", meas: [] };
+    const sp = rs.find(r => STD_VISIT.includes(r.type)), mr = rs.find(r => r.measVal);
+    return { code: rs.some(r => r.miss) ? "X" : sp ? sp.type : rs.some(r => r.alt) ? "Alt" : "·", meas: mr ? measText(mr) : [] };
+  };
+  const wk = rows.filter(r => inW(r, w.days) && isTxType(r)), kept = wk.filter(r => r.delivered).length, missed = wk.filter(r => r.miss).length;
+  const pending = wk.filter(r => !r.delivered && !r.miss && r.date >= t).length, txCxW = txCx.filter(x => w.days.includes(x) && !wk.some(r => r.date === x)).length;
+  const cancelled = txCxW + fuCx.filter(x => w.days.includes(x)).length, booked = kept + missed + pending + txCxW;   // treatments on the schedule this week
   const lastFu = rows.filter(r => r.type === "F/U" && !r.miss && r.date != null && r.date <= t).map(r => r.date).sort((a, b) => b - a)[0] ?? null;
-  const nextRows = rows.filter(r => inW(r, w.next) && !r.miss).sort(cmp), booked = nextRows.filter(r => r.type !== "F/U").length;
-  const ev = [], alert = [];
+  const lm = rows.filter(r => r.measVal && r.date != null && r.date <= t).sort(cmp).pop(), lastMeas = lm ? { date: lm.date, text: measText(lm) } : null;
+  const nextRows = rows.filter(r => inW(r, w.next) && !r.miss).sort(cmp), nextTx = nextRows.filter(r => r.type !== "F/U").length;
+  const done = digDone(p), ev = [], alert = [];
+  if (done) ev.push(`Completed ${d.txDone}/${d.total}${d.lastTx != null ? ` on ${f(d.lastTx)}` : ""}`);
   nextRows.filter(r => r.type === "MT").forEach(r => ev.push(`Starts ${f(r.date)} (MT)`));
   nextRows.filter(r => r.type === "MTR").forEach(r => ev.push(`MT redo ${f(r.date)}`));
   nextRows.filter(r => r.type === "F/U").forEach(r => ev.push(`Follow-up ${f(r.date)}${r.tele ? " (telehealth)" : ""}`));
   /* the last treatment: the course end typed on the tab, else the date of the treatment that reaches D2 (booked, not just the last booked day) */
   const txd = rows.filter(r => r.date != null && !r.miss && isTxRow(r)).sort(cmp), lastTx = p.txEnd ?? (txd.length >= d.total ? txd[d.total - 1].date : null);
-  if (lastTx != null && lastTx >= t && lastTx <= end) ev.push(`Last treatment ${f(lastTx)}`);
-  if (p.authExp != null && p.authExp <= end) (p.authExp < t ? alert : ev).push(p.authExp < t ? `Auth expired ${f(p.authExp)}` : `Auth ends ${f(p.authExp)}`);
-  if (p.updateBy != null && p.updateBy >= t && p.updateBy <= end) ev.push(`Protocol update by ${f(p.updateBy)}`);
+  if (!done && lastTx != null && lastTx >= t && lastTx <= end) ev.push(`Last treatment ${f(lastTx)}`);
+  if (!done && p.authExp != null && p.authExp <= end) (p.authExp < t ? alert : ev).push(p.authExp < t ? `Auth expired ${f(p.authExp)}` : `Auth ends ${f(p.authExp)}`);
+  if (!done && p.updateBy != null && p.updateBy >= t && p.updateBy <= end) ev.push(`Protocol update by ${f(p.updateBy)}`);
   p.avail.filter(x => x.type === "Unavailable" && x.from <= end && x.to >= w.next[0]).forEach(x => ev.push(`Away ${f(x.from)} to ${f(x.to)}`));
   if (d.tel) alert.push(`Missed ${d.tel.n} in a row`);
   (d.cxNote || []).forEach(x => alert.push(`${x.dates.length} cancellations within ${TmsCore.CX_WINDOW} days (${x.dates.map(f).join(", ")})`));
   (d.fuRebook || []).forEach(e => alert.push(`Follow-up ${f(e.date)} ${e.kind}${e.next != null ? `, next ${f(e.next)}` : ", not rebooked"}`));
   (d.fuGaps || []).filter(g => g.from <= end).forEach(g => alert.push(`No follow-up booked ${g.label}`));
-  if (!booked && d.active && p.status !== "Paused" && d.txDone < d.total) alert.push("Nothing booked next week");
+  if (!done && !nextTx && d.active && p.status !== "Paused") alert.push("Nothing booked next week");
   if (p.status === "Paused") alert.push("Paused");
-  return { tab: p.tab, code: p.code, mrn: String(p.mrnRaw || p.mrn || ""), status: p.status || "Not set", paused: p.status === "Paused", days: w.days.map(code),
-    kept, missed, cancelled, done: d.txDone, total: d.total, left: Math.max(0, d.total - d.txDone), lastFu, nextFu: d.fuNext ? d.fuNext.date : null, booked, ev, alert };
+  return { tab: p.tab, code: p.code, mrn: String(p.mrnRaw || p.mrn || ""), status: done ? "Complete" : p.status || "Not set", paused: p.status === "Paused", complete: done, days: w.days.map(dayOf),
+    kept, missed, cancelled, pending, booked, done: d.txDone, total: d.total, lastMeas, lastFu, nextFu: d.fuNext ? d.fuNext.date : null, nextTx, ev, alert };
 }
+const isTxType = r => ["MT", "Daily", "Taper", "MTR"].includes(r.type);
 function digestModel(t = todaySerial()) {
   const w = digWeek(t), by = new Map(), dir = new Map((state.digest || []).map(c => [digKey(c.name), c]));
-  for (const p of state.patients.filter(digListed)) { const k = p.provider || NO_CLIN; if (!by.has(k)) by.set(k, []); by.get(k).push(digPatient(p, w, t)); }
-  const cl = [...by].map(([name, pts]) => { const c = dir.get(digKey(name)) || {};
-    return { name, none: name === NO_CLIN, known: dir.has(digKey(name)), email: c.email || "", send: c.send !== false, sent: c.sent ?? null, by: c.by || "",
-      sentThisWeek: c.sent != null && Math.floor(c.sent) >= w.mon, pts: pts.sort((a, b) => a.tab.localeCompare(b.tab)) }; })
-    .sort((a, b) => a.none - b.none || a.name.localeCompare(b.name));
+  for (const p of state.patients.filter(p => digListed(p, w))) { const k = p.provider || NO_CLIN; if (!by.has(k)) by.set(k, []); by.get(k).push(digPatient(p, w, t)); }
+  const cl = [...by].map(([name, pts]) => { const c = dir.get(digKey(name)), none = name === NO_CLIN, local = !none && digLocal(name);
+    return { name, none, local, known: !!c, email: c ? c.email : "", send: c ? c.send : local, sent: c ? c.sent : null, by: c ? c.by : "", at: c ? c.at : "",
+      sentThisWeek: !!c && c.sent != null && Math.floor(c.sent) >= w.mon, pts: pts.sort((a, b) => a.complete - b.complete || a.tab.localeCompare(b.tab)) }; })
+    .sort((a, b) => a.none - b.none || b.local - a.local || a.name.localeCompare(b.name));   // this location's first, then external, then no E2
   return { ...w, t, clinicians: cl, due: cl.filter(c => !c.none && c.send) };
 }
 const digFill = x => ({ ...AP_FILL, X: "#F9DCD9", C: "#E6E9E8" })[x];   // AP_FILL is defined further down
-/* the email body: inline styles and tables only, so it keeps its look when pasted into Outlook */
+/* the email body: inline styles and tables only, so it keeps its look when pasted into Outlook. Dates and counts are centered. */
 function digestHtml(c, m) {
-  const e = esc, cell = "padding:5px 8px;border:1px solid #D5DDE2;vertical-align:top";
-  const td = (x, st = "") => `<td style="${cell};${st}">${x}</td>`, th = x => `<th style="padding:6px 8px;border:1px solid #1C2A33;background:#1C2A33;color:#FFFFFF;text-align:left;font-weight:600">${x}</th>`;
-  const h3 = (x, col) => `<h3 style="font-size:14px;margin:16px 0 6px;color:${col || "#1C2A33"}">${x}</h3>`;
-  const pts = c.pts, inTx = pts.filter(p => !p.paused).length, sum = k => pts.reduce((n, p) => n + p[k], 0), who = p => `<b>${e(p.code)}</b> <span style="color:#5B6B75">MRN ${e(p.mrn)}</span>`;
+  const e = esc, cell = "padding:5px 8px;border:1px solid #D5DDE2;vertical-align:top", mid = "text-align:center";
+  const td = (x, st = "") => `<td style="${cell};${st}">${x}</td>`, th = (x, center) => `<th style="padding:6px 8px;border:1px solid #1C2A33;background:#1C2A33;color:#FFFFFF;text-align:${center ? "center" : "left"};font-weight:600">${x}</th>`;
+  const h3 = (x, col) => `<h3 style="font-size:14px;margin:16px 0 6px;color:${col || "#1C2A33"}">${x}</h3>`, small = x => `<div style="font-size:11px;color:#5B6B75">${x}</div>`;
+  const pts = c.pts, live = pts.filter(p => !p.complete), inTx = live.filter(p => !p.paused).length, sum = k => pts.reduce((n, p) => n + p[k], 0), who = p => `<b>${e(p.code)}</b> <span style="color:#5B6B75">MRN ${e(p.mrn)}</span>`;
   const tile = (n, l, col) => `<td style="padding:8px 16px;border:1px solid #D5DDE2;text-align:center"><div style="font-size:20px;font-weight:700;color:${col || "#1C2A33"}">${n}</div><div style="font-size:12px;color:#5B6B75">${l}</div></td>`;
   const first = c.none ? "" : String(c.name.split(",")[0]).split(" ")[0], att = pts.filter(p => p.alert.length), up = pts.filter(p => p.ev.length);
-  const range = ds => `${fmtMon(ds[0])} to ${fmtMon(ds[4])}`;
+  const range = ds => `${fmtMon(ds[0])} to ${fmtMon(ds[4])}`, nDone = pts.filter(p => p.complete).length, nPaused = live.length - inTx;
+  const day = x => td(`${e(x.code)}${x.meas.length ? small(x.meas.map(e).join("<br>")) : ""}`, `${mid};${digFill(x.code) ? `background:${digFill(x.code)}` : ""}`);
+  const week = p => `<b>${p.kept}/${p.booked}</b> kept${p.missed ? `<br><span style="color:#B3261E">${p.missed} missed</span>` : ""}${p.cancelled ? `<br>${p.cancelled} cancelled` : ""}${p.pending ? `<br>${p.pending} still booked` : ""}`;
+  const course = p => `<b>${p.done}/${p.total}</b>${p.complete ? small("Complete") : ""}${small(p.lastMeas ? `Last measures ${fmtMon(p.lastMeas.date)}${p.lastMeas.text.length ? `<br>${p.lastMeas.text.map(e).join(", ")}` : ""}` : "No measures yet")}`;
+  const fu = p => `• Last: ${p.lastFu != null ? fmtMon(p.lastFu) : "None yet"}<br>• Next: ${p.nextFu != null ? fmtMon(p.nextFu) : p.complete ? "None" : '<span style="color:#B3261E">Not booked</span>'}`;
   return `<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1C2A33;line-height:1.45">
 ${first ? `<p style="margin:0 0 8px">Hi ${e(first)},</p>` : ""}<p style="margin:0 0 10px">Here's the weekly TMS update for your patients at ${e(clinic() || "the clinic")}: this week, ${range(m.days)}, and what's booked next week, ${range(m.next)}.</p>
-<table style="border-collapse:collapse;margin:4px 0 6px"><tr>${tile(inTx, "in treatment")}${tile(pts.length - inTx, "paused")}${tile(sum("kept"), "treatments kept this week")}${tile(sum("missed"), "missed", sum("missed") ? "#B3261E" : "")}${tile(sum("cancelled"), "cancelled", sum("cancelled") ? "#8F5400" : "")}</tr></table>
+<table style="border-collapse:collapse;margin:4px 0 6px"><tr>${tile(inTx, "in treatment")}${nPaused ? tile(nPaused, "paused") : ""}${nDone ? tile(nDone, "completed this week", "#1E6B4F") : ""}${tile(`${sum("kept")}/${sum("booked")}`, "treatments kept this week")}${tile(sum("missed"), "missed", sum("missed") ? "#B3261E" : "")}${tile(sum("cancelled"), "cancelled", sum("cancelled") ? "#8F5400" : "")}</tr></table>
 ${att.length ? h3("Needs your attention", "#B3261E") + `<ul style="margin:0 0 4px 18px;padding:0">${att.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.alert.join("; "))}</li>`).join("")}</ul>` : ""}
 ${h3("Coming up next week")}${up.length ? `<ul style="margin:0 0 4px 18px;padding:0">${up.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.ev.join("; "))}</li>`).join("")}</ul>` : `<p style="margin:0">Nothing beyond daily treatments.</p>`}
-${h3(`This week, ${range(m.days)}`)}<table style="border-collapse:collapse;font-size:12px"><tr>${th("Patient")}${th("MRN")}${th("Status")}${m.days.map(d => th(`${DAYS[dow(d)]} ${fmtDate(d)}`)).join("")}${th("This week")}${th("Course")}${th("Last F/U")}${th("Next F/U")}${th("Next week")}</tr>
-${pts.map(p => `<tr>${td(`<b>${e(p.code)}</b>`)}${td(e(p.mrn))}${td(e(p.status))}${p.days.map(x => td(e(x), `text-align:center;${digFill(x) ? `background:${digFill(x)}` : ""}`)).join("")}${td(`${p.kept} kept${p.missed ? `, <span style="color:#B3261E">${p.missed} missed</span>` : ""}${p.cancelled ? `, ${p.cancelled} cancelled` : ""}`)}${td(`${p.done} of ${p.total} kept, ${p.left} left`)}${td(p.lastFu != null ? fmtMon(p.lastFu) : "None yet")}${td(p.nextFu != null ? fmtMon(p.nextFu) : `<span style="color:#B3261E">Not booked</span>`)}${td(`${p.booked} treatment${p.booked === 1 ? "" : "s"} booked`)}</tr>`).join("")}</table>
-<p style="font-size:11px;color:#5B6B75;margin:8px 0 0">MT motor threshold · MTR MT redo · F/U follow-up · · treated · X missed · C cancelled · Alt at another clinic. Course counts treatments kept against those authorized (D2).</p>
+${h3(`This week, ${range(m.days)}`)}<table style="border-collapse:collapse;font-size:12px"><tr>${th("Patient")}${th("MRN", true)}${th("Status")}${m.days.map(d => th(`${DAYS[dow(d)]}<br>${fmtDate(d)}`, true)).join("")}${th("This week", true)}${th("Course", true)}${th("Follow-ups", true)}${th("Next week", true)}</tr>
+${pts.map(p => `<tr>${td(`<b>${e(p.code)}</b>`)}${td(e(p.mrn), mid)}${td(e(p.status))}${p.days.map(day).join("")}${td(week(p), mid)}${td(course(p), mid)}${td(fu(p), mid)}${td(p.complete ? "Done" : `${p.nextTx} booked`, mid)}</tr>`).join("")}</table>
+<p style="font-size:11px;color:#5B6B75;margin:8px 0 0">MT motor threshold · MTR MT redo · F/U follow-up · · treated · X missed · C cancelled · Alt at another clinic. PHQ-9 and GAD-7 show on the day they were recorded. This week counts treatments kept of those booked; Course counts treatments kept of those authorized on the tracker (D2).</p>
 <p style="font-size:11px;color:#5B6B75;margin:4px 0 0">Sent by ${e(state.user || "the TMS team")} from ${e(trackerTitle())}. Contains patient information: keep it within MHS email.</p></div>`;
 }
 const digSubject = (c, m) => `TMS weekly update: ${c.name}, week of ${fmtMon(m.days[0])}${clinic() ? ` (${clinic()})` : ""}`;
@@ -2493,20 +2550,21 @@ async function saveDigest(list) {
     if (ws.isNullObject) {
       ws = ctx.workbook.worksheets.add(DIG_SHEET);
       ws.getRange("A1").values = [["Clinician Digest"]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
-      ws.getRange("A2").values = [["One row per rendering clinician (E2). Add their email; set Send weekly digest to No to leave someone out. The add-in fills Last sent and Sent by when a digest is marked sent."]];
+      ws.getRange("A2").values = [["One row per rendering clinician (E2). Add their email; set Send weekly digest to No to leave someone out. Clinicians rendering at this location start on Yes, external providers on No. The add-in fills Last sent, Sent by and Renders at."]];
       ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
-      const hd = ws.getRange(`A${DIG_HEAD}:E${DIG_HEAD}`); hd.values = [DIG_HDR]; hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true;
-      [["A", 200], ["B", 220], ["C", 110], ["D", 130], ["E", 110]].forEach(([c, w]) => { ws.getRange(`${c}:${c}`).format.columnWidth = w; });
+      const hd = ws.getRange(`A${DIG_HEAD}:F${DIG_HEAD}`); hd.values = [DIG_HDR]; hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true;
+      [["A", 200], ["B", 220], ["C", 110], ["D", 130], ["E", 110], ["F", 120]].forEach(([c, w]) => { ws.getRange(`${c}:${c}`).format.columnWidth = w; });
       ws.getRange(`C${DIG_FIRST}:C${DIG_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
       ws.freezePanes.freezeRows(DIG_HEAD);
     }
-    const rg = ws.getRange(`A${DIG_FIRST}:E${DIG_LAST}`); rg.load("values"); await ctx.sync();
+    ws.getRange(`F${DIG_HEAD}`).values = [[DIG_HDR[5]]];   // added to sheets made before the column
+    const rg = ws.getRange(`A${DIG_FIRST}:F${DIG_LAST}`); rg.load("values"); await ctx.sync();
     const cur = readDigest(rg.values); let next = DIG_FIRST + rg.values.reduce((k, v, i) => String(v[0]).trim() ? i + 1 : k, 0);
     for (const x of list) {
       let c = cur.find(y => digKey(y.name) === digKey(x.name));
-      if (!c) { c = { name: x.name, email: "", send: true, sent: null, by: "", row: next++ }; cur.push(c); }
+      if (!c) { c = { name: x.name, email: "", send: x.send ?? true, sent: null, by: "", at: "", row: next++ }; cur.push(c); }
       Object.assign(c, x, { name: c.name });
-      ws.getRange(`A${c.row}:E${c.row}`).values = [[c.name, c.email, c.send ? "Yes" : "No", c.sent ?? "", c.by || ""]];
+      ws.getRange(`A${c.row}:F${c.row}`).values = [[c.name, c.email, c.send ? "Yes" : "No", c.sent ?? "", c.by || "", c.at || ""]];
       ws.getRange(`D${c.row}`).numberFormat = [["m/d/yyyy h:mm AM/PM"]];
     }
     await ctx.sync(); out = cur;
@@ -2515,13 +2573,22 @@ async function saveDigest(list) {
 }
 function mDigest() {
   const st = digestStatus(), m = st.m; state.digModel = m;
-  const missing = m.clinicians.filter(c => !c.none && !c.known);
-  if (missing.length) saveDigest(missing.map(c => ({ name: c.name }))).catch(e => console.error(e));   // every clinician gets a row, opted in
+  /* every clinician gets a row: this location's opted in, external providers opted out. A row the earlier version added for an
+     external provider (Yes, no email, never sent, no location yet) moves to No once. Renders at is kept up to date. */
+  const atOf = c => c.local ? (clinic() || "This clinic") : "External", rows = [];
+  m.clinicians.filter(c => !c.none).forEach(c => {
+    if (!c.known) rows.push({ name: c.name, send: c.local, at: atOf(c) });
+    else if (!c.at && !c.local && c.send && !c.email && c.sent == null) { rows.push({ name: c.name, send: false, at: atOf(c) }); c.send = false; }
+    else if (c.at !== atOf(c)) rows.push({ name: c.name, at: atOf(c) });
+  });
+  if (rows.length) saveDigest(rows).then(() => renderBanners()).catch(e => console.error(e));
+  m.due = m.clinicians.filter(c => !c.none && c.send);
   const cc = String(state.cfg.digestCc || "").trim();
   const when = c => !c.send ? "Not sent: opted out" : c.sentThisWeek ? `Sent ${fmtMon(Math.floor(c.sent))} ${fmtTime(Math.round((c.sent % 1) * 1440))}${c.by ? ` by ${c.by}` : ""}` : "Not sent this week";
   const card = (c, i) => {
     const n = c.pts.length, inTx = c.pts.filter(p => !p.paused).length, att = c.pts.filter(p => p.alert.length).length;
-    const head = `<div class="h"><h2>${esc(c.name)}</h2><span>${inTx} in treatment${n - inTx ? `, ${n - inTx} paused` : ""}${att ? `, ${att} need attention` : ""}</span></div>`;
+    const nDone = c.pts.filter(p => p.complete).length, nTx = c.pts.filter(p => !p.complete && !p.paused).length, nP = n - nDone - nTx;
+    const head = `<div class="h"><h2>${esc(c.name)}</h2><span>${nTx} in treatment${nP ? `, ${nP} paused` : ""}${nDone ? `, ${nDone} completed this week` : ""}${att ? `, ${att} need attention` : ""}</span></div>`;
     if (c.none) return `<div class="section">${head}<p class="body">${n} patient${n === 1 ? " has" : "s have"} no clinician in E2: ${c.pts.map(p => esc(p.tab)).join(", ")}. Import this week's appointment list to fill it from the Rendering column.</p></div>`;
     const mail = c.email && c.send ? `<a class="btn ghost sm" href="${esc(digMailto(c, m))}" target="_blank" rel="noopener">2. Open email</a>` : `<span class="hint">${c.send ? "Add an email to open one." : ""}</span>`;
     return `<div class="section">${head}
@@ -2535,7 +2602,10 @@ function mDigest() {
   showModal(`<h2 id="mtitle">Weekly clinician digests</h2>
     <p class="sub">This week ${fmtMon(m.days[0])} to ${fmtMon(m.days[4])}, and next week. ${m.due.length - st.left.length} of ${m.due.length} sent. For each one: copy the digest, open the email, paste it in (Ctrl+V), send, then Mark sent.</p>${warn}
     <label class="fld"><span>CC on every digest</span><input id="digCc" value="${esc(cc)}" placeholder="Your email" autocomplete="off"></label>
-    ${m.clinicians.map(card).join("") || '<p class="empty">No patients in treatment.</p>'}
+    ${!m.clinicians.length ? '<p class="empty">No patients in treatment.</p>' : [["local", `Rendering at ${clinic() || "this location"}`, "They get the digest unless you untick them."], ["ext", "External providers", "Rendering for patients here but based at another clinic. They don't get the digest unless you tick them."], ["none", "", ""]].map(([k, title, sub]) => {
+      const list = m.clinicians.map((c, i) => [c, i]).filter(([c]) => k === "none" ? c.none : !c.none && (k === "local") === c.local);
+      return list.length ? `${title ? `<h3 style="margin:18px 0 2px">${esc(title)}</h3><p class="hint" style="margin:0 0 6px">${esc(sub)}</p>` : ""}${list.map(([c, i]) => card(c, i)).join("")}` : "";
+    }).join("")}
     <div class="mfoot"><button class="btn primary" data-mclose>Done</button></div>`, true);
   const body = $("modalBody");
   body.querySelectorAll("[data-digmail]").forEach(el => el.onchange = () => { const c = m.clinicians[+el.dataset.digmail]; saveDigest([{ name: c.name, email: el.value.trim() }]).then(mDigest).catch(fail); });
@@ -4270,7 +4340,11 @@ async function buildPlan(quiet) {
     for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); x.fuCx = (x.fuCx || []).filter(e => !x.on.includes(e.date)); x.txCx = [...new Set(x.txCx || [])].filter(dd => !x.on.includes(dd)); delete x.on; }   // rebooked the same day: not a cancellation
     for (const [mrn, k] of Object.entries(cnt)) pt[mrn] = Object.entries(k).sort((a, b) => b[1] - a[1])[0][0];
     const ds = ap.map(a => a.date);
-    state.lx = { v, pt, c, chairs: [...names].sort(), ap, gv, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
+    /* clinicians with their own MT, MT redo or F/U visits on this clinic's list render at this location; one only named as
+       Rendering is an external provider (the weekly digest opts them out by default) */
+    const provs = {};
+    for (const r of state.file.rows) { const pv = String(cell(r, "mProv") || "").trim(); if (!pv || dev.ours.test(pv) || dev.other.test(pv) || !mapEvent(cell(r, "mEvent"))) continue; const n = TmsCore.clinicianName(pv); if (n) provs[n] = (provs[n] || 0) + 1; }
+    state.lx = { v, pt, c, chairs: [...names].sort(), ap, gv, provs, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
     state.patients.forEach(p => p.d = derive(p));
   }
   const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), rend = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
@@ -4331,7 +4405,8 @@ async function buildPlan(quiet) {
   }
   const noTab = [...by.entries()].filter(([k]) => !latest.has(k) && !(state.mrnTabs && state.mrnTabs.has(k)) && !(codes.get(k) && latestCode.has(codes.get(k)) && !latestCode.get(codes.get(k)).mrn));
   // offered a tracker only with an MT booked here or 16+ treatments here (core.js needsTracker); F/U alone don't need one
-  state.pendingNew = noTab.filter(([, a]) => TmsCore.needsTracker(a, from)).map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from).sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
+  /* a follow-up on the schedule never asks for a tracker: only treatments and MTs booked from today on count */
+  state.pendingNew = noTab.filter(([, a]) => TmsCore.needsTracker(a, from)).map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from && x.type !== "F/U").sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
   state.plan = { ps, plans, from, to: maxDate, ignored, disc };
   if (!quiet) renderPlan(); renderBanners(); renderSavedList();
   if (!ps) syncGuests();
@@ -4492,7 +4567,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, noLink: noLinkList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, noLink: noLinkList(), newSnz: newSnz(), newNo: newNoList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     elig: state.elig || [], edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
@@ -4502,7 +4577,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, noLink: o.noLink || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, noLink: o.noLink || [], newSnz: o.newSnz || {}, newNo: o.newNo || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     elig: o.elig || [], edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -4716,7 +4791,7 @@ Office.onReady(info => {
       dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
-      noLink: () => dontAskLink(v), gotoSheet: () => openTabName(t), telnote: () => mTel(t, "miss"), telfu: () => mTel(t, "fu", v), telcx: () => mTel(t, "cx", v), digOpen: () => mDigest(), digCopy: () => digCopy(v), digSent: () => digSent(v),
+      noLink: () => dontAskLink(v), newNo: () => dismissNew(v), doNewSnz: () => doNewSnz(), gotoSheet: () => openTabName(t), telnote: () => mTel(t, "miss"), telfu: () => mTel(t, "fu", v), telcx: () => mTel(t, "cx", v), digOpen: () => mDigest(), digCopy: () => digCopy(v), digSent: () => digSent(v),
       digPrev: () => { const b = $(`digPrev${v}`); if (b) b.hidden = !b.hidden; }, doTel: () => doTel(), copyTel: () => { const x = $("mTelText"); if (x) navigator.clipboard.writeText(x.value).then(() => toast("Copied.")).catch(() => { x.select(); toast("Select all is on: press Ctrl+C."); }); },
       guestLink: () => mGuestLink(v), doGuestLink: () => saveGuestLink(m.mrn, mval("mGuestUrl")).then(okd => { if (okd) closeModal(); }),
       doGuestEnd, guests: () => mGuestLink(v),
@@ -4816,6 +4891,8 @@ Office.onReady(info => {
   syncTheme();
   $("btnMatch").onclick = () => setupClick(true); $("btnTplUse").onclick = mTplUse;
   ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });
+  $("newPtList").addEventListener("change", e => { const el = e.target.closest("[data-newsnz]"); if (el) onNewSnooze(el); });
+  $("apDetected").onchange = e => { const v = e.target.value; if (v) startTracker(v); };
   $("file").onchange = onFile; $("benFile").onchange = onBenFile; $("extFile").onchange = onExtFile; renderExt(); document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
