@@ -1,6 +1,13 @@
 {
   "updates": [
     {
+      "id": "2026-11-13-read-only",
+      "date": "2026-11-13",
+      "bullets": [
+        "Fixed: When a workbook is open read-only (Viewing mode or view-only access), the tracker no longer keeps making Excel ask you to save a copy. It saves nothing on its own and shows a banner telling you to switch to Editing."
+      ]
+    },
+    {
       "id": "2026-11-13-tab-names-sync-loading",
       "date": "2026-11-13",
       "bullets": [
