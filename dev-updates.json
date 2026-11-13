@@ -1,6 +1,14 @@
 {
   "updates": [
     {
+      "id": "2026-11-13-fullscreen-use-tab",
+      "date": "2026-11-13",
+      "bullets": [
+        "Fixed: Use existing tab (and Their tab is in this workbook) now works in full screen. It used to say to use it from the task pane.",
+        "Fixed: Deleting the old tab after a rebuild check, and removing other clinics' lists, work in full screen too."
+      ]
+    },
+    {
       "id": "2026-11-13-digest-layout-new-patients",
       "date": "2026-11-13",
       "bullets": [
