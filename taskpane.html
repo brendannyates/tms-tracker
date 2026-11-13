@@ -106,6 +106,8 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 /* banners above every view */
 .banner{margin:0 0 16px;padding:14px 16px;border-radius:12px;background:var(--warn-soft);font-size:14px}
 .banner > b{font-weight:600}
+.banner.late{background:var(--danger-soft)}
+.banner.late > b{color:var(--danger)}
 .banner details{margin-top:8px}
 .banner summary{cursor:pointer;font-weight:500;color:var(--accent)}
 .banner ol{margin:8px 0 0 18px;padding:0}
@@ -599,6 +601,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       <div id="newPtList" style="margin-top:6px"></div>
       <span class="bctl"><button class="btn mute sm" data-banner="newPtBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="newPtBanner" data-bact="dismiss">Dismiss</button></span>
     </div>
+    <div id="digestBanner" class="banner" hidden>
+      <b id="digestTitle">Friday: weekly clinician digests by 4 PM</b>
+      <div class="sub" id="digestMsg"></div>
+      <div style="margin-top:6px"><button class="btn ghost sm" data-act="digOpen">Open digests</button><button class="btn mute sm" id="digestImp" data-view="imp">Go to Import</button></div>
+      <span class="bctl"><button class="btn mute sm" data-banner="digestBanner" data-bact="snooze">Snooze 3 h</button><button class="btn mute sm" data-banner="digestBanner" data-bact="dismiss">Dismiss</button></span>
+    </div>
     <div id="mrnBanner" class="banner" hidden>
       <b>Active tabs with no MRN in A4 (<span id="mrnCount"></span>)</b>
       <div class="sub">Without it, imports and benefits can't find the patient. Enter it from NextGen.</div>
@@ -668,6 +676,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
           <label class="fld" for="cfgOpenTab"><span>Selecting a visit on Today</span><select id="cfgOpenTab"><option value="on">Also opens their Excel tab at that visit</option><option value="off">Shows the visit card only</option></select></label>
           <label class="fld" for="cfgCutoff"><span>Updates and Match New Template leave out trackers with no visit since</span><input id="cfgCutoff" type="date"></label>
           <label class="fld" for="cfgElig"><span>Eligibility feed URL (the Power Automate flow that returns Eligibility History)</span><input id="cfgElig" type="url" placeholder="https://...powerplatform.com/..." autocomplete="off"></label>
+          <label class="fld" for="cfgDigestCc"><span>CC on every weekly clinician digest</span><input id="cfgDigestCc" type="email" placeholder="Your email" autocomplete="off"></label>
         </div>
         <p class="hint">The feed fills the Benefits tab's Sohar columns and each patient's Eligibility pulls once a day. Keep the URL private: anyone with it can read the feed. <button class="btn ghost sm" data-act="eligpull" type="button">Pull eligibility now</button></p>
         <p class="hint" id="cutoffNote"></p>

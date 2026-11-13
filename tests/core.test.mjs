@@ -457,13 +457,14 @@ test("telNote: 2 missed in a row starts a telephone note; each miss after adds a
   assert.equal(T.telNote([r(1), r(2, { miss: true })], 5), null);
   const a = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true })], 5);
   assert.deepEqual([a.n, a.due, a.first], [2, true, true]);
-  const logged = T.telMissLine("Smith", "1/3", 2);
-  assert.equal(logged, "Tel note to Dr. Smith 1/3 (missed 2)");
+  const logged = T.telMissLine("Jane Smith, PMHNP", "1/3", 2);
+  assert.equal(logged, "Tel note to Jane Smith, PMHNP 1/3 (missed 2 in a row)");
+  assert.equal(T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true, note: "Tel note to Dr. Smith 1/3 (missed 2)" })], 5).due, false);   // the earlier wording still reads
   const b = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true, note: logged })], 5);
   assert.equal(b.due, false);
   const c = T.telNote([r(1), r(2, { miss: true }), r(3, { miss: true, note: logged }), r(4, { miss: true })], 5);
   assert.deepEqual([c.n, c.due, c.first, c.add.map(x => x.date)], [3, true, false, [4]]);
-  assert.equal(T.telMissLine("Smith", "1/4", 3, true), "Tel note entry 1/4 (missed 3)");
+  assert.equal(T.telMissLine("Smith", "1/4", 3, true), "Tel note entry 1/4 (missed 3 in a row)");
   assert.equal(T.telNote([r(1, { miss: true }), r(2, { miss: true }), r(3)], 5), null);       // treated since
 });
 
@@ -474,10 +475,12 @@ test("fuRebook: a missed or cancelled F/U not rebooked asks to rebook, then afte
   const a = T.fuRebook([fu(mon, { miss: true })], [], mon + 1, lbl);
   assert.deepEqual(a.map(e => [e.kind, e.telDue]), [["missed", false]]);
   assert.equal(T.fuRebook([fu(mon, { miss: true })], [], mon + 2, lbl)[0].telDue, true);
-  assert.deepEqual(T.fuRebook([fu(mon, { miss: true }), fu(mon + 7)], [], mon + 3, lbl), []);   // rebooked
+  assert.deepEqual(T.fuRebook([fu(mon, { miss: true }), fu(mon + 5)], [], mon + 3, lbl), []);   // the next one within 5 days: rebooked
+  const late = T.fuRebook([fu(mon, { miss: true }), fu(mon + 7)], [], mon + 3, lbl);           // 7 days later: still counts
+  assert.deepEqual(late.map(e => [e.kind, e.next]), [["missed", mon + 7]]);
   const c = T.fuRebook([], [{ date: mon + 7, mod: mon }], mon + 2, lbl);                       // cancelled ahead: the clock starts at the cancellation
   assert.deepEqual(c.map(e => [e.kind, e.telDue]), [["cancelled", true]]);
-  const line = T.telFuLine("Smith", "x", lbl(mon + 7));
+  const line = T.telFuLine("Jane Smith, PMHNP", "x", lbl(mon + 7));
   assert.equal(T.fuRebook([{ date: mon, type: "Daily", note: line }], [{ date: mon + 7, mod: mon }], mon + 2, lbl)[0].logged, true);
   assert.deepEqual(T.fuRebook([fu(mon - 40, { miss: true })], [], mon, lbl), []);               // older than 30 days
 });
@@ -495,4 +498,32 @@ test("fuGaps: a follow-up between the MT and MT redo, around treatments 20 to 27
   assert.deepEqual(T.fuGaps(rows.slice(0, 18), 36, 90).map(w => w.k), ["mtr"]);              // treatment 20 not booked yet
   assert.equal(T.fuGaps(rows.filter(r => r.type !== "MTR"), 36, 90)[0].label, "between the MT and treatment 15");
   assert.deepEqual(T.fuGaps([{ date: 100, type: "Daily" }], 36, 90), []);                   // no MT, no plan
+});
+
+test("clinician: the Rendering name with its credential, first name first", () => {
+  const n = T.clinicianName;
+  assert.equal(n("Nayyar MD, Neha"), "Neha Nayyar, MD");
+  assert.equal(n("Lau, MD Alvin"), "Alvin Lau, MD");
+  assert.equal(n("Marussich PMHNP, Wendy"), "Wendy Marussich, PMHNP");
+  assert.equal(n("Krehbiel, Stefanie PMHNP"), "Stefanie Krehbiel, PMHNP");
+  assert.equal(n("Aujla Md, Gurpreet Kaur"), "Gurpreet Kaur Aujla, MD");
+  assert.equal(n("Huynh DO, Victor"), "Victor Huynh, DO");
+  assert.equal(n("Dr. Jane Smith"), "Jane Smith");
+  assert.equal(n("Neha Nayyar, MD"), "Neha Nayyar, MD");                                        // already written that way
+  assert.deepEqual([T.clinician("Cheung PMHNP,  Gloria").last, T.clinician("Cheung PMHNP,  Gloria").cred], ["Cheung", "PMHNP"]);
+  assert.equal(n(""), "");
+});
+
+test("cancelNote: 2 treatment cancellations within 7 days ask for a telephone note; each one after, an entry", () => {
+  const lbl = s => `d${s}`, row = (date, note = "") => ({ date, type: "Daily", note });
+  assert.deepEqual(T.cancelNote([], [100, 108], 110, lbl), []);                                   // 8 days apart
+  const a = T.cancelNote([], [100, 106], 110, lbl);
+  assert.deepEqual(a.map(c => [c.dates, c.first]), [[[100, 106], true]]);
+  const line = T.telCxLine("Jane Smith, PMHNP", "x", [lbl(100), lbl(106)]);
+  assert.equal(line, "Tel note to Jane Smith, PMHNP x (cancelled d100, d106)");
+  assert.deepEqual(T.cancelNote([row(105, line)], [100, 106], 110, lbl), []);
+  const b = T.cancelNote([row(105, line)], [100, 106, 111], 112, lbl);                          // a third, within 7 days of the last
+  assert.deepEqual(b.map(c => [c.add, c.first]), [[[111], false]]);
+  assert.deepEqual(T.cancelNote([], [60, 62], 110, lbl), []);                                     // older than 30 days
+  assert.deepEqual(T.cancelNote([], [100, 100], 110, lbl), []);                                   // the same day twice is one
 });

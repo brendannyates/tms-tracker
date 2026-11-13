@@ -1,6 +1,20 @@
 {
   "updates": [
     {
+      "id": "2026-11-12-digest-telnotes",
+      "date": "2026-11-12",
+      "bullets": [
+        "New: Fridays, a reminder to import the day's appointment list and send each clinician their weekly digest by 4 PM. Patients > Weekly digests opens them any day.",
+        "New: Each digest lists the clinician's patients in treatment by LASFIR and MRN: this week's kept, missed and cancelled visits, the course so far, last and next follow-up, and what's coming up next week. Copy it, open the email (To, CC and subject filled in), paste and send, then Mark sent.",
+        "New: Clinicians can be left out of the digest. Emails and opt-outs are on the Clinician Digest sheet. The CC is in Settings.",
+        "New: 2 treatments cancelled within 7 days asks for a telephone note to the clinician.",
+        "Changed: Clinicians are named from NextGen's Rendering column with their credential (Wendy Marussich, PMHNP), not \"Dr.\".",
+        "Changed: A missed or cancelled follow-up only counts if the next one isn't booked within 5 days.",
+        "Changed: A missed-treatment telephone note is logged on each missed visit it covers.",
+        "Fixed: Settings > Eligibility feed URL now saves."
+      ]
+    },
+    {
       "id": "2026-11-12-bell-static",
       "date": "2026-11-12",
       "bullets": [

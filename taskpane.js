@@ -81,7 +81,7 @@ const atClinic = s => TmsCore.atClinic(s, clinic());
 const homeHere = h => TmsCore.homeHere(h, clinic());
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT, eligUrl: "" },
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT, eligUrl: "", digestCc: "" },
   elig: [], wrongKind: "", kindChecked: false,
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", user: "", users: [], usersRead: false, whoKey: "", adminUntil: 0, apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
@@ -419,15 +419,16 @@ async function refresh() {
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
       /* every other sheet's first rows, for an MRN by its label: a tab named or laid out differently still makes the patient this
          clinic's, not a guest (core.js mrnsIn) */
-      const sys = new Set(["new template", "protocols", "clinic schedule", "chair schedule", BEN_SHEET, SESS_SHEET, TmsCore.USER_SHEET, AP_SHEET, GUEST_SHEET, ELOG_SHEET, LIST_SHEET, EXT_SHEET, ELIG_SHEET].map(n => n.toLowerCase()));
+      const sys = new Set(["new template", "protocols", "clinic schedule", "chair schedule", BEN_SHEET, SESS_SHEET, TmsCore.USER_SHEET, AP_SHEET, GUEST_SHEET, ELOG_SHEET, LIST_SHEET, EXT_SHEET, ELIG_SHEET, DIG_SHEET].map(n => n.toLowerCase()));
       const top4 = sheets.items.filter(s => !sys.has(s.name.toLowerCase())).map(s => { const r = s.getRange("A1:T4"); r.load("values"); return { name: s.name, r }; });
       /* sheet names are already known, so the Protocols, Clinic Schedule and Benefits reads ride along with this sync (names match case-insensitively, as getItem does) */
       const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
-      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET);
+      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET), dgW = sheetOf(DIG_SHEET);
       const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:${colLetter(BEN_HDR.length - 1)}${BEN_LAST}`) : null;
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
-      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null;
-      [prv, cs, bn, ss, sc, us].forEach(r => r && r.load("values")); await ctx.sync();
+      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null, dg = dgW ? dgW.getRange(`A${DIG_FIRST}:E${DIG_LAST}`) : null;
+      [prv, cs, bn, ss, sc, us, dg].forEach(r => r && r.load("values")); await ctx.sync();
+      state.digest = readDigest(dg ? dg.values : null);
       state.users = TmsCore.parseUsers(us ? us.values : null); state.usersRead = true;
       readBen(bn ? bn.values : null); readSess(ss ? ss.values : null, sc ? sc.values : null);
       await readElog(ctx);
@@ -726,7 +727,8 @@ function derive(p) {
   const tel = active ? TmsCore.telNote(rows, today) : null;
   const fuRebook = active ? TmsCore.fuRebook(rows, lx ? lx.fuCx : [], today, fmtDate) : [];
   const fuGaps = active ? TmsCore.fuGaps(rows, total, today) : [];
-  return { tel, fuRebook, fuGaps, active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
+  const cxNote = active ? TmsCore.cancelNote(rows, lx ? lx.txCx : [], today, fmtDate) : [];
+  return { tel, fuRebook, fuGaps, cxNote, txCx: lx ? lx.txCx || [] : [], active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
     authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && owes && todayVisit && bidf.length > 0,
     noProto, owes, planYear, tally, toConfirm, todayRow, oopmLikely, oopmMet, rollover,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
@@ -801,6 +803,16 @@ function renderBanners() {
   const ak = state.asks || []; $("askCount").textContent = ak.length;
   $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, but most treatments are booked here (${g.daily}${g.homeCount ? ` here, ${g.homeCount} at ${esc(g.home)}` : ""})${g.next != null ? `, next ${fmtMon(g.next)}` : ""}: their tracker belongs here.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
   show("askBanner", ak.length > 0);
+  /* Fridays: send each clinician's weekly digest by 4 PM, after today's appointment list is imported */
+  const dst = digestStatus(), dOn = dst.friday && (!dst.listToday || dst.left.length > 0);
+  if (dOn) {
+    const late = dst.late && dst.left.length > 0;
+    $("digestTitle").textContent = late ? `Weekly clinician digests are past due (4 PM)` : "Friday: weekly clinician digests by 4 PM";
+    $("digestMsg").textContent = !dst.listToday ? "Import today's appointment list first, then send each clinician their digest."
+      : `${dst.left.length} of ${dst.m.due.length} still to send: ${dst.left.map(c => c.name).join(", ")}.`;
+    $("digestImp").hidden = dst.listToday; $("digestBanner").classList.toggle("late", late);
+  }
+  show("digestBanner", dOn);
   fillTplPick();
   if ($("cfgLoc")) $("cfgLoc").placeholder = TmsCore.clinicFromName(state.wbName) ? `From the workbook name: ${TmsCore.clinicFromName(state.wbName)}` : "Type the clinic, for example Castro";
 }
@@ -1366,7 +1378,7 @@ function viewPatients(fl) {
       <span class="prog"><span class="pbar"><i style="width:${Math.min(100, d.txDone / Math.max(1, d.total) * 100).toFixed(1)}%"></i></span>${d.txDone}/${d.total}</span>
       <span class="flags">${needSummary(n)}</span></button>`;
   }).join("") || `<p class="empty">Nothing here. Everyone in this group is on track.</p>`;
-  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
+  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><div class="actions" style="margin:0"><button class="btn ghost" data-act="digOpen">Weekly digests</button><button class="btn ghost" data-act="addPt">Add patient</button></div></header>
     <div class="chips" role="group" aria-label="Filter patients">${chips}</div>
     <div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>${elogHtml()}`;
 }
@@ -1502,7 +1514,7 @@ function ptHtml(p, fl) {
   const also = keep.map(x => needRow(x)).join("") + (peek ? needRow(peek, " peek") : "");
   const more = rest.length > PT_NEEDS - 1 ? `<button class="btn mute sm needmore" data-act="ptNeeds" aria-expanded="${all}">${all ? "Show fewer" : `Show all ${n.length} needs`}</button>` : "";
   const quiet = N.filter(x => x.quiet).map(x => `<span class="tag">${esc(x.t)}</span>`).join("");
-  const meta = [p.provider && `Dr. ${p.provider}`, `${d.txDone} of ${d.total} done`, p.status].filter(Boolean).join(" · ");
+  const meta = [p.provider, `${d.txDone} of ${d.total} done`, p.status].filter(Boolean).join(" · ");
   const sect = { sched: ptSched, course: ptCourse, proto: ptProto, meas: ptMeas, ben: ptBen, fin: ptFin };
   return `<div class="pvh"><div><h2 id="pvTitle">${esc(p.tab)} <span class="mrn">MRN ${esc(p.mrnRaw || "not entered")}</span></h2><p class="meta">${esc(meta)}</p></div>
       <div class="pvr"><button class="x" data-act="ptClose" aria-label="Close">×</button></div></div>
@@ -2328,38 +2340,52 @@ async function undoEnd(v) {
     await sessWrite(v, { end: null }, "Undone. The session is running again.");
   } catch (e) { fail(e); }
 }
-/* a telephone note to the provider, written in NextGen (the add-in can't write there): the draft to copy, then "Saved in NextGen"
-   logs it in Notes (S) so the need clears. kind "miss": 2+ missed in a row (core.js telNote), a new entry for each miss after;
-   kind "fu": a follow-up missed or cancelled and not rebooked (core.js fuRebook), v its date. */
+/* a telephone note to the rendering clinician (E2, with their credential), written in NextGen (the add-in can't write there): the
+   draft to copy, then "Saved in NextGen" logs it in Notes (S) so the need clears. kind "miss": 2+ missed in a row (core.js telNote),
+   a new entry for each miss after, logged on each missed row it covers. kind "cx": 2+ treatment cancellations within 7 days
+   (core.js cancelNote), v the run's first date. kind "fu": a follow-up missed or cancelled, none within 5 days after (core.js
+   fuRebook), v its date. Cancelled visits have no row left, so those two log on the latest visit on or before today. */
 function mTel(tab, kind, v) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
-  const t = todaySerial(), d = p.d, dr = p.provider ? `Dr. ${p.provider}` : "the provider", nextTx = d.next ? `next booked ${fmtDate(d.next.date)}` : "nothing booked";
-  let title, text, row, line, first = true;
+  const t = todaySerial(), d = p.d, dr = p.provider || "the clinician", nextTx = d.next ? `next booked ${fmtDate(d.next.date)}` : "nothing booked";
+  const lastRow = () => p.rows.filter(r => r.date != null && r.date <= t).sort(cmp).pop() || p.rows.filter(r => r.date != null).sort(cmp)[0];
+  let title, text, rows, line, first = true;
   if (kind === "miss") {
     const tel = d.tel; if (!tel || !tel.due) return toast("Nothing to add to a telephone note for this patient now.");
     const calls = tel.run.flatMap(r => String(r.note || "").split("; ").filter(x => /^Called /.test(x)));
-    first = tel.first; row = tel.run[tel.run.length - 1]; line = TmsCore.telMissLine(p.provider, fmtDate(t), tel.n, !first);
-    title = first ? `Telephone note to ${dr}` : "Add to the telephone note";
+    first = tel.first; rows = tel.add; line = TmsCore.telMissLine(p.provider, fmtDate(t), tel.n, !first);
     text = first ? `TMS: missed ${tel.n} treatments in a row (${tel.run.map(r => fmtDate(r.date)).join(", ")}). ${d.txDone} of ${d.total} treatments done, ${nextTx}. Freebies left: ${d.left}.${calls.length ? ` ${calls.join("; ")}.` : ""} Please review.`
       : `${fmtDate(t)}: missed again ${tel.add.map(r => fmtDate(r.date)).join(", ")}, ${tel.n} in a row. ${d.txDone} of ${d.total} done, ${nextTx}.`;
+  } else if (kind === "cx") {
+    const c = (d.cxNote || []).find(x => String(x.dates[0]) === String(v)); if (!c) return toast("Those cancellations are already on a telephone note.");
+    first = c.first; const days = (first ? c.dates : c.add).map(fmtDate); line = TmsCore.telCxLine(p.provider, fmtDate(t), days, !first); rows = [lastRow()].filter(Boolean);
+    text = first ? `TMS: ${c.dates.length} treatments cancelled within ${TmsCore.CX_WINDOW} days (${c.dates.map(fmtDate).join(", ")}). ${d.txDone} of ${d.total} treatments done, ${nextTx}. Please review.`
+      : `${fmtDate(t)}: cancelled again ${days.join(", ")}. ${d.txDone} of ${d.total} done, ${nextTx}.`;
   } else {
     const e = d.fuRebook.find(x => String(x.date) === String(v)); if (!e) return toast("That follow-up has been rebooked, or the telephone note is already logged.");
-    row = (e.row && p.rows.find(r => r.row === e.row)) || p.rows.filter(r => r.date != null && r.date <= t).sort(cmp).pop();
-    if (!row) return toast("No dated visit on the tab to log the telephone note on.", true);
-    line = TmsCore.telFuLine(p.provider, fmtDate(t), fmtDate(e.date)); title = `Telephone note to ${dr}`;
-    text = `TMS follow-up on ${fmtDate(e.date)} was ${e.kind} and hasn't been rebooked. ${d.txDone} of ${d.total} treatments done, ${nextTx}. Please advise on rebooking.`;
+    rows = [(e.row && p.rows.find(r => r.row === e.row)) || lastRow()].filter(Boolean);
+    line = TmsCore.telFuLine(p.provider, fmtDate(t), fmtDate(e.date));
+    text = `TMS follow-up on ${fmtDate(e.date)} was ${e.kind} and ${e.next != null ? `the next one isn't until ${fmtDate(e.next)}` : "hasn't been rebooked"}. ${d.txDone} of ${d.total} treatments done, ${nextTx}. Please advise on rebooking.`;
   }
-  state.mctx = { t: tab, row: row.row, line };
+  if (!rows.length) return toast("No dated visit on the tab to log the telephone note on.", true);
+  title = first ? `Telephone note to ${dr}` : "Add to the telephone note";
+  state.mctx = { t: tab, rows: rows.map(r => r.row), line };
+  const on = rows.length > 1 ? `on each missed visit (${rows.map(r => fmtMon(r.date)).join(", ")})` : `on the ${fmtMon(rows[0].date)} visit`;
   showModal(`<h2 id="mtitle">${esc(title)}: ${esc(tab)}</h2>
-    <p class="sub">${first ? `Write a telephone note in NextGen and assign it to ${esc(dr)}` : "Add this as a new entry on the telephone note in NextGen"}, then press Saved in NextGen. It's logged in Notes on the ${fmtMon(row.date)} visit.</p>
+    <p class="sub">${first ? `Write a telephone note in NextGen and assign it to ${esc(dr)}` : "Add this as a new entry on the telephone note in NextGen"}, then press Saved in NextGen. It's logged in Notes ${esc(on)}.</p>
     <textarea id="mTelText" rows="5" style="width:100%" aria-label="Telephone note text">${esc(text)}</textarea>
     <div class="actions"><button class="btn ghost sm" data-act="copyTel">Copy</button></div>${mfoot("Saved in NextGen", "doTel")}`);
 }
 async function doTel() {
-  const m = state.mctx || {}, p = state.patients.find(x => x.tab === m.t), r = p && p.rows.find(x => x.row === m.row); if (!r) return closeModal();
-  const note = (r.note ? r.note + "; " : "") + m.line;
+  const m = state.mctx || {}, p = state.patients.find(x => x.tab === m.t), rs = p ? (m.rows || []).map(n => p.rows.find(x => x.row === n)).filter(Boolean) : [];
+  if (!rs.length) return closeModal();
+  const notes = rs.map(r => (r.note ? r.note + "; " : "") + m.line);
   closeModal();
-  try { await writeCells(m.t, [[`S${r.row}`, note]], at(r)); patchRow(m.t, r.row, { note }); toast(`Logged on ${m.t}, ${fmtMon(r.date)}: ${m.line}.`); renderDash(); } catch (e) { fail(e); }
+  try {
+    await writeCells(m.t, rs.map((r, i) => [`S${r.row}`, notes[i]]), rs.map(at));
+    rs.forEach((r, i) => patchRow(m.t, r.row, { note: notes[i] }));
+    toast(`Logged on ${m.t}, ${rs.map(r => fmtMon(r.date)).join(", ")}: ${m.line}.`); renderDash();
+  } catch (e) { fail(e); }
 }
 async function logCall(tab, outcome, note) {
   const p = state.patients.find(x => x.tab === tab); if (!p) return;
@@ -2374,6 +2400,166 @@ async function logCall(tab, outcome, note) {
 /* ---------- actions ---------- */
 async function setStatus(tab, val) {
   try { await writeCells(tab, [["D7", val]]); toast(`${tab}: ${val}`); await refresh(); } catch (e) { fail(e); }
+}
+
+/* ---------- weekly clinician digest: each rendering clinician's patients in treatment, sent Fridays by 4 PM ----------
+   Who is listed follows the Active Patients sheet (Pending Start, In Progress, Tapering, Paused or blank), grouped by E2, the
+   rendering clinician with their credential. The week runs Monday to Friday: this week's kept, missed and cancelled visits, and
+   what's booked next week. The Clinician Digest sheet holds each clinician's email and whether they get it (Send weekly digest:
+   Yes or No, to opt someone out), and when it was last sent and by whom. The CC (Settings) goes on every digest.
+   The add-in can't send mail from Excel on the web: Copy digest puts the formatted digest on the clipboard, Open email starts a
+   new email with To, CC and subject filled in, the technician pastes and sends, then Mark sent. Patients by LASFIR and MRN. */
+const DIG_SHEET = "Clinician Digest", DIG_HEAD = 4, DIG_FIRST = 5, DIG_LAST = 200, DIG_HDR = ["Clinician", "Email", "Send weekly digest", "Last sent", "Sent by"];
+const DIG_DUE = 16 * 60, NO_CLIN = "No clinician in E2";   // Friday 4 PM
+const digKey = n => String(n || "").trim().replace(/\s+/g, " ").toLowerCase();
+function readDigest(values) {
+  const out = [];
+  (values || []).forEach((r, i) => { const name = String((r || [])[0] ?? "").trim(); if (!name) return;
+    out.push({ name, email: String(r[1] ?? "").trim(), send: !/^(n|no|false|0)$/i.test(String(r[2] ?? "").trim()), sent: typeof r[3] === "number" && r[3] > 20000 ? r[3] : null, by: String(r[4] ?? "").trim(), row: DIG_FIRST + i }); });
+  return out;
+}
+const digWeek = t => { const mon = weekStart(t) + 1; return { mon, days: [0, 1, 2, 3, 4].map(i => mon + i), next: [7, 8, 9, 10, 11].map(i => mon + i) }; };
+const digListed = p => onSched(p) && (p.status === "" || AP_SHOW.includes(p.status));
+/* one patient's line: this week's codes (as on Active Patients, plus C for a cancelled treatment), what happened, the course, the
+   follow-ups, and next week: what's booked (ev) and what needs the clinician (alert) */
+function digPatient(p, w, t) {
+  const d = p.d, rows = p.rows, f = fmtMon, end = w.next[4], inW = (r, ds) => r.date != null && ds.includes(r.date);
+  const txCx = d.txCx || [], c = state.lx && p.mrn ? state.lx.c[p.mrn] : null, fuCx = c && c.fuCx ? c.fuCx.map(e => e.date) : [];
+  const code = day => dayCode(p, day) || (txCx.includes(day) ? "C" : "");
+  const kept = rows.filter(r => inW(r, w.days) && r.delivered && r.type !== "F/U").length, missed = rows.filter(r => inW(r, w.days) && r.miss).length;
+  const cancelled = txCx.filter(x => w.days.includes(x)).length + fuCx.filter(x => w.days.includes(x)).length;
+  const lastFu = rows.filter(r => r.type === "F/U" && !r.miss && r.date != null && r.date <= t).map(r => r.date).sort((a, b) => b - a)[0] ?? null;
+  const nextRows = rows.filter(r => inW(r, w.next) && !r.miss).sort(cmp), booked = nextRows.filter(r => r.type !== "F/U").length;
+  const ev = [], alert = [];
+  nextRows.filter(r => r.type === "MT").forEach(r => ev.push(`Starts ${f(r.date)} (MT)`));
+  nextRows.filter(r => r.type === "MTR").forEach(r => ev.push(`MT redo ${f(r.date)}`));
+  nextRows.filter(r => r.type === "F/U").forEach(r => ev.push(`Follow-up ${f(r.date)}${r.tele ? " (telehealth)" : ""}`));
+  /* the last treatment: the course end typed on the tab, else the date of the treatment that reaches D2 (booked, not just the last booked day) */
+  const txd = rows.filter(r => r.date != null && !r.miss && isTxRow(r)).sort(cmp), lastTx = p.txEnd ?? (txd.length >= d.total ? txd[d.total - 1].date : null);
+  if (lastTx != null && lastTx >= t && lastTx <= end) ev.push(`Last treatment ${f(lastTx)}`);
+  if (p.authExp != null && p.authExp <= end) (p.authExp < t ? alert : ev).push(p.authExp < t ? `Auth expired ${f(p.authExp)}` : `Auth ends ${f(p.authExp)}`);
+  if (p.updateBy != null && p.updateBy >= t && p.updateBy <= end) ev.push(`Protocol update by ${f(p.updateBy)}`);
+  p.avail.filter(x => x.type === "Unavailable" && x.from <= end && x.to >= w.next[0]).forEach(x => ev.push(`Away ${f(x.from)} to ${f(x.to)}`));
+  if (d.tel) alert.push(`Missed ${d.tel.n} in a row`);
+  (d.cxNote || []).forEach(x => alert.push(`${x.dates.length} cancellations within ${TmsCore.CX_WINDOW} days (${x.dates.map(f).join(", ")})`));
+  (d.fuRebook || []).forEach(e => alert.push(`Follow-up ${f(e.date)} ${e.kind}${e.next != null ? `, next ${f(e.next)}` : ", not rebooked"}`));
+  (d.fuGaps || []).filter(g => g.from <= end).forEach(g => alert.push(`No follow-up booked ${g.label}`));
+  if (!booked && d.active && p.status !== "Paused" && d.txDone < d.total) alert.push("Nothing booked next week");
+  if (p.status === "Paused") alert.push("Paused");
+  return { tab: p.tab, code: p.code, mrn: String(p.mrnRaw || p.mrn || ""), status: p.status || "Not set", paused: p.status === "Paused", days: w.days.map(code),
+    kept, missed, cancelled, done: d.txDone, total: d.total, left: Math.max(0, d.total - d.txDone), lastFu, nextFu: d.fuNext ? d.fuNext.date : null, booked, ev, alert };
+}
+function digestModel(t = todaySerial()) {
+  const w = digWeek(t), by = new Map(), dir = new Map((state.digest || []).map(c => [digKey(c.name), c]));
+  for (const p of state.patients.filter(digListed)) { const k = p.provider || NO_CLIN; if (!by.has(k)) by.set(k, []); by.get(k).push(digPatient(p, w, t)); }
+  const cl = [...by].map(([name, pts]) => { const c = dir.get(digKey(name)) || {};
+    return { name, none: name === NO_CLIN, known: dir.has(digKey(name)), email: c.email || "", send: c.send !== false, sent: c.sent ?? null, by: c.by || "",
+      sentThisWeek: c.sent != null && Math.floor(c.sent) >= w.mon, pts: pts.sort((a, b) => a.tab.localeCompare(b.tab)) }; })
+    .sort((a, b) => a.none - b.none || a.name.localeCompare(b.name));
+  return { ...w, t, clinicians: cl, due: cl.filter(c => !c.none && c.send) };
+}
+const digFill = x => ({ ...AP_FILL, X: "#F9DCD9", C: "#E6E9E8" })[x];   // AP_FILL is defined further down
+/* the email body: inline styles and tables only, so it keeps its look when pasted into Outlook */
+function digestHtml(c, m) {
+  const e = esc, cell = "padding:5px 8px;border:1px solid #D5DDE2;vertical-align:top";
+  const td = (x, st = "") => `<td style="${cell};${st}">${x}</td>`, th = x => `<th style="padding:6px 8px;border:1px solid #1C2A33;background:#1C2A33;color:#FFFFFF;text-align:left;font-weight:600">${x}</th>`;
+  const h3 = (x, col) => `<h3 style="font-size:14px;margin:16px 0 6px;color:${col || "#1C2A33"}">${x}</h3>`;
+  const pts = c.pts, inTx = pts.filter(p => !p.paused).length, sum = k => pts.reduce((n, p) => n + p[k], 0), who = p => `<b>${e(p.code)}</b> <span style="color:#5B6B75">MRN ${e(p.mrn)}</span>`;
+  const tile = (n, l, col) => `<td style="padding:8px 16px;border:1px solid #D5DDE2;text-align:center"><div style="font-size:20px;font-weight:700;color:${col || "#1C2A33"}">${n}</div><div style="font-size:12px;color:#5B6B75">${l}</div></td>`;
+  const first = c.none ? "" : String(c.name.split(",")[0]).split(" ")[0], att = pts.filter(p => p.alert.length), up = pts.filter(p => p.ev.length);
+  const range = ds => `${fmtMon(ds[0])} to ${fmtMon(ds[4])}`;
+  return `<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1C2A33;line-height:1.45">
+${first ? `<p style="margin:0 0 8px">Hi ${e(first)},</p>` : ""}<p style="margin:0 0 10px">Here's the weekly TMS update for your patients at ${e(clinic() || "the clinic")}: this week, ${range(m.days)}, and what's booked next week, ${range(m.next)}.</p>
+<table style="border-collapse:collapse;margin:4px 0 6px"><tr>${tile(inTx, "in treatment")}${tile(pts.length - inTx, "paused")}${tile(sum("kept"), "treatments kept this week")}${tile(sum("missed"), "missed", sum("missed") ? "#B3261E" : "")}${tile(sum("cancelled"), "cancelled", sum("cancelled") ? "#8F5400" : "")}</tr></table>
+${att.length ? h3("Needs your attention", "#B3261E") + `<ul style="margin:0 0 4px 18px;padding:0">${att.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.alert.join("; "))}</li>`).join("")}</ul>` : ""}
+${h3("Coming up next week")}${up.length ? `<ul style="margin:0 0 4px 18px;padding:0">${up.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.ev.join("; "))}</li>`).join("")}</ul>` : `<p style="margin:0">Nothing beyond daily treatments.</p>`}
+${h3(`This week, ${range(m.days)}`)}<table style="border-collapse:collapse;font-size:12px"><tr>${th("Patient")}${th("MRN")}${th("Status")}${m.days.map(d => th(`${DAYS[dow(d)]} ${fmtDate(d)}`)).join("")}${th("This week")}${th("Course")}${th("Last F/U")}${th("Next F/U")}${th("Next week")}</tr>
+${pts.map(p => `<tr>${td(`<b>${e(p.code)}</b>`)}${td(e(p.mrn))}${td(e(p.status))}${p.days.map(x => td(e(x), `text-align:center;${digFill(x) ? `background:${digFill(x)}` : ""}`)).join("")}${td(`${p.kept} kept${p.missed ? `, <span style="color:#B3261E">${p.missed} missed</span>` : ""}${p.cancelled ? `, ${p.cancelled} cancelled` : ""}`)}${td(`${p.done} of ${p.total} kept, ${p.left} left`)}${td(p.lastFu != null ? fmtMon(p.lastFu) : "None yet")}${td(p.nextFu != null ? fmtMon(p.nextFu) : `<span style="color:#B3261E">Not booked</span>`)}${td(`${p.booked} treatment${p.booked === 1 ? "" : "s"} booked`)}</tr>`).join("")}</table>
+<p style="font-size:11px;color:#5B6B75;margin:8px 0 0">MT motor threshold · MTR MT redo · F/U follow-up · · treated · X missed · C cancelled · Alt at another clinic. Course counts treatments kept against those authorized (D2).</p>
+<p style="font-size:11px;color:#5B6B75;margin:4px 0 0">Sent by ${e(state.user || "the TMS team")} from ${e(trackerTitle())}. Contains patient information: keep it within MHS email.</p></div>`;
+}
+const digSubject = (c, m) => `TMS weekly update: ${c.name}, week of ${fmtMon(m.days[0])}${clinic() ? ` (${clinic()})` : ""}`;
+const digMailto = (c, m) => `mailto:${c.email.split(/[;,]/).map(x => x.trim()).filter(Boolean).join(",")}?${[String(state.cfg.digestCc || "").trim() ? `cc=${encodeURIComponent(String(state.cfg.digestCc).trim())}` : "", `subject=${encodeURIComponent(digSubject(c, m))}`].filter(Boolean).join("&")}`;
+/* where the digests stand this week: the list must be today's on Friday, then each clinician who gets one */
+function digestStatus(t = todaySerial()) {
+  const m = digestModel(t), r = state.report, listToday = !!r && (r.importedOn === t || r.asOf === t), left = m.due.filter(c => !c.sentThisWeek);
+  return { m, listToday, left, friday: dow(t) === 5, late: nowMin() >= DIG_DUE };
+}
+async function saveDigest(list) {
+  if (POPOUT) { const res = await callPane("saveDigest", [list]); if (res) state.digest = res; return res; }
+  let out = null;
+  await Excel.run(async ctx => {
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(DIG_SHEET); await ctx.sync();
+    if (ws.isNullObject) {
+      ws = ctx.workbook.worksheets.add(DIG_SHEET);
+      ws.getRange("A1").values = [["Clinician Digest"]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
+      ws.getRange("A2").values = [["One row per rendering clinician (E2). Add their email; set Send weekly digest to No to leave someone out. The add-in fills Last sent and Sent by when a digest is marked sent."]];
+      ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
+      const hd = ws.getRange(`A${DIG_HEAD}:E${DIG_HEAD}`); hd.values = [DIG_HDR]; hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true;
+      [["A", 200], ["B", 220], ["C", 110], ["D", 130], ["E", 110]].forEach(([c, w]) => { ws.getRange(`${c}:${c}`).format.columnWidth = w; });
+      ws.getRange(`C${DIG_FIRST}:C${DIG_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
+      ws.freezePanes.freezeRows(DIG_HEAD);
+    }
+    const rg = ws.getRange(`A${DIG_FIRST}:E${DIG_LAST}`); rg.load("values"); await ctx.sync();
+    const cur = readDigest(rg.values); let next = DIG_FIRST + rg.values.reduce((k, v, i) => String(v[0]).trim() ? i + 1 : k, 0);
+    for (const x of list) {
+      let c = cur.find(y => digKey(y.name) === digKey(x.name));
+      if (!c) { c = { name: x.name, email: "", send: true, sent: null, by: "", row: next++ }; cur.push(c); }
+      Object.assign(c, x, { name: c.name });
+      ws.getRange(`A${c.row}:E${c.row}`).values = [[c.name, c.email, c.send ? "Yes" : "No", c.sent ?? "", c.by || ""]];
+      ws.getRange(`D${c.row}`).numberFormat = [["m/d/yyyy h:mm AM/PM"]];
+    }
+    await ctx.sync(); out = cur;
+  });
+  state.digest = out; return out;
+}
+function mDigest() {
+  const st = digestStatus(), m = st.m; state.digModel = m;
+  const missing = m.clinicians.filter(c => !c.none && !c.known);
+  if (missing.length) saveDigest(missing.map(c => ({ name: c.name }))).catch(e => console.error(e));   // every clinician gets a row, opted in
+  const cc = String(state.cfg.digestCc || "").trim();
+  const when = c => !c.send ? "Not sent: opted out" : c.sentThisWeek ? `Sent ${fmtMon(Math.floor(c.sent))} ${fmtTime(Math.round((c.sent % 1) * 1440))}${c.by ? ` by ${c.by}` : ""}` : "Not sent this week";
+  const card = (c, i) => {
+    const n = c.pts.length, inTx = c.pts.filter(p => !p.paused).length, att = c.pts.filter(p => p.alert.length).length;
+    const head = `<div class="h"><h2>${esc(c.name)}</h2><span>${inTx} in treatment${n - inTx ? `, ${n - inTx} paused` : ""}${att ? `, ${att} need attention` : ""}</span></div>`;
+    if (c.none) return `<div class="section">${head}<p class="body">${n} patient${n === 1 ? " has" : "s have"} no clinician in E2: ${c.pts.map(p => esc(p.tab)).join(", ")}. Import this week's appointment list to fill it from the Rendering column.</p></div>`;
+    const mail = c.email && c.send ? `<a class="btn ghost sm" href="${esc(digMailto(c, m))}" target="_blank" rel="noopener">2. Open email</a>` : `<span class="hint">${c.send ? "Add an email to open one." : ""}</span>`;
+    return `<div class="section">${head}
+      <div class="g2"><label class="fld"><span>Email</span><input data-digmail="${i}" value="${esc(c.email)}" placeholder="name@mymhs.com" autocomplete="off"></label>
+      <label class="check" style="align-self:end"><input type="checkbox" data-digsend="${i}"${c.send ? " checked" : ""}> Send this clinician a weekly digest</label></div>
+      <p class="${c.send && !c.sentThisWeek ? "flag" : "muted"}" style="margin:4px 0">${esc(when(c))}</p>
+      ${c.send ? `<div class="actions"><button class="btn ghost sm" data-act="digPrev" data-v="${i}">Preview</button><button class="btn ghost sm" data-act="digCopy" data-v="${i}">1. Copy digest</button>${mail}<button class="btn ${c.sentThisWeek ? "mute" : "primary"} sm" data-act="digSent" data-v="${i}">3. Mark sent</button></div>` : ""}
+      <div class="digprev" id="digPrev${i}" hidden style="margin-top:8px;padding:12px;border-radius:10px;background:#fff;color:#1C2A33;overflow:auto;max-height:420px">${digestHtml(c, m)}</div></div>`;
+  };
+  const warn = st.friday && !st.listToday ? `<p class="warnline">Import today's appointment list first, so the digests have this week's visits.</p>` : "";
+  showModal(`<h2 id="mtitle">Weekly clinician digests</h2>
+    <p class="sub">This week ${fmtMon(m.days[0])} to ${fmtMon(m.days[4])}, and next week. ${m.due.length - st.left.length} of ${m.due.length} sent. For each one: copy the digest, open the email, paste it in (Ctrl+V), send, then Mark sent.</p>${warn}
+    <label class="fld"><span>CC on every digest</span><input id="digCc" value="${esc(cc)}" placeholder="Your email" autocomplete="off"></label>
+    ${m.clinicians.map(card).join("") || '<p class="empty">No patients in treatment.</p>'}
+    <div class="mfoot"><button class="btn primary" data-mclose>Done</button></div>`, true);
+  const body = $("modalBody");
+  body.querySelectorAll("[data-digmail]").forEach(el => el.onchange = () => { const c = m.clinicians[+el.dataset.digmail]; saveDigest([{ name: c.name, email: el.value.trim() }]).then(mDigest).catch(fail); });
+  body.querySelectorAll("[data-digsend]").forEach(el => el.onchange = () => { const c = m.clinicians[+el.dataset.digsend]; saveDigest([{ name: c.name, send: el.checked }]).then(() => { mDigest(); renderBanners(); }).catch(fail); });
+  const ccIn = $("digCc"); if (ccIn) ccIn.onchange = () => { state.cfg.digestCc = ccIn.value.trim(); saveSetting("tms_cfg", { ...state.cfg }); mDigest(); };
+}
+/* the formatted digest on the clipboard (HTML, for Outlook), else the preview selected and copied the old way */
+async function digCopy(i) {
+  const m = state.digModel, c = m && m.clinicians[+i]; if (!c) return;
+  const html = digestHtml(c, m), box = $(`digPrev${i}`);
+  try {
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      const tmp = document.createElement("div"); tmp.innerHTML = html;
+      await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([tmp.innerText || tmp.textContent || ""], { type: "text/plain" }) })]);
+      return toast(`Digest for ${c.name} copied. Open the email and paste it in.`);
+    }
+  } catch { /* try selecting the preview */ }
+  if (box) { box.hidden = false; const r = document.createRange(); r.selectNodeContents(box); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    let ok = false; try { ok = document.execCommand("copy"); } catch { /* blocked */ }
+    toast(ok ? `Digest for ${c.name} copied. Open the email and paste it in.` : "The preview is selected: press Ctrl+C to copy it.", !ok); }
+}
+async function digSent(i) {
+  const m = state.digModel, c = m && m.clinicians[+i]; if (!c) return;
+  try { await saveDigest([{ name: c.name, sent: todaySerial() + nowMin() / 1440, by: state.user || "" }]); toast(`Marked sent: ${c.name}.`); mDigest(); renderBanners(); } catch (e) { fail(e); }
 }
 /* ---------- Active Patients sheet: a view-only copy of the Patients roster for this week, rebuilt whenever the data changes ---------- */
 const AP_SHEET = "Active Patients", AP_SHOW = [...ACTIVE, "Paused"], AP_HEAD = 4, AP_FIRST = 7;
@@ -2530,7 +2716,7 @@ async function saveGuestLink(mrn, url) {
 
 /* ---------- Settings > Use another tab as New Template: the chosen tab is renamed New Template and the current one deleted.
    Patient tabs and the add-in's own sheets aren't offered. Logged without undo; the workbook's version history has the old tab. ---------- */
-const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, ELOG_SHEET, TmsCore.USER_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
+const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, EXT_SHEET, DIG_SHEET, ELOG_SHEET, TmsCore.USER_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
 const tplChoices = () => (state.sheetNames || []).filter(n => !OWN_SHEETS().includes(sheetKey(n)) && !state.tabs.some(t => t.name === n) && !state.stale.includes(n) && !/ \(old\)$/.test(n));
 function fillTplPick() {
   const s = $("tplPick"); if (!s || document.activeElement === s) return;
@@ -4069,7 +4255,7 @@ async function buildPlan(quiet) {
         continue;
       }
       const x = c[mrn] || (c[mrn] = { cx: [], on: [], booked: false, lastKept: null });
-      if (sts === "Cancelled") { x.cx.push(date); if (ev.type === "F/U") (x.fuCx || (x.fuCx = [])).push({ date, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null }); }
+      if (sts === "Cancelled") { x.cx.push(date); if (ev.type === "F/U") (x.fuCx || (x.fuCx = [])).push({ date, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null }); else (x.txCx || (x.txCx = [])).push(date); }
       else if (sts === "Scheduled" || sts === "Kept") {
         /* every visit on the list for the Day view's check (the last month on; the same visit listed twice counts once) */
         let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
@@ -4081,7 +4267,7 @@ async function buildPlan(quiet) {
         if (ourChair) { v[`${mrn}|${date}`] = pv; names.add(pv); const k = cnt[mrn] || (cnt[mrn] = {}); k[pv] = (k[pv] || 0) + 1; }
       }
     }
-    for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); x.fuCx = (x.fuCx || []).filter(e => !x.on.includes(e.date)); delete x.on; }   // rebooked the same day: not a cancellation
+    for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); x.fuCx = (x.fuCx || []).filter(e => !x.on.includes(e.date)); x.txCx = [...new Set(x.txCx || [])].filter(dd => !x.on.includes(dd)); delete x.on; }   // rebooked the same day: not a cancellation
     for (const [mrn, k] of Object.entries(cnt)) pt[mrn] = Object.entries(k).sort((a, b) => b[1] - a[1])[0][0];
     const ds = ap.map(a => a.date);
     state.lx = { v, pt, c, chairs: [...names].sort(), ap, gv, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
@@ -4108,9 +4294,9 @@ async function buildPlan(quiet) {
     const loc = String(cell(r, "mLoc") || "").trim(), atc = isHere(pv, loc);
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc, chair: dev.ours.test(pv),
       here: r._ext ? (atc === true ? null : false) : split && atc === false ? false : null });   // false: booked at another clinic
-    if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
-    /* the Rendering provider leads E2 (and so who telephone notes go to), on chair and provider visits alike, today and later */
-    const rn = m.mRend >= 0 && !past ? TmsCore.providerLast(String(cell(r, "mRend") || "").trim()) : ""; if (rn) { const c = rend.get(mrn) || {}; c[rn] = (c[rn] || 0) + 1; rend.set(mrn, c); }
+    if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.clinicianName(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
+    /* the Rendering clinician leads E2, with their credential ("Neha Nayyar, MD"): who telephone notes and the weekly digest go to */
+    const rn = m.mRend >= 0 && !past ? TmsCore.clinicianName(String(cell(r, "mRend") || "").trim()) : ""; if (rn) { const c = rend.get(mrn) || {}; c[rn] = (c[rn] || 0) + 1; rend.set(mrn, c); }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   if (!ps) state.codeMrn = new Map([...codes].map(([mrn, c]) => [c, rawMrn.get(mrn) || mrn]));   // LASFIR -> MRN, to suggest a blank A4
@@ -4306,7 +4492,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, noLink: noLinkList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     elig: state.elig || [], edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
@@ -4316,7 +4502,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, noLink: o.noLink || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     elig: o.elig || [], edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -4334,7 +4520,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), saveDigest: l => saveDigest(l), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -4447,7 +4633,7 @@ function setTheme(t) {
   try { localStorage.setItem("tms_theme", t); } catch { /* this session only */ }
   syncTheme();
 }
-const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl" };
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl", cfgDigestCc: "digestCc" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
 const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 /* re-renders replace the markup, so focus goes back to the same control (by its data attributes), else to the card's next step */
@@ -4472,7 +4658,7 @@ Office.onReady(info => {
   syncCfgInputs();
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
     const v = $(id).value;
-    if (k === "location" && String(state.cfg.location || "").trim() && !adminOn()) { $(id).value = state.cfg.location; renderPeople(); return toast("The clinic is already saved for this workbook. Unlock admin in Settings to change it.", true); } state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    if (k === "location" && String(state.cfg.location || "").trim() && !adminOn()) { $(id).value = state.cfg.location; renderPeople(); return toast("The clinic is already saved for this workbook. Unlock admin in Settings to change it.", true); } state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["eligUrl", "digestCc"].includes(k) ? v.trim() : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
   $("apBack").onclick = () => show("patients");
   $("btnFull").onclick = fullScreen;
@@ -4530,7 +4716,8 @@ Office.onReady(info => {
       dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
-      noLink: () => dontAskLink(v), gotoSheet: () => openTabName(t), telnote: () => mTel(t, "miss"), telfu: () => mTel(t, "fu", v), doTel: () => doTel(), copyTel: () => { const x = $("mTelText"); if (x) navigator.clipboard.writeText(x.value).then(() => toast("Copied.")).catch(() => { x.select(); toast("Select all is on: press Ctrl+C."); }); },
+      noLink: () => dontAskLink(v), gotoSheet: () => openTabName(t), telnote: () => mTel(t, "miss"), telfu: () => mTel(t, "fu", v), telcx: () => mTel(t, "cx", v), digOpen: () => mDigest(), digCopy: () => digCopy(v), digSent: () => digSent(v),
+      digPrev: () => { const b = $(`digPrev${v}`); if (b) b.hidden = !b.hidden; }, doTel: () => doTel(), copyTel: () => { const x = $("mTelText"); if (x) navigator.clipboard.writeText(x.value).then(() => toast("Copied.")).catch(() => { x.select(); toast("Select all is on: press Ctrl+C."); }); },
       guestLink: () => mGuestLink(v), doGuestLink: () => saveGuestLink(m.mrn, mval("mGuestUrl")).then(okd => { if (okd) closeModal(); }),
       doGuestEnd, guests: () => mGuestLink(v),
       saveMrn: () => { const x = String((document.querySelector(`[data-mrnin="${CSS.escape(t)}"]`) || {}).value || "").trim();

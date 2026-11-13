@@ -85,12 +85,35 @@
   }
   const missStreak = (rows, today) => missRun(rows, today).length;
 
-  /* ---------- telephone notes to the provider (written in NextGen; the add-in logs that it was done in Notes, S) ----------
-     "Tel note to Dr. Smith 11/11 (missed 2)" starts one; "Tel note entry 11/12 (missed 3)" adds to it;
-     "Tel note to Dr. Smith 11/14 (F/U 11/6 not rebooked)" is for a follow-up that was missed or cancelled and not rebooked. */
-  const TEL_MISS = /^tel note (?:to|entry)\b[^;]*\(missed (\d+)\)/i;
-  const telMissLine = (prov, day, n, entry) => entry ? `Tel note entry ${day} (missed ${n})` : `Tel note to ${prov ? `Dr. ${prov}` : "the provider"} ${day} (missed ${n})`;
-  const telFuLine = (prov, day, fuDay) => `Tel note to ${prov ? `Dr. ${prov}` : "the provider"} ${day} (F/U ${fuDay} not rebooked)`;
+  /* ---------- the rendering clinician, with their credential: not everyone is a doctor ----------
+     NextGen writes "Nayyar MD, Neha", "Lau, MD Alvin", "Marussich PMHNP, Wendy", "Krehbiel, Stefanie PMHNP", "Aujla Md, Gurpreet Kaur".
+     clinician() gives { first, last, cred, name: "Neha Nayyar, MD" }; with no credential the name alone. */
+  const CREDS = /^(md|do|np|pmhnp|pmhnp-bc|fnp|fnp-c|fnp-bc|aprn|dnp|pa|pa-c|phd|psyd|lcsw|lmft|mft|rn|bc)$/i;
+  function clinician(raw) {
+    const s = String(raw ?? "").replace(/\s+/g, " ").trim(); if (!s) return { first: "", last: "", cred: "", name: "" };
+    const cred = [], words = part => part.split(" ").map(w => w.replace(/[.]/g, "")).filter(w => {
+      if (!w || /^dr$/i.test(w)) return false;
+      if (CREDS.test(w)) { const c = w.toUpperCase(); if (!cred.includes(c)) cred.push(c); return false; }
+      return true; });
+    const parts = s.split(",").map(x => words(x.trim()));
+    let last, first;
+    if (parts.length > 1) { last = parts[0].join(" "); first = parts.slice(1).flat().join(" "); }
+    else { const w = parts[0]; last = w.length ? w[w.length - 1] : ""; first = w.slice(0, -1).join(" "); }
+    const name = `${[first, last].filter(Boolean).join(" ")}${cred.length ? `, ${cred.join(", ")}` : ""}`;
+    return { first, last, cred: cred.join(", "), name };
+  }
+  const clinicianName = raw => clinician(raw).name;
+
+  /* ---------- telephone notes to the clinician (written in NextGen; the add-in logs that it was done in Notes, S) ----------
+     prov is E2, the rendering clinician with their credential ("Neha Nayyar, MD"). Missed treatments: each missed row covered gets
+     "Tel note to Neha Nayyar, MD 11/11 (missed 2 in a row)"; a later miss gets "Tel note entry 11/12 (missed 3 in a row)" on its
+     own row. "(cancelled 11/10, 11/12)" is for 2+ treatment cancellations within 7 days; "(F/U 11/6 not rebooked)" for a follow-up
+     missed or cancelled with none booked within 5 days. */
+  const TEL_MISS = /^tel note (?:to|entry)\b[^;]*\(missed (\d+)(?: in a row)?\)/i, TEL_CX = /^tel note (?:to|entry)\b[^;]*\(cancelled ([^)]*)\)/i;
+  const telTo = prov => `Tel note to ${prov || "the clinician"}`;
+  const telMissLine = (prov, day, n, entry) => entry ? `Tel note entry ${day} (missed ${n} in a row)` : `${telTo(prov)} ${day} (missed ${n} in a row)`;
+  const telFuLine = (prov, day, fuDay) => `${telTo(prov)} ${day} (F/U ${fuDay} not rebooked)`;
+  const telCxLine = (prov, day, days, entry) => entry ? `Tel note entry ${day} (cancelled ${days.join(", ")})` : `${telTo(prov)} ${day} (cancelled ${days.join(", ")})`;
   const notesOf = r => String(r.note ?? "").split("; ").map(x => x.trim());
   /* two or more missed treatments in a row need a telephone note to the provider; each miss after that, a new entry on it.
      Returns null under 2, else { n, logged (the miss count the last logged line covered), due, first, run, add (misses not yet on it) } */
@@ -105,10 +128,23 @@
   /* business days after from, up to to (serials; Saturday and Sunday don't count) */
   const wday = s => (s + 6) % 7;   // 0 Sunday, for serials counted from Dec 30, 1899
   function bizDays(from, to) { let n = 0; for (let d = from + 1; d <= to; d++) { const w = wday(d); if (w > 0 && w < 6) n++; } return n; }
-  /* a follow-up missed (x in M) or cancelled in NextGen, with no follow-up booked or done after it: rebook it; after REBOOK_DAYS
-     business days a telephone note goes to the provider. cx: cancelled F/U from the saved list { date, mod }. lbl: serial -> "m/d",
-     to find the logged line. Only the last 30 days count. */
-  const REBOOK_DAYS = 2, REBOOK_LOOK = 30;
+  /* 2 or more treatment cancellations within a rolling 7 days (by appointment date) need a telephone note to the clinician; each
+     cancellation after that, within 7 days of the one before, a new entry. cx: cancelled treatment dates from the saved list (a
+     same-day rebooking already left out). lbl: serial -> "m/d", as the logged lines write it. Cancellations from 30 days back on.
+     Returns the runs still due: [{ dates, add (not yet logged), first }] */
+  const CX_WINDOW = 7, CX_LOOK = 30;
+  function cancelNote(rows, cx, today, lbl) {
+    const ds = [...new Set((cx || []).filter(d => d != null && d >= today - CX_LOOK))].sort((a, b) => a - b), runs = [];
+    ds.forEach(d => { const r = runs[runs.length - 1]; if (r && d - r[r.length - 1] < CX_WINDOW) r.push(d); else runs.push([d]); });
+    const logged = new Set();
+    rows.flatMap(notesOf).forEach(s => { const m = s.match(TEL_CX); if (m) m[1].split(",").map(x => x.trim()).forEach(x => logged.add(x)); });
+    return runs.filter(r => r.length >= 2).map(r => ({ dates: r, add: r.filter(d => !logged.has(lbl(d))), first: r.every(d => !logged.has(lbl(d))) })).filter(r => r.add.length);
+  }
+  /* a follow-up missed (x in M) or cancelled in NextGen counts unless the next follow-up is booked within FU_NEXT days after it:
+     rebook it; after REBOOK_DAYS business days still not rebooked within that, a telephone note goes to the clinician. cx:
+     cancelled F/U from the saved list { date, mod }. lbl: serial -> "m/d", to find the logged line. Only the last 30 days count.
+     next: the next follow-up after it, if any (booked too late to count). */
+  const REBOOK_DAYS = 2, REBOOK_LOOK = 30, FU_NEXT = 5;
   function fuRebook(rows, cx, today, lbl) {
     const evs = rows.filter(r => r.type === "F/U" && r.miss && r.date != null && r.date <= today).map(r => ({ date: r.date, kind: "missed", start: r.date, row: r.row }));
     (cx || []).forEach(c => {
@@ -117,8 +153,8 @@
       evs.push({ date: c.date, kind: "cancelled", start: Math.min(today, c.mod ?? c.date), row: null });   // the clock starts when it was cancelled
     });
     const fu = rows.filter(r => r.type === "F/U" && !r.miss && r.date != null), all = rows.flatMap(notesOf);
-    return evs.filter(e => e.start >= today - REBOOK_LOOK && !fu.some(r => r.date > e.date))
-      .map(e => ({ ...e, telDue: bizDays(e.start, today) >= REBOOK_DAYS, logged: all.some(s => /^tel note to\b/i.test(s) && s.includes(`(F/U ${lbl(e.date)} not rebooked)`)) }))
+    return evs.filter(e => e.start >= today - REBOOK_LOOK && !fu.some(r => r.date > e.date && r.date <= e.date + FU_NEXT))
+      .map(e => ({ ...e, next: (fu.filter(r => r.date > e.date).sort((a, b) => a.date - b.date)[0] || {}).date ?? null, telDue: bizDays(e.start, today) >= REBOOK_DAYS, logged: all.some(s => /^tel note to\b/i.test(s) && s.includes(`(F/U ${lbl(e.date)} not rebooked)`)) }))
       .sort((a, b) => a.date - b.date);
   }
   /* follow-ups through the course: one between the MT and the MT redo (or treatment 15 with no MT redo booked), one around
@@ -152,14 +188,17 @@
     const streak = missStreak(p.rows, x.today);
     if (streak >= 3) add("missed", `Missed ${streak} in a row`, ["Call to reschedule", "call"], { bad: true });
     /* telephone notes to the provider: 2+ missed in a row, then an entry for each miss after; a follow-up not rebooked */
-    const dr = p.provider ? `Dr. ${p.provider}` : "the provider", tel = d.tel;
+    const dr = p.provider || "the clinician", tel = d.tel;
     if (tel && tel.due) add("telnote", tel.first ? `Missed ${tel.n} in a row: telephone note to ${dr}` : `Missed again ${tel.add.map(r => f(r.date)).join(", ")}: add to the telephone note`,
       [tel.first ? "Write telephone note" : "Add to telephone note", "telnote"], { bad: true });
     (d.fuRebook || []).forEach(e => {
       if (e.telDue && e.logged) return;
-      add("furebook", e.telDue ? `Follow-up ${f(e.date)} ${e.kind}, not rebooked: telephone note to ${dr}` : `Follow-up ${f(e.date)} ${e.kind}: rebook it`,
+      const nx = e.next != null ? `, next one ${f(e.next)}` : "";
+      add("furebook", e.telDue ? `Follow-up ${f(e.date)} ${e.kind}, not rebooked within ${FU_NEXT} days${nx}: telephone note to ${dr}` : `Follow-up ${f(e.date)} ${e.kind}${nx}: rebook within ${FU_NEXT} days`,
         e.telDue ? ["Write telephone note", "telfu"] : ["Rebook in NextGen", "opentab"], { bad: e.telDue, v: e.date, row: e.row });
     });
+    (d.cxNote || []).forEach(c => add("telcx", c.first ? `Cancelled ${c.dates.map(f).join(", ")} (${c.dates.length} within ${CX_WINDOW} days): telephone note to ${dr}` : `Cancelled again ${c.add.map(f).join(", ")}: add to the telephone note`,
+      [c.first ? "Write telephone note" : "Add to telephone note", "telcx"], { bad: true, v: c.dates[0] }));
     if (A) (d.fuGaps || []).forEach(w => add("fugap", `No follow-up booked ${w.label} (${f(w.from)} to ${f(w.to)})`, ["Book in NextGen", "opentab"], { v: w.k }));
     if (A) d.authFlags.forEach(t => add("auth", t, /^Auth starts|MT redo/.test(t) ? ["Open", "opentab"] : ["Add extension", "ext"], { bad: /expired|past auth|authorized \(D2\)/i.test(t) }));
     (x.moved || []).forEach(v => add("ng", `Moved to ${v.chairLabel}${v.dayLabel ? ` on ${v.dayLabel}` : ""}, not yet in NextGen`, ["Mark moved in NextGen", "ngdone"], { key: v.key }));
@@ -575,6 +614,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, telNote, telMissLine, telFuLine, bizDays, fuRebook, REBOOK_DAYS, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, clinician, clinicianName, telNote, telMissLine, telFuLine, telCxLine, cancelNote, CX_WINDOW, bizDays, fuRebook, REBOOK_DAYS, FU_NEXT, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
     copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });
