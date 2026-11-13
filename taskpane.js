@@ -256,7 +256,7 @@ async function saveUserSet(name, patch) {
 }
 /* Excel can only open the add-in with the workbook for everyone, so the document setting is on while anyone has theirs on */
 function syncAutoShow() {
-  if (POPOUT) return;
+  if (POPOUT || state.readOnly) return;
   const s = Office.context.document.settings, any = TmsCore.autoAny(state.users);
   if (any) s.set(TmsCore.AUTO_SHOW, true); else s.remove(TmsCore.AUTO_SHOW);
   return new Promise((res, rej) => s.saveAsync(r => r.status === Office.AsyncResultStatus.Succeeded ? res(any) : rej(new Error("Couldn't save the workbook setting. Try again."))));
@@ -293,6 +293,7 @@ function hideWho() { $("who").hidden = true; $("whoBody").innerHTML = ""; }
 /* a new name goes on the list (or the same name already there is used) */
 async function addUser(name) {
   const n = TmsCore.cleanUserName(name); if (!n) throw new Error("Enter your first name and last initial (letters only).");
+  if (state.readOnly) throw new Error(RO_MSG);
   if (POPOUT) { await callPane("addUser", [n]); return n; }
   const at = new Date().toISOString();
   await Excel.run(async ctx => {
@@ -317,7 +318,7 @@ async function userSheet(ctx) {
 }
 /* the person's Updated date on the list: when they last picked their name */
 async function touchUser(name) {
-  if (POPOUT || !findUser(name)) return;
+  if (POPOUT || !findUser(name) || state.readOnly) return;
   await Excel.run(async ctx => {
     const ws = ctx.workbook.worksheets.getItemOrNullObject(TmsCore.USER_SHEET); await ctx.sync(); if (ws.isNullObject) return;
     const r = ws.getRange(`A1:A${USER_ROWS}`); r.load("values"); await ctx.sync();
@@ -419,9 +420,23 @@ function track(p, read) {
 const quietly = async fn => { busy.quiet++; try { return await fn(); } finally { busy.quiet--; } };
 if (!POPOUT && typeof Excel !== "undefined" && Excel.run && !Excel.run.tms) { const run = Excel.run.bind(Excel); Excel.run = Object.assign((...a) => track(run(...a)), { tms: true }); }
 async function refresh() { return track(refresh1(), true); }
+/* read-only: the workbook opened for viewing (Excel's Viewing mode, a view-only link or permission, or Open as read-only). Excel then
+   asks to save a copy every time anything writes, so the tracker writes nothing on its own (formats, Active Patients, Guest
+   Patients, the people list, visit-log formatting, settings, the eligibility pull) and anything pressed says why it can't save. */
+const RO_MSG = "This workbook is open read-only, so the tracker can't save. In Excel, switch from Viewing to Editing, or ask the owner for edit access, then try again.";
+const roStop = () => { if (!state.readOnly) return false; toast(RO_MSG, true); return true; };
+async function checkReadOnly() {
+  if (POPOUT) return state.readOnly;
+  let ro = false;
+  try { await Excel.run(async ctx => { ctx.workbook.load("readOnly"); await ctx.sync(); ro = !!ctx.workbook.readOnly; }); } catch { /* older Excel: fall back on the document mode */ }
+  try { if (Office.context.document.mode === Office.DocumentMode.ReadOnly) ro = true; } catch { /* not reported */ }
+  if (ro !== !!state.readOnly) { state.readOnly = ro; toChild({ k: "ro", on: ro }); }
+  return ro;
+}
 async function refresh1() {
   if (POPOUT) return callPane("refresh", []);
   try {
+    await checkReadOnly();
     /* an ESK or IVK tracker opened with this add-in by mistake: say so and add or change nothing (checked before first launch writes anything) */
     if (!state.kindChecked) await Excel.run(async ctx => {
       ctx.workbook.load("name"); const s = ctx.workbook.worksheets; s.load("items/name"); await ctx.sync();
@@ -488,7 +503,7 @@ async function refresh1() {
          ended (G4 today or later) or with a visit (E) today or later. Other tabs are left as they are. */
       const t4 = todaySerial(), a4Live = l => l.name === "New Template" || (isNum(l.hdr.values[2][6]) && l.hdr.values[2][6] >= t4) || l.log.values.some(r => (eDate(r[4]) ?? 0) >= t4);
       const a4s = L.filter(l => l.a4.numberFormat[0][0] !== A4_FMT && a4Live(l));
-      if (d4s.length || a4s.length) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); a4s.forEach(l => { l.a4.numberFormat = [[A4_FMT]]; }); await ctx.sync(); }
+      if (!state.readOnly && (d4s.length || a4s.length)) { d4s.forEach(l => { l.d4.numberFormat = [[D4_FMT]]; }); a4s.forEach(l => { l.a4.numberFormat = [[A4_FMT]]; }); await ctx.sync(); }
       state.closures = new Map();
       if (cs) cs.values.slice(1).forEach(v => { if (isNum(v[6])) state.closures.set(Math.floor(v[6]), String(v[7] || "Closed")); });
       state.patients = []; state.tabs = []; state.fix = new Map();
@@ -561,7 +576,7 @@ async function refresh1() {
     if (state.noTab) state.noTab = state.noTab.filter(x => !tabbed(x));
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
-    if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
+    if (mtrFix.length && !state.readOnly) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
     /* every approved treatment done (36 of 36, 15 of 15): Complete session asks to mark it Complete, and until then the course
        shows the need "Set to Complete". Nothing is written on its own, so an extension on the way isn't closed out. */
     renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -570,9 +585,9 @@ async function refresh1() {
     bootDone();
     syncActiveSheet();
     /* once a session: visit logs edited by hand get the formatting that follows their dates (hand-colored rows stay) */
-    if (!state.fmtRan) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
+    if (!state.fmtRan && !state.readOnly) { state.fmtRan = true; formatLogs(state.patients.filter(p => !state.stale.includes(p.tab)).map(p => ({ tab: p.tab, touched: [] }))).catch(e => console.error(e)).then(sessAmPmOnce); }
     /* the eligibility feed, once a day per workbook, when its flow URL is set (quiet: a failure waits for the Pull button) */
-    if (!state.eligTried) { state.eligTried = true; let day = ""; try { day = Office.context.document.settings.get("tms_elig_day") || ""; } catch { /* settings unavailable */ }
+    if (!state.eligTried && !state.readOnly) { state.eligTried = true; let day = ""; try { day = Office.context.document.settings.get("tms_elig_day") || ""; } catch { /* settings unavailable */ }
       if (eligUrlOk() && day !== TmsCore.dayKey()) pullElig(false).catch(e => console.error(e)); }
   } catch (e) { fail(e); bootDone(); }
 }
@@ -588,6 +603,7 @@ function eligRows(values) {
 }
 async function pullElig(manual) {
   if (POPOUT) return callPane("pullElig", [manual]);
+  if (state.readOnly) { if (manual) toast(RO_MSG, true); return; }
   if (!eligUrlOk()) { if (manual) toast("Add the eligibility feed URL in Settings first.", true); return; }
   let text;
   try {
@@ -804,6 +820,7 @@ function renderBanners() {
     : r.asOf == null ? "The last appointment list has no run date. Run the report again and upload it on Import."
       : `The appointment list is from ${fmtMon(r.asOf)}${r.asOfMin != null ? " " + clock(r.asOfMin) : ""}. Run an updated report and upload it on Import.`;
   show("reportBanner", stale);
+  $("roBanner").hidden = !state.readOnly;
   $("wbTitle").textContent = trackerTitle(); $("devTag").textContent = `${device() === "Brainsway" ? "BrainsWay" : "MagV"} tracker`;
   const sk = state.skipped, parts = [];
   if (sk.layout.length) parts.push(`${sk.layout.length} tab${sk.layout.length > 1 ? "s" : ""} in an older layout (${sk.layout.map(esc).join(", ")})`);
@@ -985,6 +1002,7 @@ async function writeSess(entries) {
 }
 /* the pane's write; in full screen the pane then sends the table to the window in chunks (sendSess) before it answers */
 async function writeSessPane(entries) {
+  if (state.readOnly) throw new Error(RO_MSG);
   try {
     await Excel.run(async ctx => {
       await sessSheet(ctx); const ws = await readSessNow(ctx);
@@ -2567,6 +2585,7 @@ function digestStatus(t = todaySerial()) {
   return { m, listToday, left, friday: dow(t) === 5, late: nowMin() >= DIG_DUE };
 }
 async function saveDigest(list) {
+  if (state.readOnly) throw new Error(RO_MSG);
   if (POPOUT) { const res = await callPane("saveDigest", [list]); if (res) state.digest = res; return res; }
   let out = null;
   await Excel.run(async ctx => {
@@ -2670,6 +2689,7 @@ function activeSheetModel() {
   return { t, days, P, head, sum: [treated, notes], rows, sig: JSON.stringify([t, head, treated, notes, rows]) };
 }
 async function syncActiveSheet(force) {
+  if (state.readOnly) { if (force) toast(RO_MSG, true); return; }
   if (state.apBusy) { state.apAgain = true; return; }
   const m = activeSheetModel(), settings = Office.context.document.settings;
   if (!force && state.hasAP && (state.apSig ?? settings.get("tms_ap_sig")) === m.sig) { state.apSig = m.sig; return; }
@@ -2765,7 +2785,7 @@ async function readGuests(ctx, ws) {
   return { by, next: GUEST_FIRST + n };
 }
 async function syncGuests() {
-  if (POPOUT || !state.guests) return;
+  if (POPOUT || !state.guests || state.readOnly) return;
   const sig = JSON.stringify([todaySerial(), state.guests.map(g => [g.mrn, g.code, g.home, g.here, g.homeCount, g.next, g.last]), state.patients.map(p => p.mrn)]);
   if (state.guestSig === sig) return;
   try {
@@ -2847,7 +2867,7 @@ const TEMPLATE_FILE = () => `assets/templates/${device() === "Brainsway" ? "Brai
 const TEMPLATE_SHEETS = ["New Template", "Protocols"];   // inserted when the workbook doesn't have them
 const sheetKey = n => String(n).trim().replace(/\s+/g, " ").toLowerCase();
 async function firstLaunch() {
-  if (POPOUT || state.setupRan) return; state.setupRan = true;
+  if (POPOUT || state.setupRan || await checkReadOnly()) return; state.setupRan = true;
   const made = [], renamed = [];
   try {
     let have = [];
@@ -2936,6 +2956,7 @@ const benTarget = tab => state.patients.find(p => p.tab === tab && p.layout === 
 /* log: { what, kind } names the change in the Edit log (what defaults to the cells' meaning, see describeCells); false leaves it
    out, for writes that are part of a larger logged change (an import). An op with f: true writes a formula. */
 async function applyOps(ops, guard, log) {
+  if (roStop()) throw new Error(RO_MSG);
   if (POPOUT) return callPane("applyOps", [ops, guard, log]);
   const ben = [], cells = []; let unlogged = false;
   for (const o of ops) {
@@ -4606,7 +4627,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, noLink: noLinkList(), newSnz: newSnz(), newNo: newNoList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, readOnly: !!state.readOnly, noLink: noLinkList(), newSnz: newSnz(), newNo: newNoList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     elig: state.elig || [], edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
@@ -4616,7 +4637,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, noLink: o.noLink || [], newSnz: o.newSnz || {}, newNo: o.newNo || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, readOnly: !!o.readOnly, noLink: o.noLink || [], newSnz: o.newSnz || {}, newNo: o.newNo || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     elig: o.elig || [], edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -4678,6 +4699,7 @@ function onPaneMessage(a) {
     } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
     else if (m.k === "user") { state.users = m.users || state.users; applyUser(m.name); }
     else if (m.k === "ui") { mergeUi(m); renderBanners(); renderDash(); }
+    else if (m.k === "ro") { state.readOnly = !!m.on; renderBanners(); }
     else if (m.k === "setting") { if (applySetting(m.key, m.v)) { renderBanners(); renderDash(); } }
     else if (window.DevUpdates) DevUpdates.receive(m);
 }
@@ -4710,6 +4732,7 @@ const SET_APPLY = {
 };
 function applySetting(k, v) { const f = SET_APPLY[k]; if (!f) return false; f(v); state.patients.forEach(p => p.d = derive(p)); return true; }
 function saveSetting(k, v) {
+  if (state.readOnly) { if (applySetting(k, v)) { renderBanners(); renderDash(); } return; }   // kept for this session only: nothing can be saved
   if (POPOUT) { if (applySetting(k, v)) { renderBanners(); renderDash(); } return callPane("saveSetting", [k, v]); }
   const s = Office.context.document.settings; s.set(k, v); s.saveAsync();
   if (k !== "tms_cfg" && applySetting(k, v)) { renderBanners(); renderDash(); }

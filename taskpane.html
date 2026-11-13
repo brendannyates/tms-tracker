@@ -597,6 +597,10 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       <b>The tracker is open full screen over Excel.</b> Keep this pane open: full screen reads and saves through it.
       <div class="actions"><button class="btn ghost sm" id="popClose">Close full screen</button></div>
     </div>
+    <div id="roBanner" class="banner late" hidden role="status">
+      <b>Open read-only: the tracker can't save</b>
+      <div class="sub">This workbook is open for viewing (Excel's Viewing mode, a view-only link or view-only access), so Excel would ask you to save a copy every time the tracker wrote anything. The tracker isn't saving anything for now. Switch from Viewing to Editing at the top of Excel, or ask the workbook's owner for edit access, then select Refresh.</div>
+    </div>
     <div id="reportBanner" class="banner" hidden>
       <b id="reportMsg"></b>
       <details>
