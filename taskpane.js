@@ -3737,14 +3737,18 @@ async function verifyGo() {
   const x = (state.mctx || {}).verify; if (!x) return;
   if ([...document.querySelectorAll("[data-vok]")].some(c => !c.checked)) return merr("Tick Matches on every field first, or keep the old tab.");
   try {
-    await Excel.run(async ctx => {
-      const ws = ctx.workbook.worksheets.getItemOrNullObject(x.old); await ctx.sync();
-      if (!ws.isNullObject) ws.delete();
-      await addEdits(ctx, [{ tab: x.name, kind: "tab", what: `Deleted ${x.old} after ${x.bad.map(b => b.a).join(", ")} were checked by hand`, undo: null }]);
-      await ctx.sync();
-    });
+    await deleteOldTab({ old: x.old, name: x.name, cells: x.bad.map(b => b.a) });
     toast(`Deleted ${x.old}.`); verifyNext(); await refresh();
   } catch (e) { fail(e); }
+}
+async function deleteOldTab({ old, name, cells }) {
+  if (POPOUT) return callPane("deleteOldTab", [{ old, name, cells }]);
+  await Excel.run(async ctx => {
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(old); await ctx.sync();
+    if (!ws.isNullObject) ws.delete();
+    await addEdits(ctx, [{ tab: name, kind: "tab", what: `Deleted ${old} after ${cells.join(", ")} were checked by hand`, undo: null }]);
+    await ctx.sync();
+  });
 }
 function verifyKeep() { const x = (state.mctx || {}).verify; if (x) toast(`Kept ${x.old}. Fix ${x.name} by hand, then delete the old tab.`); verifyNext(); }
 /* Use existing tab (on a guest's card: "Their tab is in this workbook"): a patient offered a tracker (New patients, Create a tracker
@@ -3753,7 +3757,6 @@ function verifyKeep() { const x = (state.mctx || {}).verify; if (x) toast(`Kept 
    picked. The MRN goes in A4 (and the LASFIR in A2 when it's blank). The tab's layout is checked: an earlier layout is rebuilt from New
    Template with its data moved over, one that has drifted gets Match New Template, and the Edit log says which. */
 function useTabAsk(mrn) {
-  if (POPOUT) return toast("Use this from the task pane.", true);
   const y = state.pendingNew.find(z => z.mrn === mrn) || guestOf(mrn); if (!y) return;
   if (!state.templateOk) return toast(state.templateWhy, true, true);
   const cur = state.tabs.map(t => { const p = state.patients.find(q => q.tab === t.name); return { name: t.name, code: t.code, mrn: p ? p.mrn : "", mrnRaw: p ? String(p.mrnRaw || p.mrn || "") : "", old: false }; });
@@ -3779,17 +3782,7 @@ async function useTabGo() {
   const rebuild = state.old.includes(name), match = !rebuild && state.fix.has(name), g = guestOf(y.mrn);
   let res = null;
   try {
-    await Excel.run(async ctx => {
-      const ws = ctx.workbook.worksheets.getItem(name), hd = ws.getRange("A2:A4"); hd.load("values"); await ctx.sync();
-      const had = normMrn(hd.values[2][0]);
-      if (had && had !== y.mrn) throw new Error(`${name} already has another MRN in A4.`);
-      ws.getRange("A4").values = [[y.raw]]; ws.getRange("A4").numberFormat = [[A4_FMT]];
-      if (y.code && String(hd.values[0][0] ?? "").trim() === "") ws.getRange("A2").values = [[y.code]];
-      await ctx.sync();
-      if (rebuild) { await benSheet(ctx); res = await rebuildTab(ctx, name); } else if (match) await matchTab(ctx, name);
-      await addEdits(ctx, [{ tab: name, kind: "tab", what: `Assigned MRN ending ${String(y.raw).slice(-4)} from the appointment list${g ? ` (was a guest from ${guestHome(g)})` : ""}${rebuild ? "; rebuilt from New Template (earlier layout)" : match ? "; matched New Template" : "; layout matches New Template"}`, undo: null }]);
-      await ctx.sync();
-    });
+    res = await useTabWrite({ y: { mrn: y.mrn, raw: y.raw, code: y.code }, name, rebuild, match, guestFrom: g ? guestHome(g) : "" });
     closeModal();
     state.pendingNew = state.pendingNew.filter(x => x.mrn !== y.mrn);
     /* a guest's session already on the board today carries over to the tab, so it isn't started again */
@@ -3802,6 +3795,24 @@ async function useTabGo() {
   } catch (e) { fail(e); }
 }
 
+/* the workbook part of Use existing tab: the MRN (and a blank LASFIR) on the tab, rebuild or Match New Template, the Edit log line.
+   Full screen can't reach the workbook, so it asks the pane to do this. Returns the rebuild's check, or null. */
+async function useTabWrite({ y, name, rebuild, match, guestFrom }) {
+  if (POPOUT) return callPane("useTabWrite", [{ y, name, rebuild, match, guestFrom }]);
+  let res = null;
+    await Excel.run(async ctx => {
+      const ws = ctx.workbook.worksheets.getItem(name), hd = ws.getRange("A2:A4"); hd.load("values"); await ctx.sync();
+      const had = normMrn(hd.values[2][0]);
+      if (had && had !== y.mrn) throw new Error(`${name} already has another MRN in A4.`);
+      ws.getRange("A4").values = [[y.raw]]; ws.getRange("A4").numberFormat = [[A4_FMT]];
+      if (y.code && String(hd.values[0][0] ?? "").trim() === "") ws.getRange("A2").values = [[y.code]];
+      await ctx.sync();
+      if (rebuild) { await benSheet(ctx); res = await rebuildTab(ctx, name); } else if (match) await matchTab(ctx, name);
+      await addEdits(ctx, [{ tab: name, kind: "tab", what: `Assigned MRN ending ${String(y.raw).slice(-4)} from the appointment list${guestFrom ? ` (was a guest from ${guestFrom})` : ""}${rebuild ? "; rebuilt from New Template (earlier layout)" : match ? "; matched New Template" : "; layout matches New Template"}`, undo: null }]);
+      await ctx.sync();
+    });
+  return res;
+}
 /* ---------- add patient ---------- */
 function apCode() { return ($("apCode").value || lasfir($("apLast").value, $("apFirst").value)).toUpperCase().replace(/[^A-Z]/g, ""); }
 function updateApTab() {
@@ -4067,9 +4078,13 @@ async function onExtFile(e) {
     failStep = "Building the preview"; await buildPlan(); renderExt(); failStep = "";
   } catch (err) { fail(err); }
 }
+async function dropExtSheet() {
+  if (POPOUT) return callPane("dropExtSheet", []);
+  await Excel.run(async ctx => { const ws = ctx.workbook.worksheets.getItemOrNullObject(EXT_SHEET); await ctx.sync(); if (!ws.isNullObject) ws.delete(); await ctx.sync(); });
+}
 async function clearExt() {
   try {
-    await Excel.run(async ctx => { const ws = ctx.workbook.worksheets.getItemOrNullObject(EXT_SHEET); await ctx.sync(); if (!ws.isNullObject) ws.delete(); await ctx.sync(); });
+    await dropExtSheet();
     state.ext = null; toast("Other clinics' lists removed."); renderExt(); if (state.file) await buildPlan();
   } catch (e) { fail(e); }
 }
@@ -4595,7 +4610,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), saveDigest: l => saveDigest(l), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), saveDigest: l => saveDigest(l), useTabWrite: x => useTabWrite(x), deleteOldTab: x => deleteOldTab(x), dropExtSheet: () => dropExtSheet(), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
