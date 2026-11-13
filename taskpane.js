@@ -81,7 +81,7 @@ const atClinic = s => TmsCore.atClinic(s, clinic());
 const homeHere = h => TmsCore.homeHere(h, clinic());
 
 const state = {
-  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT, eligUrl: "" },
+  cfg: { authDays: 14, protoDays: 2, recentDays: 10, device: "auto", location: "", openTab: "on", cutoff: CUTOFF_DEFAULT, eligUrl: "", digestCc: "" },
   elig: [], wrongKind: "", kindChecked: false,
   patients: [], tabs: [], protocols: [], fix: new Map(), skipped: { layout: [], other: 0 }, old: [], stale: [], templateOk: true, templateWhy: "", pendingNew: [],
   drafts: {}, initials: "", techName: "", user: "", users: [], usersRead: false, whoKey: "", adminUntil: 0, apSig: null, closures: new Map(), wbName: "", clinic: null, report: null,
@@ -156,15 +156,7 @@ function mapSts(raw) {
   if (/kept|complete|checked|arrived|seen/.test(s)) return "Kept";
   return "Scheduled";                                    // Expected
 }
-function mapEvent(ev) {
-  const s = String(ev ?? "").toLowerCase();
-  if (/tele/.test(s)) return { type: "F/U", tele: true };
-  if (/follow|f\/u/.test(s)) return { type: "F/U", tele: false };
-  if (/redo|mtr/.test(s)) return { type: "MTR", tele: false };
-  if (/\bmt\b/.test(s)) return { type: "MT", tele: false };
-  if (/treatment/.test(s)) return { type: "Daily", tele: false };
-  return null;
-}
+const mapEvent = ev => TmsCore.mapEvent(ev);   // core.js: theta burst "Tx" visits are treatments too
 const chairMin = t => t === "MT" || t === "MTR" ? 60 : t === "Daily" || t === "Taper" ? 30 : 0;   // chair side
 const provMin = t => t === "MT" ? 60 : t === "MTR" || t === "F/U" ? 30 : 0;                        // provider side
 const billIdx = r => r.type === "MT" ? 0 : r.type === "Daily" || r.type === "Taper" ? 1 : r.type === "MTR" ? 2 : r.type === "F/U" ? (r.tele ? 4 : 3) : -1;
@@ -425,19 +417,26 @@ async function refresh() {
       const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
       const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), j6: s.getRange("J6"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
+      /* every other sheet's first rows, for an MRN by its label: a tab named or laid out differently still makes the patient this
+         clinic's, not a guest (core.js mrnsIn) */
+      const sys = new Set(["new template", "protocols", "clinic schedule", "chair schedule", BEN_SHEET, SESS_SHEET, TmsCore.USER_SHEET, AP_SHEET, GUEST_SHEET, ELOG_SHEET, LIST_SHEET, EXT_SHEET, ELIG_SHEET, DIG_SHEET].map(n => n.toLowerCase()));
+      const top4 = sheets.items.filter(s => !sys.has(s.name.toLowerCase())).map(s => { const r = s.getRange("A1:T4"); r.load("values"); return { name: s.name, r }; });
       /* sheet names are already known, so the Protocols, Clinic Schedule and Benefits reads ride along with this sync (names match case-insensitively, as getItem does) */
       const sheetOf = n => sheets.items.find(s => s.name.toLowerCase() === n.toLowerCase());
-      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET);
+      const prW = sheetOf("Protocols"), csW = sheetOf("Clinic Schedule"), bnW = sheetOf(BEN_SHEET), ssW = sheetOf(SESS_SHEET), usW = sheetOf(TmsCore.USER_SHEET), dgW = sheetOf(DIG_SHEET);
       const prv = prW ? prW.getRange("A2:I40") : null, cs = csW ? csW.getRange("A3:H40") : null, bn = bnW ? bnW.getRange(`A1:${colLetter(BEN_HDR.length - 1)}${BEN_LAST}`) : null;
       const ss = ssW ? ssW.getRange(`A${SESS_FIRST}:J${SESS_LAST}`) : null, sc = ssW ? ssW.getRange(`L${CH_FIRST}:P${CH_LAST}`) : null;
-      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null;
-      [prv, cs, bn, ss, sc, us].forEach(r => r && r.load("values")); await ctx.sync();
+      const us = usW ? usW.getRange(`A1:D${USER_ROWS}`) : null, dg = dgW ? dgW.getRange(`A${DIG_FIRST}:E${DIG_LAST}`) : null;
+      [prv, cs, bn, ss, sc, us, dg].forEach(r => r && r.load("values")); await ctx.sync();
+      state.digest = readDigest(dg ? dg.values : null);
       state.users = TmsCore.parseUsers(us ? us.values : null); state.usersRead = true;
       readBen(bn ? bn.values : null); readSess(ss ? ss.values : null, sc ? sc.values : null);
       await readElog(ctx);
       const cut = inputToSerial(state.cfg.cutoff || CUTOFF_DEFAULT), eDate = v => typeof v === "number" ? (v > 20000 ? Math.floor(v) : null) : /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(String(v).trim()) ? toSerial(v) : null;
       const live = x => x.name === "New Template" || (!/^(discontinued|complete)/i.test(String(x.d7.values[0][0]).trim()) && x.e.values.some(([v]) => (eDate(v) ?? 0) >= cut));
       state.stale = sg.filter(x => !live(x)).map(x => x.name); const stale = new Set(state.stale);
+      state.mrnTabs = new Map(); const tabMrn = new Map();
+      top4.filter(x => !stale.has(x.name)).forEach(x => TmsCore.mrnsIn(x.r.values).forEach(m => { if (!state.mrnTabs.has(m)) state.mrnTabs.set(m, x.name); if (!tabMrn.has(x.name)) tabMrn.set(x.name, m); }));
       const ok = x => String(x.a1.values[0][0]).trim().toUpperCase() === "PATIENT:" && String(x.a3.values[0][0]).trim().toUpperCase() === "MRN:" && SIG.every(([i, w]) => String(x.h.values[0][i]).trim().toLowerCase() === w);
       const lay = x => ok(x) ? layoutOf(x.h.values[0][17], x.j6.values[0][0], x.v11.values[0][0]) : 0;
       const layout = new Map(sg.map(x => [x.name, lay(x)]));
@@ -481,7 +480,8 @@ async function refresh() {
         const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, H = (a, c) => h[a - 2][c];
         const mins = [0, 1, 2].map(i => pv[i][4]).filter(x => typeof x === "number");
         const m9 = String(l.s9.values[0][0] || "").match(/home\s*clinic\s*:\s*(.*)$/i), home = m9 ? m9[1].trim() : "";
-        const money0 = v => typeof v === "number" ? v : null, v3 = l.layout === 3, mrn = normMrn(H(4, 0));
+        /* the MRN is A4's; a tab with A4 blank and the MRN labelled elsewhere in its first rows uses that one (A4 isn't written) */
+        const money0 = v => typeof v === "number" ? v : null, v3 = l.layout === 3, mrn = normMrn(H(4, 0)) || tabMrn.get(l.name) || "";
         /* layout 3 reads benefits from the patient's Benefits row; layout 2 from its own V1:Y16 */
         const br = v3 ? (state.ben.rows.get(mrn) || {}).v || [] : null, bc = k => br[colIndex(BEN_COLS[k])];
         const w = v3 ? ["W1", "", "", "W4", "W5", "W6", "W7", "W8"].map(k => k ? bc(k) : "") : l.w18.values.map(r => r[0]);
@@ -490,7 +490,7 @@ async function refresh() {
         const n6 = l.n67.values[0][0], n7 = l.n67.values[1][0], fbv = v3 ? n6 : n7;
         state.tabs.push({ name: l.name, code: m[1], course: +(m[2] || 1) });
         const p = {
-          tab: l.name, code: m[1], course: +(m[2] || 1), mrn, mrnRaw: String(H(4, 0) || "").trim(), mrnVal: H(4, 0), layout: l.layout,
+          tab: l.name, code: m[1], course: +(m[2] || 1), mrn, mrnRaw: String(H(4, 0) || "").trim() || mrn, mrnVal: H(4, 0), layout: l.layout,
           fbCell: v3 ? "N6" : "N7", assessCell: v3 ? "N7" : "N6", benUpdated: v3 && isNum(bc("Updated")) ? Math.floor(bc("Updated")) : null,
           txApproved: typeof H(2, 3) === "number" ? H(2, 3) : 36, mtRedos: typeof H(4, 3) === "number" ? H(4, 3) : 0, mdReq: String(H(6, 3) || ""), status: String(H(7, 3) || ""),
           provider: String(H(2, 4) || "").trim(), tas: String(H(4, 4) || "").trim(),
@@ -527,6 +527,8 @@ async function refresh() {
     state.report = Office.context.document.settings.get("tms_report") || null;
     if (!state.file && !state.listLoaded) {
       state.listLoaded = true;
+      try { const ex = await loadList(EXT_SHEET); state.ext = ex ? extFrom(ex.rows.map(r => EXT_HDR.map((_, i) => r[i] ?? ""))) : null; } catch (e) { console.error(e); state.ext = null; }
+      renderExt();
       try { state.file = await loadList(); if (state.file) await buildPlan(true); } catch (e) { console.error(e); toast(`The ${LIST_SHEET} tab could not be read. Import the list again.`, true); }
     }
     state.pendingNew = state.pendingNew.filter(x => !state.patients.some(p => p.mrn === x.mrn));
@@ -534,6 +536,7 @@ async function refresh() {
     const tabbed = x => state.patients.some(p => p.mrn === x.mrn);
     if (state.asks) state.asks = state.asks.filter(x => !tabbed(x));
     if (state.guests) state.guests = state.guests.filter(x => !tabbed(x));
+    if (state.noTab) state.noTab = state.noTab.filter(x => !tabbed(x));
     /* an MT redo in D4 means it was approved: W6 follows (finished trackers are left alone) */
     const mtrFix = state.patients.filter(p => p.mtRedos >= 1 && !/^y/i.test(p.ben.mtr) && !state.stale.includes(p.tab));
     if (mtrFix.length) try { await applyOps(mtrFix.map(p => ({ tab: p.tab, a: "W6", v: [["Yes"]], quiet: true })), null, { kind: "auto", what: "MTR approved set to Yes: # of MT redos (D4) has one" }); mtrFix.forEach(p => { p.ben.mtr = "Yes"; }); } catch (e) { console.error(e); }
@@ -719,7 +722,13 @@ function derive(p) {
   const measDue = rows.filter(r => r.measX && r.date != null && r.date < today && !r.miss);
   const lastRow = rows.filter(r => r.type !== "F/U" && r.date != null).sort(cmp).pop();
   const bidf = bidfMissing(p), todayVisit = rows.some(r => r.date === today && !r.miss && !r.alt);
-  return { active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
+  /* telephone notes to the provider (core.js): 2+ missed in a row, a follow-up missed or cancelled and not rebooked; and the
+     follow-ups the course should have booked (between the MT and MT redo, around treatments 20 to 27, near the last treatment) */
+  const tel = active ? TmsCore.telNote(rows, today) : null;
+  const fuRebook = active ? TmsCore.fuRebook(rows, lx ? lx.fuCx : [], today, fmtDate) : [];
+  const fuGaps = active ? TmsCore.fuGaps(rows, total, today) : [];
+  const cxNote = active ? TmsCore.cancelNote(rows, lx ? lx.txCx : [], today, fmtDate) : [];
+  return { tel, fuRebook, fuGaps, cxNote, txCx: lx ? lx.txCx || [] : [], active, sched, next, txDone, lastTx, total, overdue, noTech, decisions, used, waived, left, fu, fuNext, fuStatus, stale, suggest, cancelled, lastSeen: seenAt,
     authFlags, protoFlags, benFlags, accrued, projected, mdOnSite, sameDay, measDue, awayConflicts, closedConflicts, bidf, bidfToday: active && owes && todayVisit && bidf.length > 0,
     noProto, owes, planYear, tally, toConfirm, todayRow, oopmLikely, oopmMet, rollover,
     grad: p.txEnd ?? (lastRow ? lastRow.date : null) };
@@ -789,16 +798,26 @@ function renderBanners() {
   $("newPtCount").textContent = state.pendingNew.length;
   show("newPtBanner", state.pendingNew.length > 0);
   const nm = noMrn(); $("mrnCount").textContent = nm.length;
-  $("mrnList").innerHTML = nm.map(p => { const s = (state.codeMrn && state.codeMrn.get(p.code)) || ""; return `<div class="nrow"><span><b>${esc(p.tab)}</b> ${esc(p.status || "no status")}${s ? ", MRN from NextGen filled in" : ""}</span><input class="sm" data-mrnin="${esc(p.tab)}" value="${esc(s)}" placeholder="MRN" aria-label="MRN for ${esc(p.tab)}" inputmode="numeric" autocomplete="off" style="width:110px"><button class="btn ghost sm" data-act="saveMrn" data-t="${esc(p.tab)}">Save to A4</button></div>`; }).join("");
+  $("mrnList").innerHTML = nm.map(p => { const s = (p.mrn && p.mrnRaw) || (state.codeMrn && state.codeMrn.get(p.code)) || ""; return `<div class="nrow"><span><b>${esc(p.tab)}</b> ${esc(p.status || "no status")}${p.mrn ? ", MRN from the tab's first rows filled in" : s ? ", MRN from NextGen filled in" : ""}</span><input class="sm" data-mrnin="${esc(p.tab)}" value="${esc(s)}" placeholder="MRN" aria-label="MRN for ${esc(p.tab)}" inputmode="numeric" autocomplete="off" style="width:110px"><button class="btn ghost sm" data-act="saveMrn" data-t="${esc(p.tab)}">Save to A4</button></div>`; }).join("");
   show("mrnBanner", nm.length > 0);
   const ak = state.asks || []; $("askCount").textContent = ak.length;
-  $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, ${g.daily} daily treatments booked here${g.next != null ? `, next ${fmtMon(g.next)}` : ""}.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
+  $("askList").innerHTML = ak.map(g => `<div class="nrow"><span><b>${esc(g.code || "New patient")}</b> MRN ending ${esc(String(g.raw).slice(-4))}. MT at ${esc(g.home)}, but most treatments are booked here (${g.daily}${g.homeCount ? ` here, ${g.homeCount} at ${esc(g.home)}` : ""})${g.next != null ? `, next ${fmtMon(g.next)}` : ""}: their tracker belongs here.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(g.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Use existing tab</button><button class="btn mute sm" data-act="dontAsk" data-v="${esc(g.mrn)}">Don't ask again</button></div>`).join("");
   show("askBanner", ak.length > 0);
+  /* Fridays: send each clinician's weekly digest by 4 PM, after today's appointment list is imported */
+  const dst = digestStatus(), dOn = dst.friday && (!dst.listToday || dst.left.length > 0);
+  if (dOn) {
+    const late = dst.late && dst.left.length > 0;
+    $("digestTitle").textContent = late ? `Weekly clinician digests are past due (4 PM)` : "Friday: weekly clinician digests by 4 PM";
+    $("digestMsg").textContent = !dst.listToday ? "Import today's appointment list first, then send each clinician their digest."
+      : `${dst.left.length} of ${dst.m.due.length} still to send: ${dst.left.map(c => c.name).join(", ")}.`;
+    $("digestImp").hidden = dst.listToday; $("digestBanner").classList.toggle("late", late);
+  }
+  show("digestBanner", dOn);
   fillTplPick();
   if ($("cfgLoc")) $("cfgLoc").placeholder = TmsCore.clinicFromName(state.wbName) ? `From the workbook name: ${TmsCore.clinicFromName(state.wbName)}` : "Type the clinic, for example Castro";
 }
 /* tabs still in progress, with a visit in the recent-visit window or later, whose MRN (A4) is blank */
-const noMrn = () => { const t = todaySerial(); return state.patients.filter(p => !p.mrnRaw && (p.status === "" || ACTIVE.includes(p.status)) && !state.stale.includes(p.tab) && p.rows.some(r => r.date != null && r.date >= t - state.cfg.recentDays)); };
+const noMrn = () => { const t = todaySerial(); return state.patients.filter(p => !String(p.mrnVal ?? "").trim() && (p.status === "" || ACTIVE.includes(p.status)) && !state.stale.includes(p.tab) && p.rows.some(r => r.date != null && r.date >= t - state.cfg.recentDays)); };
 const newPtItem = x => `<div class="nrow"><span><b>${esc(x.code || "New patient")}</b> MRN ending ${esc(x.last4)}. ${x.n} visit${x.n > 1 ? "s" : ""} from ${fmtMon(x.first.date)} (${esc(x.first.type)}), no tracker tab.</span><button class="btn ghost sm" data-act="newTracker" data-v="${esc(x.mrn)}">Create tracker</button><button class="btn mute sm" data-act="useTab" data-v="${esc(x.mrn)}">Use existing tab</button></div>`;
 
 /* ---------- v2 screens: Today (the chair board), Schedule, Patients and Chairs, on the design language ESK Tracker shares
@@ -944,12 +963,14 @@ function chairList() {
     return { id, label: TmsCore.chairLabel(id, clinic()), device: m.device || (device() === "Brainsway" ? "BrainsWay Deep TMS" : "MagVenture"), coil: m.coil || "", service: m.service ?? null, off: !!m.off }; });
 }
 const chairLbl = id => id ? TmsCore.chairLabel(id, clinic()) : "No chair";
+/* a visit at another clinic shows here only for a patient whose MT and MT redo are this clinic's (core.js clinicRole; state.mtAway) */
+const hideAlt = (p, r) => !!(r.alt && p.mrn && state.mtAway && state.mtAway.has(p.mrn));
 /* every visit on a tab today, with its chair (moved, NextGen's, or none while its chair is unavailable) and its Sessions times */
 function floor() {
   const t = todaySerial(), now = nowMin(), cl = chairList(), on = new Set(cl.filter(c => !c.off).map(c => c.id)), single = cl.length === 1 ? cl[0].id : "";
   const rep = state.report, listAt = rep && rep.asOf === t ? rep.asOfMin : null, visits = [];
   for (const p of state.patients.filter(onSched)) {
-    for (const { r, visit } of TmsCore.visitNames(p.rows.filter(r => r.date === t && (r.type || r.delivered || r.miss)))) {
+    for (const { r, visit } of TmsCore.visitNames(p.rows.filter(r => r.date === t && (r.type || r.delivered || r.miss) && !hideAlt(p, r)))) {
       const fu = r.type === "F/U", key = TmsCore.sessKey(t, p.tab, visit), s = (state.sess && state.sess.rows.get(key)) || null;
       const rc = fu || r.alt ? "" : chairOf(p, r) || single, ms = TmsCore.moveState(s, rc, listAt);
       const v = { key, date: t, visit, p, r, tab: p.tab, row: r.row, type: r.type || "Daily", time: r.time, tele: r.tele, alt: r.alt, chairVisit: !fu && !r.alt, s, rc,
@@ -991,14 +1012,26 @@ function courseNeeds(p, fl) {
     mtToday: mt.length > 0, schedGiven: p.ben.lastSched != null && mt.length > 0 && p.ben.lastSched >= fl.t });
 }
 const sessNo = v => typeof v.r.tx === "number" ? v.r.tx : v.p.d.txDone + (v.done ? 0 : 1);
-const courseLine = v => v.guest ? `${typeName(v)}, guest from ${guestHome(v.guest)}` : `${typeName(v)}, ${sessNo(v)} of ${v.p.d.total}`;
+const courseLine = v => v.guest ? `${typeName(v)}, ${guestWho(v.guest)}` : `${typeName(v)}, ${sessNo(v)} of ${v.p.d.total}`;
 const typeName = v => ({ Daily: "Daily", Taper: "Taper", MT: "MT (first session)", MTR: "MT redo", "F/U": "Follow-up" })[v.type] || v.type;
 /* guests (and patients offered a tracker): no tab here, so their chair bookings come from the saved list. They show on Today and
    Schedule like anyone else; pulses, technician and measures go on their home clinic's tab, through the link Today asks for. */
-const guestOf = mrn => [...(state.asks || []), ...(state.guests || [])].find(g => g.mrn === mrn);
+const guestOf = mrn => [...(state.asks || []), ...(state.guests || []), ...(state.noTab || [])].find(g => g.mrn === mrn);
 const guestVisits = day => ((state.lx && state.lx.gv) || []).filter(x => x.date === day).map(x => ({ ...x, g: guestOf(x.mrn) })).filter(x => x.g).sort((a, b) => (a.time ?? 1e4) - (b.time ?? 1e4));
-const guestTab = g => `${g.code || `MRN ${String(g.raw).replace(/\D/g, "").slice(-4)}`} (guest)`;
+/* kind: "guest" or "ask" (tracked at their home clinic), "new" (this clinic's, no tracker tab yet), "local" (a sheet here holds their
+   MRN but doesn't match New Template, so it isn't read) */
+const guestTab = g => `${g.code || `MRN ${String(g.raw).replace(/\D/g, "").slice(-4)}`} (${g.kind === "new" ? "no tab yet" : g.kind === "local" ? "tab not read" : "guest"})`;
 const guestHome = g => g.home || "their home clinic";
+const isAway = g => !g.kind || g.kind === "guest" || g.kind === "ask";
+const guestWho = g => isAway(g) ? `guest from ${guestHome(g)}` : g.kind === "new" ? "no tracker tab yet" : `tab ${g.local} can't be read`;
+const pulsesAt = g => isAway(g) ? `their tab on the ${guestHome(g)} tracker` : g.kind === "local" ? `their ${g.local} tab in this workbook` : "their tab here, once it's made";
+/* "Don't ask again" for a guest's link: saved on the workbook (tms_nolink), so nobody on this tracker is asked for it again */
+const noLinkList = () => { if (!POPOUT) try { state.noLink = Office.context.document.settings.get("tms_nolink") || state.noLink || []; } catch { /* settings unavailable */ } return state.noLink || []; };
+const linkDismissed = mrn => noLinkList().includes(mrn);
+function dontAskLink(mrn) {
+  state.noLink = [...new Set([...noLinkList(), mrn])]; saveSetting("tms_nolink", state.noLink);
+  const g = guestOf(mrn); toast(`Won't ask for ${(g && g.code) || "their"} tracker link again. Add one any time from their card.`); closeModal(); renderDash();
+}
 /* Today names a patient by LASFIR with the MRN's last four beside it, in grey */
 const mrnTag = p => p.mrnRaw ? `MRN: ${String(p.mrnRaw).replace(/\D/g, "").slice(-4) || p.mrnRaw.slice(-4)}` : "No MRN";
 const where = v => v.alt ? "Other clinic" : v.type === "F/U" ? (v.tele ? "Telehealth" : v.p.provider || "Provider") : v.chair ? chairLbl(v.chair) : "";
@@ -1071,7 +1104,7 @@ function rowFlag(v, fl) {
   if (v.chairVisit && !v.chair) return '<span class="flag">No chair yet</span>';
   if (ph(v) === "booked" && v.time != null && v.time + 5 < fl.now && !v.tele) return `<span class="flag">${v.type === "F/U" ? "Not seen" : "Not started"}, ${fl.now - v.time} min</span>`;
   if (v.moved) return '<span class="flag">Moved here, not yet in NextGen</span>';
-  if (v.guest) return v.guest.link ? `<span class="muted">${esc(typeName(v))}, guest from ${esc(guestHome(v.guest))}</span>` : `<span class="flag">Guest from ${esc(guestHome(v.guest))}: needs their tracker link</span>`;
+  if (v.guest) return `<span class="muted">${esc(typeName(v))}, ${esc(guestWho(v.guest))}</span>`;   // the link lives on their card, not as a flag
   const n = TmsCore.loud(courseNeeds(v.p, fl))[0];
   return n ? `<span class="${n.bad ? "bad" : "flag"}">${esc(n.t)}</span>` : `<span class="muted">${v.type === "F/U" ? "Follow-up" : courseLine(v)}</span>`;
 }
@@ -1226,20 +1259,29 @@ function detailHtml(fl) {
 /* a guest's card on Today: the same start, move and complete as anyone, but no tab here. Their tracker link is asked for until
    saved, and the tab picker and Track here instead are one press away. o: what detailHtml worked out for the visit. */
 function guestDetail(v, o) {
-  const g = v.guest, home = guestHome(g), K = `data-k="${esc(v.key)}"`, V = `data-v="${esc(g.mrn)}"`;
+  const g = v.guest, home = guestHome(g), K = `data-k="${esc(v.key)}"`, V = `data-v="${esc(g.mrn)}"`, there = pulsesAt(g);
   let { lead, cls, primary } = o; const ghosts = o.ghosts.filter(([, a]) => a === "move" || a === "undoEnd");
-  if (o.p2 === "missed") { lead = `No-show in NextGen at ${clock(v.time) || "today"}. Record it on their ${home} tab`; cls = "soon"; primary = null; }
-  else if (o.p2 === "done") { lead = `Session done${v.end != null ? ` at ${clock(v.end)}` : ""}. Pulses go on their ${home} tab`; cls = "ready"; primary = null; }
+  if (o.p2 === "missed") { lead = `No-show in NextGen at ${clock(v.time) || "today"}. Record it on ${there}`; cls = "soon"; primary = null; }
+  else if (o.p2 === "done") { lead = `Session done${v.end != null ? ` at ${clock(v.end)}` : ""}. Pulses go on ${there}`; cls = "ready"; primary = null; }
   else if (o.p2 === "running") primary = ["Complete session", "end"];
-  const link = g.link ? `<a class="btn ${primary ? "ghost sm" : "primary"}" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a>` : "";
-  const ask = g.link ? `<p class="body">Pulses, technician and measures go on their tab on the ${esc(home)} tracker, not in this workbook.</p><div class="actions">${link}<button class="btn mute sm" data-act="guestLink" ${V}>Change the link</button></div>`
-    : `<div class="notice"><p><b>Ask for their tracker link.</b> Pulses, technician and measures go on their tab at ${esc(home)}, not in this workbook. Paste the link to that tab.</p><div class="actions" style="margin:4px 0 6px"><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" ${V}>Save link</button></div></div>`;
-  return `<div class="dh"><div><div class="name">${esc(g.code || v.tab)}<span class="loc">${esc(mrnTag(v.p))}</span></div><div class="meta">${esc(typeName(v))}, guest from ${esc(home)}${v.chair ? ` · ${esc(chairLbl(v.chair))}` : ""}</div></div></div>
+  let box, title = "Their tracker", sub = home;
+  if (g.kind === "local") { title = "Their tab here"; sub = g.local;
+    box = `<p class="body">${esc(g.local)} holds their MRN but doesn't match New Template, so the add-in can't read it. Enter the pulses there, or run Match New Template on it.</p><div class="actions"><button class="btn ghost sm" data-act="gotoSheet" data-t="${esc(g.local)}">Open ${esc(g.local)}</button></div>`; }
+  else if (g.kind === "new") { title = "No tracker tab yet"; sub = "";
+    box = `<p class="body">Most of their treatments are booked here, so their tracker tab belongs in this workbook. Create it, or pick their tab if it's named differently.</p><div class="actions"><button class="btn ghost sm" data-act="newTracker" ${V}>Create tracker</button><button class="btn mute sm" data-act="useTab" ${V}>Their tab is in this workbook</button></div>`; }
+  else {
+    const link = g.link ? `<a class="btn ${primary ? "ghost sm" : "primary"}" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a>` : "";
+    const where = `<p class="body">Pulses, technician and measures go on their tab on the ${esc(home)} tracker, not in this workbook.</p>`;
+    box = (g.link ? `${where}<div class="actions">${link}<button class="btn mute sm" data-act="guestLink" ${V}>Change the link</button></div>`
+      : linkDismissed(g.mrn) ? `${where}<div class="actions"><button class="btn mute sm" data-act="guestLink" ${V}>Add their tracker link</button></div>`
+      : `<div class="notice"><p><b>Their tracker link</b> (optional). Pulses, technician and measures go on their tab at ${esc(home)}, not in this workbook. Paste the link to that tab to open it from here.</p><div class="actions" style="margin:4px 0 6px"><input class="sm" data-guestin="${esc(g.mrn)}" placeholder="https://… link to their tab" aria-label="Link to ${esc(g.code || "the guest")}'s tab at ${esc(home)}" autocomplete="off" style="width:220px"><button class="btn ghost sm" data-act="saveGuest" ${V}>Save link</button><button class="btn mute sm" data-act="noLink" ${V}>Don't ask again</button></div></div>`)
+      + `<div class="actions"><button class="btn ghost sm" data-act="useTab" ${V}>Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" ${V}>Track here instead</button></div>`;
+  }
+  return `<div class="dh"><div><div class="name">${esc(g.code || v.tab)}<span class="loc">${esc(mrnTag(v.p))}</span></div><div class="meta">${esc(typeName(v))}, ${esc(guestWho(g))}${v.chair ? ` · ${esc(chairLbl(v.chair))}` : ""}</div></div></div>
     <p class="lead ${cls}">${esc(lead)}</p>${o.tl}
     ${primary ? `<button class="btn primary" data-act="${primary[1]}" ${K}${primary[2] ? " disabled" : ""}>${esc(primary[0])}</button>` : ""}
     <div class="actions">${ghosts.map(([l, a]) => `<button class="btn ghost sm" data-act="${a}" ${K}>${esc(l)}</button>`).join("")}</div>
-    <div class="section"><div class="h"><h2>Their tracker</h2><span>${esc(home)}</span></div>${ask}
-      <div class="actions"><button class="btn ghost sm" data-act="useTab" ${V}>Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" ${V}>Track here instead</button></div></div>`;
+    <div class="section"><div class="h"><h2>${esc(title)}</h2><span>${esc(sub)}</span></div>${box}</div>`;
 }
 
 /* ---------- Schedule: a day by chair, or the week ---------- */
@@ -1280,15 +1322,15 @@ function viewSchedule(fl) {
   /* guests' chair bookings here, from the saved list: blocks like anyone's. Today's are the board's own visits (start, move, complete);
      another day's ask for their tracker link, or open it */
   const gents = guestVisits(day).filter(x => x.time != null).map(x => { const gv = isToday ? fl.visits.find(v => v.guest && v.guest.mrn === x.mrn && v.time === x.time) || null : null;
-    return { guest: x, gv, chair: gv ? gv.chair : cl.some(c => c.id === x.chair) ? x.chair : single && cl.some(c => c.id === single) ? single : "", p: { tab: gv ? gv.tab : guestTab(x.g) }, r: { type: x.type, delivered: false }, start: x.time, end: x.time + DEFAULT_LEN }; });
+    return { guest: x, gv, chair: gv ? gv.chair : cl.some(c => c.id === x.chair) ? x.chair : single && cl.some(c => c.id === single) ? single : "", p: { tab: gv ? gv.tab : guestTab(x.g), mrnRaw: String(x.g.raw || "") }, r: { type: x.type, delivered: false }, start: x.time, end: x.time + DEFAULT_LEN }; });
   const blocks = lane => pack(lane.id === "prov" ? ent.prov : ent.chair.filter(e => chairFor(e) === lane.id).concat(gents.filter(e => e.chair === lane.id))).map(e => {
     const v = e.guest ? e.gv : isToday ? fl.visits.find(x => x.tab === e.p.tab && x.row === e.r.row) : null, p2 = v ? ph(v) : e.r.delivered ? "done" : "booked";
     const cs = v && v.chair && lane.id !== "prov" ? TmsCore.chairState(v.chair, fl.visits, fl.now) : null, live = cs && cs.v && cs.v.key === v.key;
     const k = p2 === "done" || p2 === "missed" ? "past" : live ? (cs.state === "open" ? "track" : cs.state) : "";
-    const lab = p2 === "done" ? "Done" : live ? TmsCore.chairStatus(cs) : e.guest ? `Guest, ${guestHome(e.guest.g)}` : e.r.type === "MT" ? "MT, mapping" : e.r.type === "MTR" ? "MT redo" : e.r.type === "F/U" ? (e.r.tele ? "Tele F/U" : "F/U") : "Treatment";
+    const lab = p2 === "done" ? "Done" : live ? TmsCore.chairStatus(cs) : e.guest ? (isAway(e.guest.g) ? `Guest, ${guestHome(e.guest.g)}` : guestWho(e.guest.g)) : e.r.type === "MT" ? "MT, mapping" : e.r.type === "MTR" ? "MT redo" : e.r.type === "F/U" ? (e.r.tele ? "Tele F/U" : "F/U") : "Treatment";
     const len = e.end - e.start, dbl = e.cols > 1 && lane.id !== "prov" && lane.id !== "";
     const side = e.cols > 1 ? `;left:calc(4px + (100% - 8px) * ${e.col} / ${e.cols});right:auto;width:calc((100% - 8px) / ${e.cols} - 3px)` : "";
-    return `<button class="blk ${k}${e.guest ? " guest" : ""}${dbl ? " dbl" : ""}" ${v ? `data-k="${esc(v.key)}" data-go="today"` : e.guest ? `data-act="${e.guest.g.link ? "guestOpen" : "guestLink"}" data-v="${esc(e.guest.mrn)}"` : `data-act="opentab" data-t="${esc(e.p.tab)}" data-row="${e.r.row}"`} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, ${esc(lab)}${dbl ? ", double-booked" : ""}"><b>${esc(e.p.tab)}</b> ${clock(e.start)}${len >= 30 ? "<br>" : " "}${esc(lab)}${v && v.moved ? " (moved)" : ""}${dbl ? '<br><span class="flag">Double-booked</span>' : ""}</button>`;
+    return `<button class="blk ${k}${e.guest ? " guest" : ""}${dbl ? " dbl" : ""}" ${v ? `data-k="${esc(v.key)}" data-go="today"` : e.guest ? (e.guest.g.kind === "local" ? `data-act="gotoSheet" data-t="${esc(e.guest.g.local)}"` : e.guest.g.kind === "new" ? `data-act="newTracker" data-v="${esc(e.guest.mrn)}"` : `data-act="${e.guest.g.link ? "guestOpen" : "guestLink"}" data-v="${esc(e.guest.mrn)}"`) : `data-act="opentab" data-t="${esc(e.p.tab)}" data-row="${e.r.row}"`} style="top:${(e.start - start) * pxm}px;height:${Math.max(len * pxm - 3, 22)}px${side}" aria-label="${esc(e.p.tab)} at ${clock(e.start)}, ${esc(lab)}${dbl ? ", double-booked" : ""}"><b>${esc(e.p.tab)}</b> <span class="muted">${esc(mrnTag(e.p))}</span> ${clock(e.start)}${len >= 30 ? "<br>" : " "}${esc(lab)}${v && v.moved ? " (moved)" : ""}${dbl ? '<br><span class="flag">Double-booked</span>' : ""}</button>`;
   }).join("");
   const used = lanes.filter(l => l.id !== "" || ent.chair.some(e => chairFor(e) === "") || gents.some(e => e.chair === ""));
   let hrs = ""; for (let m = start + 60; m < end; m += 60) hrs += `<div class="hr" style="top:${(m - start) * pxm}px"></div>`;
@@ -1306,7 +1348,7 @@ function viewSchedule(fl) {
 }
 /* a day's visits for the Week card: time, patient, and anything but a plain daily treatment */
 function dayVisits(day) {
-  return state.patients.filter(onSched).flatMap(p => p.rows.filter(r => r.date === day && inChair(p, r)).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 1e4) - (b.r.time ?? 1e4) || a.p.tab.localeCompare(b.p.tab))
+  return state.patients.filter(onSched).flatMap(p => p.rows.filter(r => r.date === day && inChair(p, r) && !hideAlt(p, r)).map(r => ({ p, r }))).sort((a, b) => (a.r.time ?? 1e4) - (b.r.time ?? 1e4) || a.p.tab.localeCompare(b.p.tab))
     .map(({ p, r }) => { const marks = [r.type && r.type !== "Daily" ? r.type + (r.tele ? " tele" : "") : "", r.miss ? "missed" : "", r.alt ? "other clinic" : "", r.delivered ? "done" : "", p.d.awayConflicts.some(c => c.r.row === r.row) ? "away" : "", state.closures.has(day) && !r.delivered && !r.miss ? "clinic closed" : ""].filter(Boolean);
       return `<li><button class="vrow" data-act="opentab" data-t="${esc(p.tab)}" data-row="${r.row}"><span class="muted">${clock(r.time) || "–"}</span> <b>${esc(p.tab)}</b>${marks.length ? ` <span class="${/missed|away|closed/.test(marks.join()) ? "flag" : "muted"}">${esc(marks.join(", "))}</span>` : ""}</button></li>`; }).join("");
 }
@@ -1316,7 +1358,7 @@ function sl0(day, ent) { const h = state.clinic?.days[dow(day)]; if (!h || h.ope
 const FILTERS = [
   ["needs", "Needs attention", (p, n) => onSched(p) && TmsCore.loud(n).length > 0],
   ["active", "All active", p => p.d.active],
-  ["nofu", "Follow-up not scheduled", p => p.d.active && p.d.fuStatus === "not scheduled"],
+  ["nofu", "Follow-up not scheduled", p => p.d.active && (p.d.fuStatus === "not scheduled" || p.d.fuGaps.length > 0 || p.d.fuRebook.length > 0)],
   ["nonext", "No upcoming visit", p => p.d.active && !p.d.next && p.d.txDone < p.d.total],
   ["taper", "Tapering", p => p.status === "Tapering"],
   ["paused", "Paused", p => p.status === "Paused"],
@@ -1336,7 +1378,7 @@ function viewPatients(fl) {
       <span class="prog"><span class="pbar"><i style="width:${Math.min(100, d.txDone / Math.max(1, d.total) * 100).toFixed(1)}%"></i></span>${d.txDone}/${d.total}</span>
       <span class="flags">${needSummary(n)}</span></button>`;
   }).join("") || `<p class="empty">Nothing here. Everyone in this group is on track.</p>`;
-  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><button class="btn ghost" data-act="addPt">Add patient</button></header>
+  return `<header class="top"><div><h1>Patients</h1><p class="sub">${act} active patient${act === 1 ? "" : "s"}, ${need} need${need === 1 ? "s" : ""} attention</p></div><div class="actions" style="margin:0"><button class="btn ghost" data-act="digOpen">Weekly digests</button><button class="btn ghost" data-act="addPt">Add patient</button></div></header>
     <div class="chips" role="group" aria-label="Filter patients">${chips}</div>
     <div class="card courses"><div class="chead"><span>Patient</span><span>Protocol</span><span>Progress</span><span>Needs</span></div>${rows}</div>${elogHtml()}`;
 }
@@ -1472,7 +1514,7 @@ function ptHtml(p, fl) {
   const also = keep.map(x => needRow(x)).join("") + (peek ? needRow(peek, " peek") : "");
   const more = rest.length > PT_NEEDS - 1 ? `<button class="btn mute sm needmore" data-act="ptNeeds" aria-expanded="${all}">${all ? "Show fewer" : `Show all ${n.length} needs`}</button>` : "";
   const quiet = N.filter(x => x.quiet).map(x => `<span class="tag">${esc(x.t)}</span>`).join("");
-  const meta = [p.provider && `Dr. ${p.provider}`, `${d.txDone} of ${d.total} done`, p.status].filter(Boolean).join(" · ");
+  const meta = [p.provider, `${d.txDone} of ${d.total} done`, p.status].filter(Boolean).join(" · ");
   const sect = { sched: ptSched, course: ptCourse, proto: ptProto, meas: ptMeas, ben: ptBen, fin: ptFin };
   return `<div class="pvh"><div><h2 id="pvTitle">${esc(p.tab)} <span class="mrn">MRN ${esc(p.mrnRaw || "not entered")}</span></h2><p class="meta">${esc(meta)}</p></div>
       <div class="pvr"><button class="x" data-act="ptClose" aria-label="Close">×</button></div></div>
@@ -2251,7 +2293,7 @@ async function startSession(v) {
   state.sel = { k: v.key };
   if (!await sessWrite(v, { start: nowMin(), ...(v.checkin == null ? { checkin: nowMin() } : {}) }, `${v.tab}'s session started in ${chairLbl(v.chair)}.`)) return;
   const nv = findVisit(v.key) || v;
-  if (nv.guest) { if (!nv.guest.link) mGuestLink(nv.guest.mrn, true); return; }   // no note or MT here: their home tab has them
+  if (nv.guest) { if (isAway(nv.guest) && !nv.guest.link && !linkDismissed(nv.guest.mrn)) mGuestLink(nv.guest.mrn, true); return; }   // no note or MT here: their home tab has them
   if ((nv.type === "MT" || nv.type === "MTR") && !nv.mtDone) mMt(nv); else mNote(nv);
 }
 /* a guest's tracker link: asked when their session starts (until saved), from their card, or from another day's Schedule block */
@@ -2261,28 +2303,29 @@ function mGuestLink(mrn, starting) {
   showModal(`<h2 id="mtitle">${starting ? "Session started. " : ""}Link to ${esc(g.code || "their")} tab at ${esc(home)}</h2>
     <p class="sub">${esc(g.code || "This patient")} is a guest from ${esc(home)}, so their pulses, technician and measures go on their tab on the ${esc(home)} tracker, not in this workbook. Ask the technician for the link: on that tracker, right-click a cell on their tab, choose Link to this Cell, and paste it here. It's saved on the ${GUEST_SHEET} sheet.</p>
     ${fld("Link to their tab", `<input id="mGuestUrl" value="${esc(g.link || "")}" placeholder="https://…" autocomplete="off">`)}
-    <div class="actions"><button class="btn ghost sm" data-act="useTab" data-v="${esc(g.mrn)}">Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button></div>
+    <div class="actions"><button class="btn ghost sm" data-act="useTab" data-v="${esc(g.mrn)}">Their tab is in this workbook</button><button class="btn mute sm" data-act="newTracker" data-v="${esc(g.mrn)}">Track here instead</button>${linkDismissed(g.mrn) ? "" : `<button class="btn mute sm" data-act="noLink" data-v="${esc(g.mrn)}">Don't ask again</button>`}</div>
     ${mfoot("Save link", "doGuestLink")}`);
 }
 /* completing a guest's session: the pulses go on their home clinic's tab (opened from here); only the end time is saved here */
 function mGuestEnd(v) {
   const g = v.guest, home = guestHome(g); state.mctx = { k: v.key, mrn: g.mrn };
+  const away = isAway(g), there = pulsesAt(g);
   showModal(`<h2 id="mtitle">Complete ${esc(g.code || v.tab)}'s session</h2>
-    <p class="sub">${esc(g.code || "This patient")} is a guest from ${esc(home)}. Enter the pulses, technician and any PHQ-9 and GAD-7 on their tab on the ${esc(home)} tracker; nothing is written to a tab in this workbook.</p>
-    ${g.link ? `<p><a class="btn ghost" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a></p>`
-      : fld(`Link to their tab at ${esc(home)} (ask the technician)`, '<input id="mGuestUrl" placeholder="https://…" autocomplete="off">')}
-    <label class="check"><input type="checkbox" id="mGuestDone"> Pulses entered on their ${esc(home)} tab</label>
+    <p class="sub">${esc(g.code || "This patient")} ${away ? `is a guest from ${esc(home)}` : g.kind === "local" ? `has a tab here (${esc(g.local)}) the add-in can't read` : "has no tracker tab yet"}. Enter the pulses, technician and any PHQ-9 and GAD-7 on ${esc(there)}; the add-in writes nothing to a tab for this session.</p>
+    ${!away ? "" : g.link ? `<p><a class="btn ghost" href="${esc(g.link)}" target="_blank" rel="noopener">Open their ${esc(home)} tab</a></p>`
+      : linkDismissed(g.mrn) ? "" : fld(`Link to their tab at ${esc(home)} (optional)`, '<input id="mGuestUrl" placeholder="https://…" autocomplete="off">')}
+    <label class="check"><input type="checkbox" id="mGuestDone"> Pulses entered on ${esc(there)}</label>
     <div class="actions"><button class="btn mute sm" data-act="useTab" data-v="${esc(g.mrn)}">Their tab is in this workbook</button></div>
     ${mfoot("Complete session", "doGuestEnd")}`);
 }
 async function doGuestEnd() {
   const m = state.mctx || {}, v = findVisit(m.k); if (!v || !v.guest) return closeModal();
   const url = mval("mGuestUrl");
-  if (!$("mGuestDone").checked) return merr(`Enter the pulses on their ${guestHome(v.guest)} tab first, then tick the box.`);
+  if (!$("mGuestDone").checked) return merr(`Enter the pulses on ${pulsesAt(v.guest)} first, then tick the box.`);
   if (url && !/^https:\/\/\S+$/i.test(url)) return merr("Paste the full link to their tab (it starts with https://), or leave it blank.");
   closeModal();
   if (url) await saveGuestLink(v.guest.mrn, url);
-  await sessWrite(v, { end: nowMin() }, `${v.guest.code || v.tab}'s session is complete. Pulses are on their ${guestHome(v.guest)} tab.`);
+  await sessWrite(v, { end: nowMin() }, `${v.guest.code || v.tab}'s session is complete. Pulses are on ${pulsesAt(v.guest)}.`);
 }
 /* reopening an ended session clears the pulses, technician and copay line the add-in wrote, unless the chair has had a session since */
 async function undoEnd(v) {
@@ -2295,6 +2338,53 @@ async function undoEnd(v) {
     await writeCells(v.tab, [[`F${v.row}`, ""], [`H${v.row}`, ""], [`J${v.row}`, ""], [`B${v.row}`, ""], ...(note !== v.r.note ? [[`S${v.row}`, note]] : [])], at(v.r));
     patchRow(v.tab, v.row, { delivered: false, pulses: [null, null, null], tech: "", note }); state.copied.delete(v.key);
     await sessWrite(v, { end: null }, "Undone. The session is running again.");
+  } catch (e) { fail(e); }
+}
+/* a telephone note to the rendering clinician (E2, with their credential), written in NextGen (the add-in can't write there): the
+   draft to copy, then "Saved in NextGen" logs it in Notes (S) so the need clears. kind "miss": 2+ missed in a row (core.js telNote),
+   a new entry for each miss after, logged on each missed row it covers. kind "cx": 2+ treatment cancellations within 7 days
+   (core.js cancelNote), v the run's first date. kind "fu": a follow-up missed or cancelled, none within 5 days after (core.js
+   fuRebook), v its date. Cancelled visits have no row left, so those two log on the latest visit on or before today. */
+function mTel(tab, kind, v) {
+  const p = state.patients.find(x => x.tab === tab); if (!p) return;
+  const t = todaySerial(), d = p.d, dr = p.provider || "the clinician", nextTx = d.next ? `next booked ${fmtDate(d.next.date)}` : "nothing booked";
+  const lastRow = () => p.rows.filter(r => r.date != null && r.date <= t).sort(cmp).pop() || p.rows.filter(r => r.date != null).sort(cmp)[0];
+  let title, text, rows, line, first = true;
+  if (kind === "miss") {
+    const tel = d.tel; if (!tel || !tel.due) return toast("Nothing to add to a telephone note for this patient now.");
+    const calls = tel.run.flatMap(r => String(r.note || "").split("; ").filter(x => /^Called /.test(x)));
+    first = tel.first; rows = tel.add; line = TmsCore.telMissLine(p.provider, fmtDate(t), tel.n, !first);
+    text = first ? `TMS: missed ${tel.n} treatments in a row (${tel.run.map(r => fmtDate(r.date)).join(", ")}). ${d.txDone} of ${d.total} treatments done, ${nextTx}. Freebies left: ${d.left}.${calls.length ? ` ${calls.join("; ")}.` : ""} Please review.`
+      : `${fmtDate(t)}: missed again ${tel.add.map(r => fmtDate(r.date)).join(", ")}, ${tel.n} in a row. ${d.txDone} of ${d.total} done, ${nextTx}.`;
+  } else if (kind === "cx") {
+    const c = (d.cxNote || []).find(x => String(x.dates[0]) === String(v)); if (!c) return toast("Those cancellations are already on a telephone note.");
+    first = c.first; const days = (first ? c.dates : c.add).map(fmtDate); line = TmsCore.telCxLine(p.provider, fmtDate(t), days, !first); rows = [lastRow()].filter(Boolean);
+    text = first ? `TMS: ${c.dates.length} treatments cancelled within ${TmsCore.CX_WINDOW} days (${c.dates.map(fmtDate).join(", ")}). ${d.txDone} of ${d.total} treatments done, ${nextTx}. Please review.`
+      : `${fmtDate(t)}: cancelled again ${days.join(", ")}. ${d.txDone} of ${d.total} done, ${nextTx}.`;
+  } else {
+    const e = d.fuRebook.find(x => String(x.date) === String(v)); if (!e) return toast("That follow-up has been rebooked, or the telephone note is already logged.");
+    rows = [(e.row && p.rows.find(r => r.row === e.row)) || lastRow()].filter(Boolean);
+    line = TmsCore.telFuLine(p.provider, fmtDate(t), fmtDate(e.date));
+    text = `TMS follow-up on ${fmtDate(e.date)} was ${e.kind} and ${e.next != null ? `the next one isn't until ${fmtDate(e.next)}` : "hasn't been rebooked"}. ${d.txDone} of ${d.total} treatments done, ${nextTx}. Please advise on rebooking.`;
+  }
+  if (!rows.length) return toast("No dated visit on the tab to log the telephone note on.", true);
+  title = first ? `Telephone note to ${dr}` : "Add to the telephone note";
+  state.mctx = { t: tab, rows: rows.map(r => r.row), line };
+  const on = rows.length > 1 ? `on each missed visit (${rows.map(r => fmtMon(r.date)).join(", ")})` : `on the ${fmtMon(rows[0].date)} visit`;
+  showModal(`<h2 id="mtitle">${esc(title)}: ${esc(tab)}</h2>
+    <p class="sub">${first ? `Write a telephone note in NextGen and assign it to ${esc(dr)}` : "Add this as a new entry on the telephone note in NextGen"}, then press Saved in NextGen. It's logged in Notes ${esc(on)}.</p>
+    <textarea id="mTelText" rows="5" style="width:100%" aria-label="Telephone note text">${esc(text)}</textarea>
+    <div class="actions"><button class="btn ghost sm" data-act="copyTel">Copy</button></div>${mfoot("Saved in NextGen", "doTel")}`);
+}
+async function doTel() {
+  const m = state.mctx || {}, p = state.patients.find(x => x.tab === m.t), rs = p ? (m.rows || []).map(n => p.rows.find(x => x.row === n)).filter(Boolean) : [];
+  if (!rs.length) return closeModal();
+  const notes = rs.map(r => (r.note ? r.note + "; " : "") + m.line);
+  closeModal();
+  try {
+    await writeCells(m.t, rs.map((r, i) => [`S${r.row}`, notes[i]]), rs.map(at));
+    rs.forEach((r, i) => patchRow(m.t, r.row, { note: notes[i] }));
+    toast(`Logged on ${m.t}, ${rs.map(r => fmtMon(r.date)).join(", ")}: ${m.line}.`); renderDash();
   } catch (e) { fail(e); }
 }
 async function logCall(tab, outcome, note) {
@@ -2310,6 +2400,166 @@ async function logCall(tab, outcome, note) {
 /* ---------- actions ---------- */
 async function setStatus(tab, val) {
   try { await writeCells(tab, [["D7", val]]); toast(`${tab}: ${val}`); await refresh(); } catch (e) { fail(e); }
+}
+
+/* ---------- weekly clinician digest: each rendering clinician's patients in treatment, sent Fridays by 4 PM ----------
+   Who is listed follows the Active Patients sheet (Pending Start, In Progress, Tapering, Paused or blank), grouped by E2, the
+   rendering clinician with their credential. The week runs Monday to Friday: this week's kept, missed and cancelled visits, and
+   what's booked next week. The Clinician Digest sheet holds each clinician's email and whether they get it (Send weekly digest:
+   Yes or No, to opt someone out), and when it was last sent and by whom. The CC (Settings) goes on every digest.
+   The add-in can't send mail from Excel on the web: Copy digest puts the formatted digest on the clipboard, Open email starts a
+   new email with To, CC and subject filled in, the technician pastes and sends, then Mark sent. Patients by LASFIR and MRN. */
+const DIG_SHEET = "Clinician Digest", DIG_HEAD = 4, DIG_FIRST = 5, DIG_LAST = 200, DIG_HDR = ["Clinician", "Email", "Send weekly digest", "Last sent", "Sent by"];
+const DIG_DUE = 16 * 60, NO_CLIN = "No clinician in E2";   // Friday 4 PM
+const digKey = n => String(n || "").trim().replace(/\s+/g, " ").toLowerCase();
+function readDigest(values) {
+  const out = [];
+  (values || []).forEach((r, i) => { const name = String((r || [])[0] ?? "").trim(); if (!name) return;
+    out.push({ name, email: String(r[1] ?? "").trim(), send: !/^(n|no|false|0)$/i.test(String(r[2] ?? "").trim()), sent: typeof r[3] === "number" && r[3] > 20000 ? r[3] : null, by: String(r[4] ?? "").trim(), row: DIG_FIRST + i }); });
+  return out;
+}
+const digWeek = t => { const mon = weekStart(t) + 1; return { mon, days: [0, 1, 2, 3, 4].map(i => mon + i), next: [7, 8, 9, 10, 11].map(i => mon + i) }; };
+const digListed = p => onSched(p) && (p.status === "" || AP_SHOW.includes(p.status));
+/* one patient's line: this week's codes (as on Active Patients, plus C for a cancelled treatment), what happened, the course, the
+   follow-ups, and next week: what's booked (ev) and what needs the clinician (alert) */
+function digPatient(p, w, t) {
+  const d = p.d, rows = p.rows, f = fmtMon, end = w.next[4], inW = (r, ds) => r.date != null && ds.includes(r.date);
+  const txCx = d.txCx || [], c = state.lx && p.mrn ? state.lx.c[p.mrn] : null, fuCx = c && c.fuCx ? c.fuCx.map(e => e.date) : [];
+  const code = day => dayCode(p, day) || (txCx.includes(day) ? "C" : "");
+  const kept = rows.filter(r => inW(r, w.days) && r.delivered && r.type !== "F/U").length, missed = rows.filter(r => inW(r, w.days) && r.miss).length;
+  const cancelled = txCx.filter(x => w.days.includes(x)).length + fuCx.filter(x => w.days.includes(x)).length;
+  const lastFu = rows.filter(r => r.type === "F/U" && !r.miss && r.date != null && r.date <= t).map(r => r.date).sort((a, b) => b - a)[0] ?? null;
+  const nextRows = rows.filter(r => inW(r, w.next) && !r.miss).sort(cmp), booked = nextRows.filter(r => r.type !== "F/U").length;
+  const ev = [], alert = [];
+  nextRows.filter(r => r.type === "MT").forEach(r => ev.push(`Starts ${f(r.date)} (MT)`));
+  nextRows.filter(r => r.type === "MTR").forEach(r => ev.push(`MT redo ${f(r.date)}`));
+  nextRows.filter(r => r.type === "F/U").forEach(r => ev.push(`Follow-up ${f(r.date)}${r.tele ? " (telehealth)" : ""}`));
+  /* the last treatment: the course end typed on the tab, else the date of the treatment that reaches D2 (booked, not just the last booked day) */
+  const txd = rows.filter(r => r.date != null && !r.miss && isTxRow(r)).sort(cmp), lastTx = p.txEnd ?? (txd.length >= d.total ? txd[d.total - 1].date : null);
+  if (lastTx != null && lastTx >= t && lastTx <= end) ev.push(`Last treatment ${f(lastTx)}`);
+  if (p.authExp != null && p.authExp <= end) (p.authExp < t ? alert : ev).push(p.authExp < t ? `Auth expired ${f(p.authExp)}` : `Auth ends ${f(p.authExp)}`);
+  if (p.updateBy != null && p.updateBy >= t && p.updateBy <= end) ev.push(`Protocol update by ${f(p.updateBy)}`);
+  p.avail.filter(x => x.type === "Unavailable" && x.from <= end && x.to >= w.next[0]).forEach(x => ev.push(`Away ${f(x.from)} to ${f(x.to)}`));
+  if (d.tel) alert.push(`Missed ${d.tel.n} in a row`);
+  (d.cxNote || []).forEach(x => alert.push(`${x.dates.length} cancellations within ${TmsCore.CX_WINDOW} days (${x.dates.map(f).join(", ")})`));
+  (d.fuRebook || []).forEach(e => alert.push(`Follow-up ${f(e.date)} ${e.kind}${e.next != null ? `, next ${f(e.next)}` : ", not rebooked"}`));
+  (d.fuGaps || []).filter(g => g.from <= end).forEach(g => alert.push(`No follow-up booked ${g.label}`));
+  if (!booked && d.active && p.status !== "Paused" && d.txDone < d.total) alert.push("Nothing booked next week");
+  if (p.status === "Paused") alert.push("Paused");
+  return { tab: p.tab, code: p.code, mrn: String(p.mrnRaw || p.mrn || ""), status: p.status || "Not set", paused: p.status === "Paused", days: w.days.map(code),
+    kept, missed, cancelled, done: d.txDone, total: d.total, left: Math.max(0, d.total - d.txDone), lastFu, nextFu: d.fuNext ? d.fuNext.date : null, booked, ev, alert };
+}
+function digestModel(t = todaySerial()) {
+  const w = digWeek(t), by = new Map(), dir = new Map((state.digest || []).map(c => [digKey(c.name), c]));
+  for (const p of state.patients.filter(digListed)) { const k = p.provider || NO_CLIN; if (!by.has(k)) by.set(k, []); by.get(k).push(digPatient(p, w, t)); }
+  const cl = [...by].map(([name, pts]) => { const c = dir.get(digKey(name)) || {};
+    return { name, none: name === NO_CLIN, known: dir.has(digKey(name)), email: c.email || "", send: c.send !== false, sent: c.sent ?? null, by: c.by || "",
+      sentThisWeek: c.sent != null && Math.floor(c.sent) >= w.mon, pts: pts.sort((a, b) => a.tab.localeCompare(b.tab)) }; })
+    .sort((a, b) => a.none - b.none || a.name.localeCompare(b.name));
+  return { ...w, t, clinicians: cl, due: cl.filter(c => !c.none && c.send) };
+}
+const digFill = x => ({ ...AP_FILL, X: "#F9DCD9", C: "#E6E9E8" })[x];   // AP_FILL is defined further down
+/* the email body: inline styles and tables only, so it keeps its look when pasted into Outlook */
+function digestHtml(c, m) {
+  const e = esc, cell = "padding:5px 8px;border:1px solid #D5DDE2;vertical-align:top";
+  const td = (x, st = "") => `<td style="${cell};${st}">${x}</td>`, th = x => `<th style="padding:6px 8px;border:1px solid #1C2A33;background:#1C2A33;color:#FFFFFF;text-align:left;font-weight:600">${x}</th>`;
+  const h3 = (x, col) => `<h3 style="font-size:14px;margin:16px 0 6px;color:${col || "#1C2A33"}">${x}</h3>`;
+  const pts = c.pts, inTx = pts.filter(p => !p.paused).length, sum = k => pts.reduce((n, p) => n + p[k], 0), who = p => `<b>${e(p.code)}</b> <span style="color:#5B6B75">MRN ${e(p.mrn)}</span>`;
+  const tile = (n, l, col) => `<td style="padding:8px 16px;border:1px solid #D5DDE2;text-align:center"><div style="font-size:20px;font-weight:700;color:${col || "#1C2A33"}">${n}</div><div style="font-size:12px;color:#5B6B75">${l}</div></td>`;
+  const first = c.none ? "" : String(c.name.split(",")[0]).split(" ")[0], att = pts.filter(p => p.alert.length), up = pts.filter(p => p.ev.length);
+  const range = ds => `${fmtMon(ds[0])} to ${fmtMon(ds[4])}`;
+  return `<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1C2A33;line-height:1.45">
+${first ? `<p style="margin:0 0 8px">Hi ${e(first)},</p>` : ""}<p style="margin:0 0 10px">Here's the weekly TMS update for your patients at ${e(clinic() || "the clinic")}: this week, ${range(m.days)}, and what's booked next week, ${range(m.next)}.</p>
+<table style="border-collapse:collapse;margin:4px 0 6px"><tr>${tile(inTx, "in treatment")}${tile(pts.length - inTx, "paused")}${tile(sum("kept"), "treatments kept this week")}${tile(sum("missed"), "missed", sum("missed") ? "#B3261E" : "")}${tile(sum("cancelled"), "cancelled", sum("cancelled") ? "#8F5400" : "")}</tr></table>
+${att.length ? h3("Needs your attention", "#B3261E") + `<ul style="margin:0 0 4px 18px;padding:0">${att.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.alert.join("; "))}</li>`).join("")}</ul>` : ""}
+${h3("Coming up next week")}${up.length ? `<ul style="margin:0 0 4px 18px;padding:0">${up.map(p => `<li style="margin:2px 0">${who(p)}: ${e(p.ev.join("; "))}</li>`).join("")}</ul>` : `<p style="margin:0">Nothing beyond daily treatments.</p>`}
+${h3(`This week, ${range(m.days)}`)}<table style="border-collapse:collapse;font-size:12px"><tr>${th("Patient")}${th("MRN")}${th("Status")}${m.days.map(d => th(`${DAYS[dow(d)]} ${fmtDate(d)}`)).join("")}${th("This week")}${th("Course")}${th("Last F/U")}${th("Next F/U")}${th("Next week")}</tr>
+${pts.map(p => `<tr>${td(`<b>${e(p.code)}</b>`)}${td(e(p.mrn))}${td(e(p.status))}${p.days.map(x => td(e(x), `text-align:center;${digFill(x) ? `background:${digFill(x)}` : ""}`)).join("")}${td(`${p.kept} kept${p.missed ? `, <span style="color:#B3261E">${p.missed} missed</span>` : ""}${p.cancelled ? `, ${p.cancelled} cancelled` : ""}`)}${td(`${p.done} of ${p.total} kept, ${p.left} left`)}${td(p.lastFu != null ? fmtMon(p.lastFu) : "None yet")}${td(p.nextFu != null ? fmtMon(p.nextFu) : `<span style="color:#B3261E">Not booked</span>`)}${td(`${p.booked} treatment${p.booked === 1 ? "" : "s"} booked`)}</tr>`).join("")}</table>
+<p style="font-size:11px;color:#5B6B75;margin:8px 0 0">MT motor threshold · MTR MT redo · F/U follow-up · · treated · X missed · C cancelled · Alt at another clinic. Course counts treatments kept against those authorized (D2).</p>
+<p style="font-size:11px;color:#5B6B75;margin:4px 0 0">Sent by ${e(state.user || "the TMS team")} from ${e(trackerTitle())}. Contains patient information: keep it within MHS email.</p></div>`;
+}
+const digSubject = (c, m) => `TMS weekly update: ${c.name}, week of ${fmtMon(m.days[0])}${clinic() ? ` (${clinic()})` : ""}`;
+const digMailto = (c, m) => `mailto:${c.email.split(/[;,]/).map(x => x.trim()).filter(Boolean).join(",")}?${[String(state.cfg.digestCc || "").trim() ? `cc=${encodeURIComponent(String(state.cfg.digestCc).trim())}` : "", `subject=${encodeURIComponent(digSubject(c, m))}`].filter(Boolean).join("&")}`;
+/* where the digests stand this week: the list must be today's on Friday, then each clinician who gets one */
+function digestStatus(t = todaySerial()) {
+  const m = digestModel(t), r = state.report, listToday = !!r && (r.importedOn === t || r.asOf === t), left = m.due.filter(c => !c.sentThisWeek);
+  return { m, listToday, left, friday: dow(t) === 5, late: nowMin() >= DIG_DUE };
+}
+async function saveDigest(list) {
+  if (POPOUT) { const res = await callPane("saveDigest", [list]); if (res) state.digest = res; return res; }
+  let out = null;
+  await Excel.run(async ctx => {
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(DIG_SHEET); await ctx.sync();
+    if (ws.isNullObject) {
+      ws = ctx.workbook.worksheets.add(DIG_SHEET);
+      ws.getRange("A1").values = [["Clinician Digest"]]; ws.getRange("A1").format.font.size = 14; ws.getRange("A1").format.font.bold = true;
+      ws.getRange("A2").values = [["One row per rendering clinician (E2). Add their email; set Send weekly digest to No to leave someone out. The add-in fills Last sent and Sent by when a digest is marked sent."]];
+      ws.getRange("A2").format.font.italic = true; ws.getRange("A2").format.font.color = "#5b6b75";
+      const hd = ws.getRange(`A${DIG_HEAD}:E${DIG_HEAD}`); hd.values = [DIG_HDR]; hd.format.fill.color = "#1c2a33"; hd.format.font.color = "#ffffff"; hd.format.font.bold = true;
+      [["A", 200], ["B", 220], ["C", 110], ["D", 130], ["E", 110]].forEach(([c, w]) => { ws.getRange(`${c}:${c}`).format.columnWidth = w; });
+      ws.getRange(`C${DIG_FIRST}:C${DIG_LAST}`).dataValidation.rule = { list: { inCellDropDown: true, source: "Yes,No" } };
+      ws.freezePanes.freezeRows(DIG_HEAD);
+    }
+    const rg = ws.getRange(`A${DIG_FIRST}:E${DIG_LAST}`); rg.load("values"); await ctx.sync();
+    const cur = readDigest(rg.values); let next = DIG_FIRST + rg.values.reduce((k, v, i) => String(v[0]).trim() ? i + 1 : k, 0);
+    for (const x of list) {
+      let c = cur.find(y => digKey(y.name) === digKey(x.name));
+      if (!c) { c = { name: x.name, email: "", send: true, sent: null, by: "", row: next++ }; cur.push(c); }
+      Object.assign(c, x, { name: c.name });
+      ws.getRange(`A${c.row}:E${c.row}`).values = [[c.name, c.email, c.send ? "Yes" : "No", c.sent ?? "", c.by || ""]];
+      ws.getRange(`D${c.row}`).numberFormat = [["m/d/yyyy h:mm AM/PM"]];
+    }
+    await ctx.sync(); out = cur;
+  });
+  state.digest = out; return out;
+}
+function mDigest() {
+  const st = digestStatus(), m = st.m; state.digModel = m;
+  const missing = m.clinicians.filter(c => !c.none && !c.known);
+  if (missing.length) saveDigest(missing.map(c => ({ name: c.name }))).catch(e => console.error(e));   // every clinician gets a row, opted in
+  const cc = String(state.cfg.digestCc || "").trim();
+  const when = c => !c.send ? "Not sent: opted out" : c.sentThisWeek ? `Sent ${fmtMon(Math.floor(c.sent))} ${fmtTime(Math.round((c.sent % 1) * 1440))}${c.by ? ` by ${c.by}` : ""}` : "Not sent this week";
+  const card = (c, i) => {
+    const n = c.pts.length, inTx = c.pts.filter(p => !p.paused).length, att = c.pts.filter(p => p.alert.length).length;
+    const head = `<div class="h"><h2>${esc(c.name)}</h2><span>${inTx} in treatment${n - inTx ? `, ${n - inTx} paused` : ""}${att ? `, ${att} need attention` : ""}</span></div>`;
+    if (c.none) return `<div class="section">${head}<p class="body">${n} patient${n === 1 ? " has" : "s have"} no clinician in E2: ${c.pts.map(p => esc(p.tab)).join(", ")}. Import this week's appointment list to fill it from the Rendering column.</p></div>`;
+    const mail = c.email && c.send ? `<a class="btn ghost sm" href="${esc(digMailto(c, m))}" target="_blank" rel="noopener">2. Open email</a>` : `<span class="hint">${c.send ? "Add an email to open one." : ""}</span>`;
+    return `<div class="section">${head}
+      <div class="g2"><label class="fld"><span>Email</span><input data-digmail="${i}" value="${esc(c.email)}" placeholder="name@mymhs.com" autocomplete="off"></label>
+      <label class="check" style="align-self:end"><input type="checkbox" data-digsend="${i}"${c.send ? " checked" : ""}> Send this clinician a weekly digest</label></div>
+      <p class="${c.send && !c.sentThisWeek ? "flag" : "muted"}" style="margin:4px 0">${esc(when(c))}</p>
+      ${c.send ? `<div class="actions"><button class="btn ghost sm" data-act="digPrev" data-v="${i}">Preview</button><button class="btn ghost sm" data-act="digCopy" data-v="${i}">1. Copy digest</button>${mail}<button class="btn ${c.sentThisWeek ? "mute" : "primary"} sm" data-act="digSent" data-v="${i}">3. Mark sent</button></div>` : ""}
+      <div class="digprev" id="digPrev${i}" hidden style="margin-top:8px;padding:12px;border-radius:10px;background:#fff;color:#1C2A33;overflow:auto;max-height:420px">${digestHtml(c, m)}</div></div>`;
+  };
+  const warn = st.friday && !st.listToday ? `<p class="warnline">Import today's appointment list first, so the digests have this week's visits.</p>` : "";
+  showModal(`<h2 id="mtitle">Weekly clinician digests</h2>
+    <p class="sub">This week ${fmtMon(m.days[0])} to ${fmtMon(m.days[4])}, and next week. ${m.due.length - st.left.length} of ${m.due.length} sent. For each one: copy the digest, open the email, paste it in (Ctrl+V), send, then Mark sent.</p>${warn}
+    <label class="fld"><span>CC on every digest</span><input id="digCc" value="${esc(cc)}" placeholder="Your email" autocomplete="off"></label>
+    ${m.clinicians.map(card).join("") || '<p class="empty">No patients in treatment.</p>'}
+    <div class="mfoot"><button class="btn primary" data-mclose>Done</button></div>`, true);
+  const body = $("modalBody");
+  body.querySelectorAll("[data-digmail]").forEach(el => el.onchange = () => { const c = m.clinicians[+el.dataset.digmail]; saveDigest([{ name: c.name, email: el.value.trim() }]).then(mDigest).catch(fail); });
+  body.querySelectorAll("[data-digsend]").forEach(el => el.onchange = () => { const c = m.clinicians[+el.dataset.digsend]; saveDigest([{ name: c.name, send: el.checked }]).then(() => { mDigest(); renderBanners(); }).catch(fail); });
+  const ccIn = $("digCc"); if (ccIn) ccIn.onchange = () => { state.cfg.digestCc = ccIn.value.trim(); saveSetting("tms_cfg", { ...state.cfg }); mDigest(); };
+}
+/* the formatted digest on the clipboard (HTML, for Outlook), else the preview selected and copied the old way */
+async function digCopy(i) {
+  const m = state.digModel, c = m && m.clinicians[+i]; if (!c) return;
+  const html = digestHtml(c, m), box = $(`digPrev${i}`);
+  try {
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      const tmp = document.createElement("div"); tmp.innerHTML = html;
+      await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([tmp.innerText || tmp.textContent || ""], { type: "text/plain" }) })]);
+      return toast(`Digest for ${c.name} copied. Open the email and paste it in.`);
+    }
+  } catch { /* try selecting the preview */ }
+  if (box) { box.hidden = false; const r = document.createRange(); r.selectNodeContents(box); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    let ok = false; try { ok = document.execCommand("copy"); } catch { /* blocked */ }
+    toast(ok ? `Digest for ${c.name} copied. Open the email and paste it in.` : "The preview is selected: press Ctrl+C to copy it.", !ok); }
+}
+async function digSent(i) {
+  const m = state.digModel, c = m && m.clinicians[+i]; if (!c) return;
+  try { await saveDigest([{ name: c.name, sent: todaySerial() + nowMin() / 1440, by: state.user || "" }]); toast(`Marked sent: ${c.name}.`); mDigest(); renderBanners(); } catch (e) { fail(e); }
 }
 /* ---------- Active Patients sheet: a view-only copy of the Patients roster for this week, rebuilt whenever the data changes ---------- */
 const AP_SHEET = "Active Patients", AP_SHOW = [...ACTIVE, "Paused"], AP_HEAD = 4, AP_FIRST = 7;
@@ -2466,7 +2716,7 @@ async function saveGuestLink(mrn, url) {
 
 /* ---------- Settings > Use another tab as New Template: the chosen tab is renamed New Template and the current one deleted.
    Patient tabs and the add-in's own sheets aren't offered. Logged without undo; the workbook's version history has the old tab. ---------- */
-const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, ELOG_SHEET, TmsCore.USER_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
+const OWN_SHEETS = () => ["New Template", AP_SHEET, GUEST_SHEET, BEN_SHEET, SESS_SHEET, LIST_SHEET, EXT_SHEET, DIG_SHEET, ELOG_SHEET, TmsCore.USER_SHEET, "Clinic Schedule", "Chair Schedule", "Protocols"].map(sheetKey);
 const tplChoices = () => (state.sheetNames || []).filter(n => !OWN_SHEETS().includes(sheetKey(n)) && !state.tabs.some(t => t.name === n) && !state.stale.includes(n) && !/ \(old\)$/.test(n));
 function fillTplPick() {
   const s = $("tplPick"); if (!s || document.activeElement === s) return;
@@ -3434,7 +3684,7 @@ function verifyKeep() { const x = (state.mctx || {}).verify; if (x) toast(`Kept 
    Template with its data moved over, one that has drifted gets Match New Template, and the Edit log says which. */
 function useTabAsk(mrn) {
   if (POPOUT) return toast("Use this from the task pane.", true);
-  const y = state.pendingNew.find(z => z.mrn === mrn) || [...(state.asks || []), ...(state.guests || [])].find(z => z.mrn === mrn); if (!y) return;
+  const y = state.pendingNew.find(z => z.mrn === mrn) || guestOf(mrn); if (!y) return;
   if (!state.templateOk) return toast(state.templateWhy, true, true);
   const cur = state.tabs.map(t => { const p = state.patients.find(q => q.tab === t.name); return { name: t.name, code: t.code, mrn: p ? p.mrn : "", mrnRaw: p ? String(p.mrnRaw || p.mrn || "") : "", old: false }; });
   const tabs = [...cur, ...state.old.map(n => ({ name: n, code: n.split(" ")[0], mrn: "", mrnRaw: "", old: true }))];
@@ -3568,10 +3818,11 @@ function dontAsk(mrn) {
   renderBanners(); syncGuests(); renderDash();
 }
 function startTracker(mrn) {
-  const x = state.pendingNew.find(y => y.mrn === mrn), g = !x && [...(state.asks || []), ...(state.guests || [])].find(y => y.mrn === mrn); if (!x && !g) return;
+  const x = state.pendingNew.find(y => y.mrn === mrn), g = !x && guestOf(mrn); if (!x && !g) return;
   ["apLast", "apFirst", "apDob", "apIns", "apAuthStart", "apAuthExp", "apAssess"].forEach(i => $(i).value = "");
   const y = x || g; $("apMrn").value = y.raw; $("apCode").value = y.code; state.codeEdited = !!y.code; state.courseEdited = false;
   $("apNote").textContent = x ? `From NextGen: ${x.n} visit${x.n > 1 ? "s" : ""} today or later, first ${fmtDateY(x.first.date)} (${x.first.type}). Enter coverage and billing, then create the tab. The import preview reruns afterward to fill its dates.`
+    : !isAway(g) ? `Most of their treatments are booked here, so their tracker belongs here. Enter coverage and billing, then create the tab. The import preview reruns afterward to fill its dates.`
     : `${g.home} carries this course (the MT is there, or most chair visits), with ${g.daily} daily visit${g.daily === 1 ? "" : "s"} booked here. Create a tab here only if pulses will be entered here. The import preview reruns afterward to fill its dates.`;
   updateApTab(); show("add");
 }
@@ -3579,7 +3830,7 @@ function startTracker(mrn) {
 /* ---------- NextGen import: column layout is fixed by the "1 Appt List - ALL TMS" report, so it is detected, not mapped ---------- */
 /* a list of patterns is tried in order, so "Provider" wins over "Res Name" when a report has both */
 const MAP_RE = { mMrn: /^mrn$/i, mDate: /appt\s*date|appointment\s*date/i, mTime: [/^time$/i, /^beg(in)?\s*(tm|time)$/i], mSts: /^sts$|^status$/i, mEvent: /^event$|appointment type/i,
-  mProv: [/^provider$/i, /^res(ource)?\s*name$/i], mChg: /charged/i, mMod: /^mod\s*dt|modified\s*date/i, mLoc: [/^location$/i, /^loc(ation)?\s*name$/i] };
+  mProv: [/^provider$/i, /^res(ource)?\s*name$/i], mChg: /charged/i, mMod: /^mod\s*dt|modified\s*date/i, mLoc: [/^location$/i, /^loc(ation)?\s*name$/i], mRend: /^rendering/i };
 const findCol = (headers, re) => { for (const x of [].concat(re)) { const i = headers.findIndex(h => x.test(h)); if (i >= 0) return i; } return -1; };
 async function onFile(e) {
   // cleared at once so picking the same file again (a re-export, or after an error) still fires change
@@ -3670,12 +3921,12 @@ function saveList(f) {
   const x = { headers: f.headers, rows, dateCol, meta };   // dates are serials by now, so this survives the trip from a pop-out
   return POPOUT ? callPane("writeList", [x]) : writeList(x);
 }
-async function writeList({ headers, rows, dateCol, meta }) {
-  const cols = headers.length;
+async function writeList({ headers, rows, dateCol, meta, sheet }) {
+  const cols = headers.length, name = sheet || LIST_SHEET;
   const last = colLetter(cols - 1);
   await Excel.run(async ctx => {
-    let ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync();
-    if (ws.isNullObject) ws = ctx.workbook.worksheets.add(LIST_SHEET); else ws.getRange().clear();
+    let ws = ctx.workbook.worksheets.getItemOrNullObject(name); await ctx.sync();
+    if (ws.isNullObject) ws = ctx.workbook.worksheets.add(name); else ws.getRange().clear();
     ws.getRange("A1:B4").numberFormat = meta.map(() => ["@", "@"]); ws.getRange("A1:B4").values = meta; ws.getRange("A1:A3").format.font.bold = true;
     const hd = ws.getRange(`A${LIST_HEAD}:${last}${LIST_HEAD}`); hd.values = [headers]; hd.format.font.bold = true;
     if (rows.length) {
@@ -3686,12 +3937,13 @@ async function writeList({ headers, rows, dateCol, meta }) {
     ws.getRange(`A${LIST_HEAD}:${last}${LIST_HEAD + rows.length}`).format.autofitColumns();
     await ctx.sync();
   });
+  if (name !== LIST_SHEET) return;
   if (!POPOUT && (!state.file || state.file.saved)) { state.file = null; state.listLoaded = false; }   // a pop-out applied it: the pane reads it back on its next refresh
 }
-async function loadList() {
+async function loadList(sheet) {
   let vals = null;
   await Excel.run(async ctx => {
-    const ws = ctx.workbook.worksheets.getItemOrNullObject(LIST_SHEET); await ctx.sync(); if (ws.isNullObject) return;
+    const ws = ctx.workbook.worksheets.getItemOrNullObject(sheet || LIST_SHEET); await ctx.sync(); if (ws.isNullObject) return;
     const u = ws.getUsedRange(true); u.load("rowIndex,columnIndex,rowCount,columnCount"); await ctx.sync(); vals = [];
     /* 500 rows per read: a long report can pass the cap on what one sync returns in Excel on the web */
     const c1 = colLetter(u.columnIndex), c2 = colLetter(u.columnIndex + u.columnCount - 1);
@@ -3700,8 +3952,60 @@ async function loadList() {
     }
   });
   if (!vals || vals.length <= LIST_HEAD) return null;
-  const name = String((vals.find(r => String(r[0]).trim() === "File") || [])[1] || LIST_SHEET);
+  const name = String((vals.find(r => String(r[0]).trim() === "File") || [])[1] || sheet || LIST_SHEET);
   return parseReport(vals, name, true);
+}
+
+/* ---------- other clinics' lists: the same report from the clinics this clinic's patients are also treated at ----------
+   Kept on the Other Clinic Lists tab in one layout (EXT_HDR), only rows for patients on this clinic's list or with a tab here, and
+   none at this clinic. A list replaces the rows an earlier upload had from the same file name or the same locations. buildPlan
+   uses them to decide where a patient belongs and to fill in visits elsewhere on tabs here (Alt Clinic). */
+const EXT_SHEET = "Other Clinic Lists";
+const EXT_HDR = ["MRN", "Appt Date", "Time", "Provider", "Event", "Sts", "Location", "Rendering", "Mod Dt", "Other ID Nbr", "From file"];
+const EXT_KEYS = ["mMrn", "mDate", "mTime", "mProv", "mEvent", "mSts", "mLoc", "mRend", "mMod", "mPat"];
+const extFiles = rows => [...new Set(rows.map(r => String(r[10] || "")).filter(Boolean))];
+function extFrom(rows) {
+  if (!rows.length) return null;
+  const f = parseReport([EXT_HDR, ...rows], EXT_SHEET, true); f.files = extFiles(rows); return f;
+}
+async function onExtFile(e) {
+  const files = [...e.target.files]; e.target.value = ""; if (!files.length) return;
+  if (!state.file || state.plan?.ps) return toast("Import this clinic's ALL TMS list first, then add the other clinics' lists.", true);
+  if (!clinic()) return toast("Set this clinic in Settings first, so the add-in can tell its rows from the other clinics'.", true);
+  try {
+    failStep = "Reading the other clinics' lists";
+    const fm = state.file.map, cellOf = (r, k) => fm[k] >= 0 ? r[fm[k]] : "";
+    const ours = new Set([...state.file.rows.map(r => normMrn(cellOf(r, "mMrn"))), ...state.patients.map(p => p.mrn), ...(state.mrnTabs ? state.mrnTabs.keys() : [])].filter(Boolean));
+    const dev = DEVICES[device()], hereRow = (pv, loc) => { const cc = dev.ours.test(pv) ? pv.replace(/\s*(magv|mag\s?venture|brainsway|bw)\s*\d*$/i, "").trim() : ""; return cc ? atClinic(pv) : loc ? atClinic(loc) : false; };
+    let rows = state.ext ? state.ext.rows.slice() : [], added = 0, skipped = 0;
+    for (const f of files) {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
+      const rep = parseReport(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }), f.name), c = (r, k) => rep.map[k] >= 0 ? r[rep.map[k]] : "";
+      const mine = rep.rows.filter(r => ours.has(normMrn(c(r, "mMrn"))) && !hereRow(String(c(r, "mProv") || "").trim(), String(c(r, "mLoc") || "").trim()));
+      skipped += rep.rows.length - mine.length;
+      const locs = new Set(mine.map(r => String(c(r, "mLoc") || "").trim().toLowerCase()).filter(Boolean));
+      rows = rows.filter(r => String(r[10]) !== f.name && !locs.has(String(r[6] || "").trim().toLowerCase()));
+      mine.forEach(r => rows.push([...EXT_KEYS.map(k => c(r, k) ?? ""), f.name])); added += mine.length;
+    }
+    failStep = `Saving the ${EXT_SHEET} tab`;
+    const dateCol = EXT_HDR.map((_, i) => rows.some(r => r[i] instanceof Date));
+    const x = { headers: EXT_HDR, rows: rows.map(r => r.map(toCell)), dateCol, sheet: EXT_SHEET,
+      meta: [["Other clinics' lists", ""], ["Files", extFiles(rows).join(", ")], ["Updated", fmtDateY(todaySerial())], ["Only rows for patients booked here, none at this clinic. The add-in reads it back, so leave it as is.", ""]] };
+    await (POPOUT ? callPane("writeList", [x]) : writeList(x));
+    state.ext = extFrom(x.rows);
+    toast(`${added} row${added === 1 ? "" : "s"} kept for patients booked here (${skipped} for other patients or this clinic left off).`);
+    failStep = "Building the preview"; await buildPlan(); renderExt(); failStep = "";
+  } catch (err) { fail(err); }
+}
+async function clearExt() {
+  try {
+    await Excel.run(async ctx => { const ws = ctx.workbook.worksheets.getItemOrNullObject(EXT_SHEET); await ctx.sync(); if (!ws.isNullObject) ws.delete(); await ctx.sync(); });
+    state.ext = null; toast("Other clinics' lists removed."); renderExt(); if (state.file) await buildPlan();
+  } catch (e) { fail(e); }
+}
+function renderExt() {
+  const el = $("extMsg"); if (!el) return;
+  el.innerHTML = state.ext && state.ext.rows.length ? `${esc(state.ext.files.join(", "))}: ${state.ext.rows.length} rows kept. <button class="btn mute sm" data-act="clearExt">Remove them</button>` : "None added.";
 }
 function planTab(p, appts, from, to, o) {
   const R = p.rows.map(r => ({ ...r, _o: r }));
@@ -3724,9 +4028,9 @@ function planTab(p, appts, from, to, o) {
     if (a.status === "Cancelled" && !kind) {
       st.early++; if (o.lastAsOf != null && a.mod != null && a.mod >= o.lastAsOf) st.earlyNew++; if (a.mod == null) st.noMod++;
       // cancelled ahead of time: clear the date (any date) unless the patient is still booked or seen that day; the row is free for another visit
-      const r0 = R.find(x => x.date === a.date && !x.delivered && (o.ps || !x.alt) && !x.miss);
+      const r0 = R.find(x => x.date === a.date && !x.delivered && (o.ps || o.split || !x.alt) && !x.miss);
       if (r0 && !o.keptPast.has(`${o.mrn}|${a.date}`) && !appts.some(b => b.date === a.date && (b.status === "Scheduled" || b.status === "Kept"))) {
-        r0.date = null; r0.time = null; r0.freebie = ""; untag(r0, TELE_TAG); untag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`); if (o.ps) r0.alt = false; st.cleared++;
+        r0.date = null; r0.time = null; r0.freebie = ""; untag(r0, TELE_TAG); untag(r0, `Cancelled ${fmtDate(a.date)} (NextGen)`); if (o.ps || o.split) r0.alt = false; st.cleared++;
       }
       continue;
     }
@@ -3734,7 +4038,7 @@ function planTab(p, appts, from, to, o) {
     // so it never takes a free row and dates it as a miss beside the treatment
     if (R.some(x => x.date === a.date && x.delivered && lpool(x.type) === lpool(a.type))) { st.treated++; continue; }
     // that day's row for the same kind of visit (a follow-up no-show never lands on the treatment row), else one with no type
-    const day = R.filter(x => x.date === a.date && !x.delivered && (o.ps || !x.alt));
+    const day = R.filter(x => x.date === a.date && !x.delivered && (o.ps || (o.split && a.here === false) || !x.alt));
     let r = day.find(x => x.type !== "" && lpool(x.type) === lpool(a.type)) || day.find(x => x.type === "");
     if (!r) { r = R.find(x => !x.delivered && !x.alt && !x.miss && x.date == null && lpool(x.type) === lpool(a.type)); if (r) { r.date = a.date; r.time = a.time; } }
     if (!r) { st.unrecorded++; continue; }
@@ -3775,9 +4079,12 @@ function planTab(p, appts, from, to, o) {
       const free = rows.filter(r => poolOf(r) === pool && (inWin(r) || over(r)));
       const done = rows.filter(r => poolOf(r) === pool && r.delivered && r.date != null && r.date >= from);   // a visit already treated (pulses in) answers its own event, so it never takes a second row that day
       const missed = rows.filter(r => ownMiss(r) && r.type !== "" && poolOf(r) === pool);
+      /* a visit at another clinic already on an Alt Clinic row (by hand or an earlier import) answers its own booking */
+      const altR = o.ps ? [] : rows.filter(r => r.alt && !r.delivered && !r.miss && r.date != null && poolOf(r) === pool);
       for (const e of events.filter(e => evPool(e) === pool)) {
         const k = done.findIndex(r => r.date === e.date); if (k >= 0) { done.splice(k, 1); continue; }
         const m = missed.findIndex(r => r.date === e.date && sameTime(r, e)); if (m >= 0) { missed.splice(m, 1); continue; }
+        const ai = altR.findIndex(r => r.date === e.date); if (ai >= 0) { altR.splice(ai, 1); continue; }
         if (e.date < from && rows.some(r => poolOf(r) === pool && r.date === e.date)) continue;
         const r = free.shift(); if (!r) { left.push(e); continue; }
         if (e.date < from) f.past++;
@@ -3785,6 +4092,7 @@ function planTab(p, appts, from, to, o) {
         if (!strict && pool === "tx" && !(r.type === "Taper" && e.type === "Daily") && r.type !== e.type) { r.type = e.type; f.types++; }
         if (e.type === "F/U") { if (e.tele) tag(r, TELE_TAG); else untag(r, TELE_TAG); }
         if (o.ps) { r.alt = !o.ours(e.loc); if (r.alt) f.elsewhere++; }
+        else if (o.split && e.chair && e.here === false) { r.alt = true; f.elsewhere++; }   // a treatment on another clinic's chair
       }
       free.filter(r => r.date != null && r.date <= to).forEach(r => { r.date = null; r.time = null; r.miss = false; r.freebie = ""; untag(r, TELE_TAG); if (o.ps) r.alt = false; f.cleared++; });
     }
@@ -3856,12 +4164,19 @@ function planTab(p, appts, from, to, o) {
 }
 async function buildPlan(quiet) {
   if (!state.file) return;
-  const ps = !state.file.saved && document.querySelector('input[name=rtype]:checked').value === "ps", from = todaySerial(), m = state.file.map, dev = DEVICES[device()];
+  const ps = !state.file.saved && document.querySelector('input[name=rtype]:checked').value === "ps", from = todaySerial(), dev = DEVICES[device()];
   if (!quiet) await refresh();
+  /* other clinics' lists (Import > Add other clinics' lists), laid out like this one and tagged _ext. They only decide where a patient
+     belongs and fill in the visits elsewhere on tabs here; nothing on them is put on this clinic's schedule. A column this list lacks
+     gets a place after its own. */
+  const m = { ...state.file.map }, ext = !ps && state.ext && state.ext.rows.length ? state.ext : null;
+  if (ext) { let w = state.file.headers.length; Object.keys(ext.map).forEach(k => { if (!(m[k] >= 0) && ext.map[k] >= 0) m[k] = w++; }); }
   const cell = (r, k) => m[k] >= 0 ? r[m[k]] : "";
+  const extRows = ext ? ext.rows.map(r => { const a = []; Object.keys(m).forEach(k => { if (m[k] >= 0 && ext.map[k] >= 0) a[m[k]] = r[ext.map[k]]; }); a._ext = true; return a; }) : [];
+  const all = extRows.length ? state.file.rows.concat(extRows) : state.file.rows;
   // device is decided per patient from where their daily treatments are booked, so an MT on a provider schedule follows its patient
   const tally = new Map();
-  for (const r of state.file.rows) {
+  for (const r of all) {
     const mrn = normMrn(cell(r, "mMrn")); if (!mrn) continue;
     const ev = String(cell(r, "mEvent") || ""), pv = String(cell(r, "mProv") || ""), t = tally.get(mrn) || { o: 0, u: 0, evOther: false }, me = mapEvent(ev);
     if (me && me.type === "Daily") { if (dev.other.test(pv)) t.o++; else if (dev.ours.test(pv)) t.u++; }
@@ -3872,19 +4187,31 @@ async function buildPlan(quiet) {
      clinic. No chair visit here: left out. Most chair visits at another clinic: a guest, listed on the Guest Patients sheet with a
      link to their tab there, unless someone made a tab here anyway. A report whose chairs never name the clinic is not split. */
   const roleIn = new Map(), lasfir = r => { const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); return /^[A-Z]{6}$/.test(c) ? c : ""; };
-  const isHere = (pv, loc) => loc ? atClinic(loc) : dev.ours.test(pv) ? atClinic(pv) : null;   // a provider's schedule with no location: unknown
-  const whereOf = (pv, loc) => loc || pv.replace(/\s*(magv|mag\s?venture|brainsway|bw)\s*\d*$/i, "").trim();
+  /* a chair whose resource names a clinic ("Castro MagV 2", "San Rafael MagV1") is that clinic's whatever the location says; otherwise
+     the location decides. A provider's schedule with no location: unknown */
+  const chairClinic = pv => dev.ours.test(pv) ? pv.replace(/\s*(magv|mag\s?venture|brainsway|bw)\s*\d*$/i, "").trim() : "";
+  const isHere = (pv, loc) => chairClinic(pv) ? atClinic(pv) : loc ? atClinic(loc) : dev.ours.test(pv) ? atClinic(pv) : null;
+  const whereOf = (pv, loc) => chairClinic(pv) || loc || pv.replace(/\s*(magv|mag\s?venture|brainsway|bw)\s*\d*$/i, "").trim();
+  const tmOf = r => { let t = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (t == null) t = toMinutes(cell(r, "mDate")); return t; };
   const split = !!clinic() && state.file.rows.some(r => { const pv = String(cell(r, "mProv") || ""), loc = String(cell(r, "mLoc") || ""); return dev.ours.test(pv) && atClinic(loc || pv); });
-  // every report gets the no-tab check (core.js noTabRole); only one that names the clinic is split by clinicRole
-  for (const r of state.file.rows) {
+  // every report gets the no-tab check (core.js noTabRole); only one that names the clinic is split by clinicRole (and only then do
+  // other clinics' lists count). The same visit on two lists counts once.
+  const seenV = new Set();
+  for (const r of all) {
+    if (r._ext && !split) continue;
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim(), loc = String(cell(r, "mLoc") || "").trim();
     if (!mrn || isOther(mrn) || dev.other.test(pv)) continue;
     const sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent")), date = toSerial(cell(r, "mDate"));
     if (!ev || date == null || sts === "Skip" || sts === "Cancelled") continue;
+    const vk = `${mrn}|${date}|${ev.type}|${tmOf(r)}|${pv.toLowerCase()}`; if (seenV.has(vk)) continue; seenV.add(vk);
     const x = roleIn.get(mrn) || { visits: [], raw: String(cell(r, "mMrn")).trim(), code: "" }; roleIn.set(mrn, x);
     x.visits.push({ chair: dev.ours.test(pv), here: split ? isHere(pv, loc) : null, where: whereOf(pv, loc), type: ev.type, date, sts, status: sts }); x.code = x.code || lasfir(r);
   }
-  const hasTab = (mrn, code) => state.patients.some(p => p.mrn === mrn || (!p.mrn && code && p.code === code));
+  /* a tab here: a tracker tab read by the add-in, or any sheet with the MRN by its label in its first rows (core.js mrnsIn) */
+  const tabRead = (mrn, code) => state.patients.some(p => p.mrn === mrn || (!p.mrn && code && p.code === code));
+  const hasTab = (mrn, code) => tabRead(mrn, code) || !!(state.mrnTabs && state.mrnTabs.has(mrn));
+  /* the MT and MT redo elsewhere (most of them): this clinic doesn't show their visits at other clinics (core.js clinicRole) */
+  if (!ps) state.mtAway = new Set(split ? [...roleIn].filter(([, x]) => { const mts = x.visits.filter(v => (v.type === "MT" || v.type === "MTR") && v.here != null), out = mts.filter(v => !v.here).length; return mts.length && out > mts.length - out; }).map(([mrn]) => mrn) : []);
   /* "ask" (MT elsewhere, 16+ dailies here) is offered a tracker here until someone says Don't ask again; then it's a guest. Until a
      tab exists both are tracked at home: no tab, no import, their bookings on Today and Schedule marked as guests. No tab, no MT
      here and fewer than 16 treatments here is a guest too, and so is one with a F/U at another clinic and no MT here (core.js
@@ -3898,20 +4225,27 @@ async function buildPlan(quiet) {
       const x = roleIn.get(mrn), ds = hereDates(x), fut = ds.filter(d => d >= t0), past = ds.filter(d => d < t0);
       return { mrn, raw: x.raw, code: x.code, home: g.home, here: g.here, daily: g.daily, homeCount: g.homeCount, next: fut.length ? Math.min(...fut) : null, last: past.length ? Math.max(...past) : null, link: (state.guestLinks || {})[mrn] || "" };
     }).sort((a, b) => (a.next ?? 1e9) - (b.next ?? 1e9));
-    state.guests = list("guest"); state.asks = list("ask");
+    state.guests = list("guest").map(g => ({ ...g, kind: "guest" })); state.asks = list("ask").map(g => ({ ...g, kind: "ask" }));
+    /* booked on our chairs with no tab the add-in can read: a sheet holding their MRN it can't read ("local"), or this clinic's
+       patient with no tracker yet ("new"). Their bookings still show on Today and Schedule from the list. */
+    state.noTab = [...roles].filter(([mrn, g]) => g.role === "home" && !tabRead(mrn, roleIn.get(mrn).code)).map(([mrn]) => {
+      const x = roleIn.get(mrn), ds = hereDates(x), fut = ds.filter(d => d >= t0);
+      return { mrn, raw: x.raw, code: x.code, home: "", here: ds.length, next: fut.length ? Math.min(...fut) : null, link: "", kind: state.mrnTabs && state.mrnTabs.has(mrn) ? "local" : "new", local: state.mrnTabs ? state.mrnTabs.get(mrn) || "" : "" };
+    });
     state.clinicSplit = { on: split, clinic: clinic(), none: [...roles.values()].filter(g => g.role === "none").length };
   }
   // from the ALL TMS list only: each visit's chair (the resource booked), and per patient the cancellations, whether anything is still booked, the last kept visit
   if (!ps) {
-    const v = {}, pt = {}, c = {}, names = new Set(), cnt = {}, ap = [], apKey = new Set(), gv = [];
+    const v = {}, pt = {}, c = {}, names = new Set(), cnt = {}, ap = [], apKey = new Set(), gv = [], noTabSet = new Set((state.noTab || []).map(x => x.mrn));
     for (const r of state.file.rows) {
       const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim(), role = roleOf(mrn), ourChair = dev.ours.test(pv) && (!split || isHere(pv, String(cell(r, "mLoc") || "").trim()) !== false);
-      if (!mrn || isOther(mrn) || dev.other.test(pv) || role === "none" || (awayRole(role) && !ourChair)) continue;
+      const listed = awayRole(role) || noTabSet.has(mrn);   // no tab here to read: their chair bookings come from the list
+      if (!mrn || isOther(mrn) || dev.other.test(pv) || role === "none" || (listed && !ourChair)) continue;
       const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
       if (date == null || sts === "Skip" || !ev) continue;
       /* a guest's chair bookings here: on the Day view's list check, and on Today and Schedule as guests (state.lx.gv). No cancellations,
          no chair counts, since there's no tab here. */
-      if (awayRole(role)) {
+      if (listed) {
         if (sts !== "Cancelled" && date >= from - 31) {
           names.add(pv);   // a chair here, even if only guests are booked on it
           let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
@@ -3921,7 +4255,7 @@ async function buildPlan(quiet) {
         continue;
       }
       const x = c[mrn] || (c[mrn] = { cx: [], on: [], booked: false, lastKept: null });
-      if (sts === "Cancelled") x.cx.push(date);
+      if (sts === "Cancelled") { x.cx.push(date); if (ev.type === "F/U") (x.fuCx || (x.fuCx = [])).push({ date, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null }); else (x.txCx || (x.txCx = [])).push(date); }
       else if (sts === "Scheduled" || sts === "Kept") {
         /* every visit on the list for the Day view's check (the last month on; the same visit listed twice counts once) */
         let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
@@ -3933,16 +4267,18 @@ async function buildPlan(quiet) {
         if (ourChair) { v[`${mrn}|${date}`] = pv; names.add(pv); const k = cnt[mrn] || (cnt[mrn] = {}); k[pv] = (k[pv] || 0) + 1; }
       }
     }
-    for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); delete x.on; }   // rebooked the same day: not a cancellation
+    for (const x of Object.values(c)) { x.cx = [...new Set(x.cx)].filter(d => !x.on.includes(d)); x.fuCx = (x.fuCx || []).filter(e => !x.on.includes(e.date)); x.txCx = [...new Set(x.txCx || [])].filter(dd => !x.on.includes(dd)); delete x.on; }   // rebooked the same day: not a cancellation
     for (const [mrn, k] of Object.entries(cnt)) pt[mrn] = Object.entries(k).sort((a, b) => b[1] - a[1])[0][0];
     const ds = ap.map(a => a.date);
     state.lx = { v, pt, c, chairs: [...names].sort(), ap, gv, lo: ds.length ? Math.min(...ds) : null, hi: ds.length ? Math.max(...ds) : null };
     state.patients.forEach(p => p.d = derive(p));
   }
-  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
-  for (const r of state.file.rows) {
+  const by = new Map(), codes = new Map(), rawMrn = new Map(), clin = new Map(), rend = new Map(), keptPast = new Set(); let maxDate = from, ignored = 0;
+  for (const r of all) {
     const mrn = normMrn(cell(r, "mMrn")), pv = String(cell(r, "mProv") || "").trim();
     if (!mrn) continue;
+    /* another clinic's list: only for tabs here, and only for the visits elsewhere (rows at this clinic were left off when it was added) */
+    if (r._ext && (!split || !tabRead(mrn, lasfir(r)) || isOther(mrn) || dev.other.test(pv))) continue;
     if (isOther(mrn) || dev.other.test(pv) || roleOf(mrn) === "none") { ignored++; continue; }
     if (awayRole(roleOf(mrn))) continue;   // tracked at their home clinic: the Guest Patients sheet, or the ask banner
     const date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts")), ev = mapEvent(cell(r, "mEvent"));
@@ -3951,12 +4287,16 @@ async function buildPlan(quiet) {
     if (sts === "Kept" && past) keptPast.add(`${mrn}|${date}`);   // guards a cancel on the same day, and gets a row if the tab has none that day
     else if (sts !== "No-show" && sts !== "Cancelled" && past) continue;   // past visits never update, except no-shows, cancels and kept visits with no row
     let time = m.mTime >= 0 ? toMinutes(cell(r, "mTime")) : null; if (time == null) time = toMinutes(cell(r, "mDate"));
-    if (sts === "Scheduled" || sts === "Kept") maxDate = Math.max(maxDate, date);
+    if ((sts === "Scheduled" || sts === "Kept") && !r._ext) maxDate = Math.max(maxDate, date);   // this list's own days decide what an import may clear
     const chg = String(cell(r, "mChg") ?? "").trim(), charged = /waive/i.test(chg) ? "Waived" : /exempt/i.test(chg) ? "Exempt" : "";
     rawMrn.set(mrn, String(cell(r, "mMrn")).trim());
     if (!by.has(mrn)) by.set(mrn, []);
-    by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc: String(cell(r, "mLoc") || "").trim(), here: split && isHere(pv, String(cell(r, "mLoc") || "").trim()) === false ? false : null });   // false: booked at another clinic
-    if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.providerLast(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
+    const loc = String(cell(r, "mLoc") || "").trim(), atc = isHere(pv, loc);
+    by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc, chair: dev.ours.test(pv),
+      here: r._ext ? (atc === true ? null : false) : split && atc === false ? false : null });   // false: booked at another clinic
+    if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.clinicianName(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
+    /* the Rendering clinician leads E2, with their credential ("Neha Nayyar, MD"): who telephone notes and the weekly digest go to */
+    const rn = m.mRend >= 0 && !past ? TmsCore.clinicianName(String(cell(r, "mRend") || "").trim()) : ""; if (rn) { const c = rend.get(mrn) || {}; c[rn] = (c[rn] || 0) + 1; rend.set(mrn, c); }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
   if (!ps) state.codeMrn = new Map([...codes].map(([mrn, c]) => [c, rawMrn.get(mrn) || mrn]));   // LASFIR -> MRN, to suggest a blank A4
@@ -3965,12 +4305,12 @@ async function buildPlan(quiet) {
     if (p.mrn) { const c = latest.get(p.mrn); if (!c || p.course > c.course) latest.set(p.mrn, p); }
     const cc = latestCode.get(p.code); if (!cc || p.course > cc.course) latestCode.set(p.code, p);
   }
-  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, keptPast, ours: loc => !loc || atClinic(loc) };
+  const o = { lastAsOf: state.report && state.report.asOf != null ? state.report.asOf : null, today: from, ps, split, keptPast, ours: loc => !loc || atClinic(loc) };
   const plans = [], disc = [];
   if (!ps) { state.apptBy = new Map(); state.apptTo = maxDate; const ds = state.file.rows.map(r => toSerial(cell(r, "mDate"))).filter(x => x != null); state.apptLo = ds.length ? Math.min(...ds) : null;   // apptLo: the list's first day
     /* every booking per MRN, past Expected ones included, for pulses with no NextGen visit (noApptRows) */
     state.apptAll = new Map();
-    for (const r of state.file.rows) {
+    for (const r of all) {
       const mrn = normMrn(cell(r, "mMrn")), ev = mapEvent(cell(r, "mEvent")), date = toSerial(cell(r, "mDate")), sts = mapSts(cell(r, "mSts"));
       if (!mrn || !ev || date == null || sts === "Skip" || isOther(mrn) || dev.other.test(String(cell(r, "mProv") || ""))) continue;
       if (!state.apptAll.has(mrn)) state.apptAll.set(mrn, []); state.apptAll.get(mrn).push({ date, type: ev.type, status: sts });
@@ -3985,11 +4325,11 @@ async function buildPlan(quiet) {
     const pl = planTab(p, appts, from, maxDate, { ...o, mrn, grow: p.canGrow });
     pl.sig = logSig(p.rows); pl.fb = p.fbCell; if (!ps) state.apptBy.set(p.tab, appts);   // sig: the log this plan was made from (applyPlan checks it)
     // the report is the source of truth for the provider, so E2 follows it (last name only) even when something was typed there
-    const c = clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
+    const c = rend.get(mrn) || clin.get(mrn), top = c && Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]; if (top && top !== p.provider) pl.e2 = top;
     if (pl.e2) pl.changed = true;
     plans.push(pl);
   }
-  const noTab = [...by.entries()].filter(([k]) => !latest.has(k) && !(codes.get(k) && latestCode.has(codes.get(k)) && !latestCode.get(codes.get(k)).mrn));
+  const noTab = [...by.entries()].filter(([k]) => !latest.has(k) && !(state.mrnTabs && state.mrnTabs.has(k)) && !(codes.get(k) && latestCode.has(codes.get(k)) && !latestCode.get(codes.get(k)).mrn));
   // offered a tracker only with an MT booked here or 16+ treatments here (core.js needsTracker); F/U alone don't need one
   state.pendingNew = noTab.filter(([, a]) => TmsCore.needsTracker(a, from)).map(([k, a]) => { const fut = a.filter(x => x.status !== "No-show" && x.status !== "Cancelled" && x.date >= from).sort(cmp); return { mrn: k, raw: rawMrn.get(k) || k, last4: k.slice(-4), code: codes.get(k) || "", n: fut.length, first: fut[0] }; }).filter(x => x.n > 0);
   state.plan = { ps, plans, from, to: maxDate, ignored, disc };
@@ -4019,7 +4359,10 @@ function renderPlan() {
   if (dup) h += `<div class="sub" style="margin-top:6px">${dup} visit${dup === 1 ? " is" : "s are"} listed twice on the report (same day, type and time) and ${dup === 1 ? "gets" : "get"} one row.</div>`;
   if (disc.length) h += `<div class="item amb" style="margin-top:6px">Discontinued on the tracker but still booked in NextGen, so not updated: ${disc.map(esc).join(", ")}. Cancel the visits in NextGen, or start a new course tab.</div>`;
   const pv = ch.filter(p => p.e2).length;
-  if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
+  if (pv) h += `<div class="sub" style="margin-top:6px">Provider (E2) set from the report${state.file.map.mRend >= 0 ? "'s Rendering column" : ""} on ${pv} tab${pv > 1 ? "s" : ""}.</div>`;
+  const el = ch.filter(p => p.elsewhere);
+  if (el.length) h += `<div class="sub" style="margin-top:6px">Treatments booked on another clinic's chair, marked Alt Clinic (R) so they stay off this clinic's chairs: ${el.map(p => `${esc(p.name)} ${p.elsewhere}`).join(", ")}.</div>`;
+  if (!ps && state.ext && state.ext.rows.length) h += `<div class="sub" style="margin-top:6px">Other clinics' lists: ${esc(state.ext.files.join(", "))}, ${state.ext.rows.length} rows for patients booked here. They decide where a patient's tab belongs and fill in their visits elsewhere; none go on this clinic's schedule.${state.clinicSplit && !state.clinicSplit.on ? " Not used: this list doesn't name the clinic." : ""}</div>`;
   const cs = state.clinicSplit, ng = (state.guests || []).length, na = (state.asks || []).length;
   if (cs && !ps) h += cs.on ? `<div class="sub" style="margin-top:6px">${esc(cs.clinic)} chairs only: ${cs.none} patient${cs.none === 1 ? "" : "s"} with no chair visit at ${esc(cs.clinic)} left out${ng ? `, and ${ng} guest${ng === 1 ? "" : "s"} whose home clinic carries the tab listed on the ${GUEST_SHEET} sheet` : ""}${na ? `. ${na} with the MT elsewhere but ${TmsCore.ASK_MIN}+ dailies here: see Create a tracker here? at the top` : ""}.</div>`
     : `<div class="item amb" style="margin-top:6px">${cs.clinic ? `No chair on this report names ${esc(cs.clinic)}` : "The clinic isn't known (set it in Settings)"}, so every patient on it was kept${ng ? ` (${ng} with no tab, no MT and under ${TmsCore.ASK_MIN} treatments listed as guest${ng === 1 ? "" : "s"} on the ${GUEST_SHEET} sheet)` : ""}. Check the clinic in Settings.</div>`;
@@ -4149,7 +4492,7 @@ const CHUNK = 20000;
 function toChild(m) { if (pop.dlg) try { pop.dlg.messageChild(JSON.stringify(m)); } catch { /* window closed */ } }
 function sendSnap() {
   const s = JSON.stringify({ cfg: state.cfg, patients: state.patients.map(({ d, ...p }) => p), tabs: state.tabs, protocols: state.protocols, fix: [...state.fix], old: state.old, stale: state.stale,
-    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
+    skipped: state.skipped, templateOk: state.templateOk, templateWhy: state.templateWhy, pendingNew: state.pendingNew, guests: state.guests || null, asks: state.asks || null, noAsk: state.noAsk || null, noTab: state.noTab || null, noLink: noLinkList(), mtAway: state.mtAway ? [...state.mtAway] : [], mrnTabs: state.mrnTabs ? [...state.mrnTabs] : [], ext: state.ext || null, digest: state.digest || null, sheetNames: state.sheetNames || [], codeMrn: state.codeMrn ? [...state.codeMrn] : null, closures: [...state.closures], wbName: state.wbName, clinic: state.clinic, report: state.report, lx: state.lx,
     elig: state.elig || [], edits: state.edits, user: state.user, users: state.users, apptBy: [...state.apptBy], apptTo: state.apptTo, apptLo: state.apptLo, apptAll: state.apptAll ? [...state.apptAll] : null, sess: sessSnap(), ui: uiSnap() });
   sendParts("snap", s);
 }
@@ -4159,7 +4502,7 @@ const sendSess = () => sendParts("sess", JSON.stringify(sessSnap()));
 function applySnap(o) {
   bootDone();
   Object.assign(state, { cfg: o.cfg, patients: o.patients, tabs: o.tabs, protocols: o.protocols, fix: new Map(o.fix), old: o.old, stale: o.stale || [], skipped: o.skipped, templateOk: o.templateOk, templateWhy: o.templateWhy || "",
-    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
+    pendingNew: o.pendingNew, guests: o.guests || null, asks: o.asks || null, noAsk: o.noAsk || null, noTab: o.noTab || null, noLink: o.noLink || [], mtAway: new Set(o.mtAway || []), mrnTabs: new Map(o.mrnTabs || []), ext: o.ext || null, digest: o.digest || null, sheetNames: o.sheetNames || [], codeMrn: o.codeMrn ? new Map(o.codeMrn) : null, closures: new Map(o.closures), wbName: o.wbName, clinic: o.clinic, report: o.report, lx: o.lx || null,
     elig: o.elig || [], edits: o.edits || [], users: o.users || [], apptBy: new Map(o.apptBy || []), apptTo: o.apptTo ?? null, apptLo: o.apptLo ?? null, apptAll: o.apptAll ? new Map(o.apptAll) : null, sess: null }); setSessSnap(o.sess); mergeUi(o.ui); if (o.user) applyUser(o.user);
   state.patients.forEach(p => p.d = derive(p));
   syncCfgInputs(); renderBanners(); renderDash(); updateApTab(); fillAddPatientForm();
@@ -4177,7 +4520,7 @@ function callPane(fn, args) {
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
   writeChairSheet: o => writeChairSheet(o), setupColumns: force => setupColumns(force), addPatient: d => addPatient(d), openTabName: (t, r) => openTabName(t, r),
-  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), useTemplateTab: n => useTemplateTab(n),
+  saveSetting: (k, v) => saveSetting(k, v), pullElig: m => pullElig(m), pickUser: n => pickUser(n), addUser: n => addUser(n), delUser: n => delUser(n), saveUserSet: (n, p) => saveUserSet(n, p), saveAutoFull: (n, on) => saveAutoFull(n, on), fixTotals: (t, log) => fixTotals(t, log), saveGuestLink: (m, u) => saveGuestLink(m, u), saveDigest: l => saveDigest(l), useTemplateTab: n => useTemplateTab(n),
   writeSess: async e => { try { await writeSessPane(e); } finally { sendSess(); } return null; },
   sessSnap: async () => { await Excel.run(readSessNow); sendSess(); return null; }
 };
@@ -4290,7 +4633,7 @@ function setTheme(t) {
   try { localStorage.setItem("tms_theme", t); } catch { /* this session only */ }
   syncTheme();
 }
-const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl" };
+const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl", cfgDigestCc: "digestCc" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
 const benData = el => Object.fromEntries([...el.closest("details").querySelectorAll("[data-benf],[data-cost]")].map(i => [i.dataset.benf || i.dataset.cost, i.value]));
 /* re-renders replace the markup, so focus goes back to the same control (by its data attributes), else to the card's next step */
@@ -4315,7 +4658,7 @@ Office.onReady(info => {
   syncCfgInputs();
   Object.entries(CFG_IDS).forEach(([id, k]) => { $(id).onchange = () => {
     const v = $(id).value;
-    if (k === "location" && String(state.cfg.location || "").trim() && !adminOn()) { $(id).value = state.cfg.location; renderPeople(); return toast("The clinic is already saved for this workbook. Unlock admin in Settings to change it.", true); } state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
+    if (k === "location" && String(state.cfg.location || "").trim() && !adminOn()) { $(id).value = state.cfg.location; renderPeople(); return toast("The clinic is already saved for this workbook. Unlock admin in Settings to change it.", true); } state.cfg[k] = k === "cutoff" ? (v || CUTOFF_DEFAULT) : ["eligUrl", "digestCc"].includes(k) ? v.trim() : ["location", "device", "openTab"].includes(k) ? (v.trim() || { location: "", device: "auto", openTab: "on" }[k]) : (+v || { authDays: 14, protoDays: 2, recentDays: 10 }[k]);
     saveSetting("tms_cfg", { ...state.cfg }); state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); if (k === "cutoff") refresh(); }; });
   $("apBack").onclick = () => show("patients");
   $("btnFull").onclick = fullScreen;
@@ -4369,10 +4712,12 @@ Office.onReady(info => {
       elFix: () => v === "remove" ? elRemoveAsk(t, row) : fixCheck(t, v, row), elFixGo: () => { const { t: tt, row: rr } = m; closeModal(); return fixCheck(tt, "remove", rr); },
       whoSwitch: () => showWho(true), admUnlock: () => adminUnlock(), admLock: () => { state.adminUntil = 0; renderPeople(); },
       userDel: () => { if (!adminOn()) return toast("Unlock admin first.", true); delUser(v).then(() => { renderPeople(); toast(`${v} removed from this workbook's list.`); }).catch(fail); },
-      apply: () => applyPlan(), previewSaved: () => buildPlan(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
+      apply: () => applyPlan(), previewSaved: () => buildPlan(), clearExt: () => clearExt(), setupGo: () => { closeModal(); setupColumns(); }, newTracker: () => startTracker(v),
       dontAsk: () => dontAsk(v), doTplUse, verifyGo, verifyKeep, useTab: () => useTabAsk(v), useTabGo,
       guestOpen: () => { const g = guestOf(v); if (g && g.link) window.open(g.link, "_blank", "noopener"); },
       saveGuest: () => saveGuestLink(v, (document.querySelector(`[data-guestin="${CSS.escape(v)}"]`) || {}).value),
+      noLink: () => dontAskLink(v), gotoSheet: () => openTabName(t), telnote: () => mTel(t, "miss"), telfu: () => mTel(t, "fu", v), telcx: () => mTel(t, "cx", v), digOpen: () => mDigest(), digCopy: () => digCopy(v), digSent: () => digSent(v),
+      digPrev: () => { const b = $(`digPrev${v}`); if (b) b.hidden = !b.hidden; }, doTel: () => doTel(), copyTel: () => { const x = $("mTelText"); if (x) navigator.clipboard.writeText(x.value).then(() => toast("Copied.")).catch(() => { x.select(); toast("Select all is on: press Ctrl+C."); }); },
       guestLink: () => mGuestLink(v), doGuestLink: () => saveGuestLink(m.mrn, mval("mGuestUrl")).then(okd => { if (okd) closeModal(); }),
       doGuestEnd, guests: () => mGuestLink(v),
       saveMrn: () => { const x = String((document.querySelector(`[data-mrnin="${CSS.escape(t)}"]`) || {}).value || "").trim();
@@ -4471,7 +4816,7 @@ Office.onReady(info => {
   syncTheme();
   $("btnMatch").onclick = () => setupClick(true); $("btnTplUse").onclick = mTplUse;
   ["file", "benFile"].forEach(i => { const el = $(i); el.ondragenter = () => el.classList.add("over"); el.ondragleave = el.ondrop = () => el.classList.remove("over"); });
-  $("file").onchange = onFile; $("benFile").onchange = onBenFile; document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
+  $("file").onchange = onFile; $("benFile").onchange = onBenFile; $("extFile").onchange = onExtFile; renderExt(); document.querySelectorAll("input[name=rtype]").forEach(r => r.onchange = () => state.file && !state.file.saved && buildPlan());
   ["apLast", "apFirst"].forEach(i => $(i).oninput = () => { if (!state.codeEdited) $("apCode").value = lasfir($("apLast").value, $("apFirst").value); updateApTab(); });
   $("apCode").oninput = () => { state.codeEdited = true; updateApTab(); };
   $("apCourse").oninput = () => { state.courseEdited = true; updateApTab(); };
