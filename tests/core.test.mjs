@@ -414,6 +414,19 @@ test("noTabRole: a F/U at another clinic names an intermittent guest's home, but
   assert.equal(T.noTabRole({ role: "home" }, [b("F/U", false, "Post")], 10).role, "home");       // F/U only, nothing here: unchanged
 });
 
+test("tabName: the standard names, and the same written by hand", () => {
+  const t = n => { const x = T.tabName(n); return x && [x.code, x.course, x.std]; };
+  assert.deepEqual(t("DOEJAN"), ["DOEJAN", 1, true]);
+  assert.deepEqual(t("DOEJAN 4"), ["DOEJAN", 4, true]);
+  assert.deepEqual(t("DOEJAN (4)"), ["DOEJAN", 4, false]);
+  assert.deepEqual(t("ROEBOB(2)"), ["ROEBOB", 2, false]);
+  assert.deepEqual(t("LEEANN #2"), ["LEEANN", 2, false]);
+  assert.deepEqual(t("KIMSAM2"), ["KIMSAM", 2, false]);
+  assert.deepEqual(t("TAYMAX "), ["TAYMAX", 1, false]);
+  assert.deepEqual(t("ParKim"), ["PARKIM", 1, false]);
+  for (const n of ["MOOSAM (old)", "COMPLETED", "Pending>", "DB80 Template", "Old Template", "Standard + Specialty Tx"]) assert.equal(T.tabName(n), null, n);
+});
+
 test("rankTabs: same LASFIR first, then the same last or first three letters, filtered by what's typed", () => {
   const tabs = ["ZEDKIM", "SMIJAN 2", "SMIBOB", "SMYJAN", "ALVMAR", "DOEJAN", "SMIJAM"].map(name => ({ name, code: name.split(" ")[0] }));
   const r = T.rankTabs("SMIJAN", "", tabs);
@@ -502,15 +515,15 @@ test("fuGaps: a follow-up between the MT and MT redo, around treatments 20 to 27
 
 test("clinician: the Rendering name with its credential, first name first", () => {
   const n = T.clinicianName;
-  assert.equal(n("Nayyar MD, Neha"), "Neha Nayyar, MD");
-  assert.equal(n("Lau, MD Alvin"), "Alvin Lau, MD");
-  assert.equal(n("Marussich PMHNP, Wendy"), "Wendy Marussich, PMHNP");
-  assert.equal(n("Krehbiel, Stefanie PMHNP"), "Stefanie Krehbiel, PMHNP");
-  assert.equal(n("Aujla Md, Gurpreet Kaur"), "Gurpreet Kaur Aujla, MD");
-  assert.equal(n("Huynh DO, Victor"), "Victor Huynh, DO");
+  assert.equal(n("Rivera MD, Ana"), "Ana Rivera, MD");
+  assert.equal(n("Chen, MD Sam"), "Sam Chen, MD");
+  assert.equal(n("Okafor PMHNP, Jo"), "Jo Okafor, PMHNP");
+  assert.equal(n("Berg, Lena PMHNP"), "Lena Berg, PMHNP");
+  assert.equal(n("Singh Md, Ravi Kumar"), "Ravi Kumar Singh, MD");
+  assert.equal(n("Tran DO, Leo"), "Leo Tran, DO");
   assert.equal(n("Dr. Jane Smith"), "Jane Smith");
-  assert.equal(n("Neha Nayyar, MD"), "Neha Nayyar, MD");                                        // already written that way
-  assert.deepEqual([T.clinician("Cheung PMHNP,  Gloria").last, T.clinician("Cheung PMHNP,  Gloria").cred], ["Cheung", "PMHNP"]);
+  assert.equal(n("Ana Rivera, MD"), "Ana Rivera, MD");                                        // already written that way
+  assert.deepEqual([T.clinician("Ito PMHNP,  Mia").last, T.clinician("Ito PMHNP,  Mia").cred], ["Ito", "PMHNP"]);
   assert.equal(n(""), "");
 });
 

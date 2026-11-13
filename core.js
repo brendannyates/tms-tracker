@@ -86,8 +86,8 @@
   const missStreak = (rows, today) => missRun(rows, today).length;
 
   /* ---------- the rendering clinician, with their credential: not everyone is a doctor ----------
-     NextGen writes "Nayyar MD, Neha", "Lau, MD Alvin", "Marussich PMHNP, Wendy", "Krehbiel, Stefanie PMHNP", "Aujla Md, Gurpreet Kaur".
-     clinician() gives { first, last, cred, name: "Neha Nayyar, MD" }; with no credential the name alone. */
+     NextGen writes "Rivera MD, Ana", "Chen, MD Sam", "Okafor PMHNP, Jo", "Berg, Lena PMHNP", "Singh Md, Ravi Kumar".
+     clinician() gives { first, last, cred, name: "Ana Rivera, MD" }; with no credential the name alone. */
   const CREDS = /^(md|do|np|pmhnp|pmhnp-bc|fnp|fnp-c|fnp-bc|aprn|dnp|pa|pa-c|phd|psyd|lcsw|lmft|mft|rn|bc)$/i;
   function clinician(raw) {
     const s = String(raw ?? "").replace(/\s+/g, " ").trim(); if (!s) return { first: "", last: "", cred: "", name: "" };
@@ -105,8 +105,8 @@
   const clinicianName = raw => clinician(raw).name;
 
   /* ---------- telephone notes to the clinician (written in NextGen; the add-in logs that it was done in Notes, S) ----------
-     prov is E2, the rendering clinician with their credential ("Neha Nayyar, MD"). Missed treatments: each missed row covered gets
-     "Tel note to Neha Nayyar, MD 11/11 (missed 2 in a row)"; a later miss gets "Tel note entry 11/12 (missed 3 in a row)" on its
+     prov is E2, the rendering clinician with their credential ("Ana Rivera, MD"). Missed treatments: each missed row covered gets
+     "Tel note to Ana Rivera, MD 11/11 (missed 2 in a row)"; a later miss gets "Tel note entry 11/12 (missed 3 in a row)" on its
      own row. "(cancelled 11/10, 11/12)" is for 2+ treatment cancellations within 7 days; "(F/U 11/6 not rebooked)" for a follow-up
      missed or cancelled with none booked within 5 days. */
   const TEL_MISS = /^tel note (?:to|entry)\b[^;]*\(missed (\d+)(?: in a row)?\)/i, TEL_CX = /^tel note (?:to|entry)\b[^;]*\(cancelled ([^)]*)\)/i;
@@ -430,6 +430,16 @@
     return rows.filter(r => r.delivered && !r.alt && r.date != null && r.date >= lo && r.date <= today
       && !appts.some(a => a.date === r.date && pool(a.type) === pool(r.type) && a.status !== "Cancelled"));
   }
+  /* a patient tab's name: "DOEJAN", "DOEJAN 4", and the same written differently by hand ("DOEJAN (4)", "ROEBOB(2)", "LEEANN #2",
+     "KIMSAM2", "TAYMAX " with a trailing space, "ParKim" in mixed case). Returns { code, course, std } or null; std is false for the
+     hand-written forms, which are read only when the tab's layout is the tracker's. */
+  function tabName(name) {
+    const s = String(name ?? ""), m = s.match(/^([A-Z]{1,6})(?: (\d+))?$/);
+    if (m) return { code: m[1], course: +(m[2] || 1), std: true };
+    const l = s.trim().match(/^([A-Za-z]{3,6})\s*(?:\(\s*(\d{1,2})\s*\)|#\s*(\d{1,2})|(\d{1,2}))?$/);
+    if (!l) return null;
+    return { code: l[1].toUpperCase(), course: +(l[2] || l[3] || l[4] || 1), std: false };
+  }
   /* the clinic in a tracker's name: "Castro MagV Patient Tracker" -> "Castro", "Walnut Creek TMS Pt Tracker 2026" -> "Walnut Creek" */
   function clinicFromName(name) {
     const s = String(name || "").replace(/\.(xlsx|xlsm|xls)$/i, "").replace(/[_-]+/g, " ");
@@ -614,6 +624,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, clinician, clinicianName, telNote, telMissLine, telFuLine, telCxLine, cancelNote, CX_WINDOW, bizDays, fuRebook, REBOOK_DAYS, FU_NEXT, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, clinician, clinicianName, telNote, telMissLine, telFuLine, telCxLine, cancelNote, CX_WINDOW, bizDays, fuRebook, REBOOK_DAYS, FU_NEXT, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel, tabName,
     copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });
