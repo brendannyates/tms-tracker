@@ -1,6 +1,16 @@
 {
   "updates": [
     {
+      "id": "2026-11-13-tab-names-sync-loading",
+      "date": "2026-11-13",
+      "bullets": [
+        "Fixed: Tabs named by hand, like DOEJAN (4), ROEBOB(2) or ParKim, are read when they're laid out like the tracker. They showed as \"tab not read\".",
+        "Fixed: Selecting a guest's visit, or one whose tab can't be read, no longer gives an ItemNotFound error.",
+        "New: A bar runs across the top and the cursor shows busy whenever the tracker is reading or saving. Saving… or Reading the workbook… shows by the tools.",
+        "Changed: The side pane and full screen stay in step. Snoozes, dismissals, Don't ask again, Settings, light/dark and the Today chair view carry over right away."
+      ]
+    },
+    {
       "id": "2026-11-13-fullscreen-use-tab",
       "date": "2026-11-13",
       "bullets": [
@@ -29,7 +39,7 @@
         "New: Each digest lists the clinician's patients in treatment by LASFIR and MRN: this week's kept, missed and cancelled visits, the course so far, last and next follow-up, and what's coming up next week. Copy it, open the email (To, CC and subject filled in), paste and send, then Mark sent.",
         "New: Clinicians can be left out of the digest. Emails and opt-outs are on the Clinician Digest sheet. The CC is in Settings.",
         "New: 2 treatments cancelled within 7 days asks for a telephone note to the clinician.",
-        "Changed: Clinicians are named from NextGen's Rendering column with their credential (Wendy Marussich, PMHNP), not \"Dr.\".",
+        "Changed: Clinicians are named from NextGen's Rendering column with their credential (Jo Okafor, PMHNP), not \"Dr.\".",
         "Changed: A missed or cancelled follow-up only counts if the next one isn't booked within 5 days.",
         "Changed: A missed-treatment telephone note is logged on each missed visit it covers.",
         "Fixed: Settings > Eligibility feed URL now saves."

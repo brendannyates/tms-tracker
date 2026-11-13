@@ -400,7 +400,26 @@ function parseLog(vals, vt) {
     };
   });
 }
-async function refresh() {
+/* ---------- busy: every workbook read or write runs the bar across the top of the page, shows the busy cursor and says Saving or
+   Reading the workbook by the tools (as IVK Tracker does). A refresh also dims the page so nothing is pressed half-read. Full screen
+   can't reach the workbook, so its calls to the pane count instead. The Sessions re-read every 30 seconds stays quiet. ---------- */
+const busy = { n: 0, read: 0, quiet: 0, t: 0 };
+function busyPaint() {
+  const on = busy.n > 0, rd = busy.read > 0, b = $("pbar"), l = $("busyLbl"), pg = $("page");
+  document.documentElement.classList.toggle("tms-busy", on);
+  if (b) b.hidden = !on; if (pg) pg.classList.toggle("reading", rd);
+  if (l) { l.hidden = !on; l.textContent = rd ? "Reading the workbook…" : "Saving…"; }
+}
+function track(p, read) {
+  if (busy.quiet) return p;
+  busy.n++; if (read) busy.read++;
+  clearTimeout(busy.t); busy.t = setTimeout(busyPaint, 120);   // quick ones don't flash
+  return Promise.resolve(p).finally(() => { busy.n--; if (read) busy.read--; if (!busy.n) clearTimeout(busy.t); busyPaint(); });
+}
+const quietly = async fn => { busy.quiet++; try { return await fn(); } finally { busy.quiet--; } };
+if (!POPOUT && typeof Excel !== "undefined" && Excel.run && !Excel.run.tms) { const run = Excel.run.bind(Excel); Excel.run = Object.assign((...a) => track(run(...a)), { tms: true }); }
+async function refresh() { return track(refresh1(), true); }
+async function refresh1() {
   if (POPOUT) return callPane("refresh", []);
   try {
     /* an ESK or IVK tracker opened with this add-in by mistake: say so and add or change nothing (checked before first launch writes anything) */
@@ -414,7 +433,7 @@ async function refresh() {
       ctx.workbook.load("name"); const sheets = ctx.workbook.worksheets; sheets.load("items/name"); await ctx.sync(); state.wbName = ctx.workbook.name || ""; state.sheetNames = sheets.items.map(s => s.name);
       const elW = sheets.items.find(s => s.name.toLowerCase() === ELIG_SHEET.toLowerCase()), el = elW ? elW.getUsedRangeOrNullObject(true) : null;
       if (el) { el.load("values"); await ctx.sync(); state.elig = el.isNullObject ? [] : eligRows(el.values); } else state.elig = [];
-      const cand = sheets.items.filter(s => TAB_RE.test(s.name) || s.name === "New Template");
+      const cand = sheets.items.filter(s => TmsCore.tabName(s.name) || s.name === "New Template");   // "DOEJAN (4)" too, when its layout is the tracker's
       const sg = cand.map(s => ({ name: s.name, a1: s.getRange("A1"), a3: s.getRange("A3"), h: s.getRange("C8:T8"), v11: s.getRange("V11"), j6: s.getRange("J6"), d7: s.getRange("D7"), e: s.getRange("E9:E200") }));
       sg.forEach(x => { x.a1.load("values"); x.a3.load("values"); x.h.load("values"); x.v11.load("values"); x.j6.load("values"); x.d7.load("values"); x.e.load("values"); });
       /* every other sheet's first rows, for an MRN by its label: a tab named or laid out differently still makes the patient this
@@ -446,8 +465,11 @@ async function refresh() {
       state.templateWhy = state.templateOk ? "" : !nt ? "There's no tab named New Template, so tabs can't be matched or added."
         : !ok(nt) ? `New Template's headings aren't the tracker's, so tabs can't be matched to it. It needs PATIENT: in A1, MRN: in A3, and ${SIG.map(([i, w]) => `${w[0].toUpperCase() + w.slice(1)} in ${colLetter(2 + i)}8`).join(", ")}.`
         : `New Template needs Time in T8 and Freebie Count in J6 before tabs can match it. T8 ${shown(nt.h.values[0][17])} and J6 ${shown(nt.j6.values[0][0])}.`;
+      /* a hand-named tab ("DOEJAN (4)") counts only when its layout is the tracker's, so other sheets with short names are left alone */
+      const hand = x => x.name !== "New Template" && !TmsCore.tabName(x.name).std;
+      state.stale = state.stale.filter(n => { const x = sg.find(y => y.name === n); return !x || !hand(x) || ok(x); });
       state.old = sg.filter(x => x.name !== "New Template" && live(x) && ok(x) && !layout.get(x.name)).map(x => x.name);   // a tracker tab in an earlier layout: rebuilt from New Template
-      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x)).map(x => x.name), other: 0 };   // tabs not named by LASFIR are left alone without a mention
+      state.skipped = { layout: sg.filter(x => x.name !== "New Template" && live(x) && !ok(x) && !hand(x)).map(x => x.name), other: 0 };   // tabs not named by LASFIR are left alone without a mention
       /* read in batches: Excel on the web caps how much one sync can return, and each log is 3,000 cells */
       const L = [];
       for (const s of sheets.items.filter(s => layout.get(s.name) >= 2)) {
@@ -477,7 +499,7 @@ async function refresh() {
         const f = { layout: l.layout === 2, pr: !/Benefits!/.test(a10) || prEnd(a10) !== end, sum: typeof sumA !== "boolean", block: l.name === "New Template" && String(l.cost.values[0][0]).trim().toLowerCase() === "code" };
         if (Object.values(f).some(Boolean) && !stale.has(l.name)) state.fix.set(l.name, f);
         if (l.name === "New Template") continue;
-        const m = l.name.match(TAB_RE), pv = l.prot.values, h = l.hdr.values, H = (a, c) => h[a - 2][c];
+        const tn = TmsCore.tabName(l.name), m = [l.name, tn.code, tn.course > 1 ? String(tn.course) : undefined], pv = l.prot.values, h = l.hdr.values, H = (a, c) => h[a - 2][c];
         const mins = [0, 1, 2].map(i => pv[i][4]).filter(x => typeof x === "number");
         const m9 = String(l.s9.values[0][0] || "").match(/home\s*clinic\s*:\s*(.*)$/i), home = m9 ? m9[1].trim() : "";
         /* the MRN is A4's; a tab with A4 blank and the MRN labelled elsewhere in its first rows uses that one (A4 isn't written) */
@@ -759,11 +781,13 @@ function dismiss(id) { state.dismissed.add(id); renderBanners(); shareUi(); }
 function uiSnap() {
   const sn = { ...state.snoozeMem };
   try { Object.entries(JSON.parse(localStorage.getItem("tms_snooze") || "{}")).forEach(([id, u]) => { if (!(sn[id] >= u)) sn[id] = u; }); } catch { /* memory only */ }
-  return { dismissed: [...state.dismissed], snooze: sn };
+  return { dismissed: [...state.dismissed], snooze: sn, theme: themeOf(), chair: state.chair };
 }
 function mergeUi(o) {
   if (!o) return;
   (o.dismissed || []).forEach(id => state.dismissed.add(id));
+  if (o.theme && o.theme !== themeOf()) { document.documentElement.dataset.theme = o.theme; try { localStorage.setItem("tms_theme", o.theme); } catch { /* this session only */ } syncTheme(); }
+  if (o.chair && o.chair !== state.chair) { state.chair = o.chair; try { localStorage.setItem("tms_chair", o.chair); } catch { /* this session only */ } }
   Object.entries(o.snooze || {}).forEach(([id, u]) => { if (!(state.snoozeMem[id] >= u)) state.snoozeMem[id] = u; });
   try { const st = JSON.parse(localStorage.getItem("tms_snooze") || "{}"); Object.entries(state.snoozeMem).forEach(([id, u]) => { if (!(st[id] >= u)) st[id] = u; }); localStorage.setItem("tms_snooze", JSON.stringify(st)); } catch { /* memory only */ }
 }
@@ -2896,8 +2920,8 @@ async function writeBen(ctx, entries) {
     let r = B.rows.get(e.mrn);
     if (!r) { r = { row: B.next++, v: Array(BEN_HDR.length).fill("") }; B.rows.set(e.mrn, r); r.v[0] = e.mrnVal ?? e.mrn; ws.getRange(`A${r.row}`).values = [[r.v[0]]]; }
     /* Patient names the newest course for this MRN */
-    const newest = state.patients.filter(p => p.mrn === e.mrn).sort((a, b) => b.course - a.course)[0], m = String(e.tab).match(TAB_RE);
-    const tab = newest && newest.course > +((m && m[2]) || 1) ? newest.tab : e.tab;
+    const newest = state.patients.filter(p => p.mrn === e.mrn).sort((a, b) => b.course - a.course)[0], tn = TmsCore.tabName(e.tab);
+    const tab = newest && newest.course > ((tn && tn.course) || 1) ? newest.tab : e.tab;
     if (r.v[1] !== tab) { r.v[1] = tab; ws.getRange(`B${r.row}`).values = [[tab]]; }
     if (e.key !== BEN_STAMP) { const c = BEN_COLS[e.key]; r.v[colIndex(c)] = e.v; ws.getRange(`${c}${r.row}`).values = [[e.v]]; }
     touched.set(e.mrn, (touched.get(e.mrn) || false) || !e.quiet);
@@ -4384,7 +4408,7 @@ async function buildPlan(quiet) {
     by.get(mrn).push({ date, time, status: sts, type: ev.type, tele: ev.tele, charged, mod: m.mMod >= 0 ? toSerial(cell(r, "mMod")) : null, loc, chair: dev.ours.test(pv),
       here: r._ext ? (atc === true ? null : false) : split && atc === false ? false : null });   // false: booked at another clinic
     if (pv && !past && !/magv|brainsway|mag\s?venture/i.test(pv) && !(clinic() && atClinic(pv))) { const c = clin.get(mrn) || {}, ln = TmsCore.clinicianName(pv); if (ln) { c[ln] = (c[ln] || 0) + 1; clin.set(mrn, c); } }
-    /* the Rendering clinician leads E2, with their credential ("Neha Nayyar, MD"): who telephone notes and the weekly digest go to */
+    /* the Rendering clinician leads E2, with their credential ("Ana Rivera, MD"): who telephone notes and the weekly digest go to */
     const rn = m.mRend >= 0 && !past ? TmsCore.clinicianName(String(cell(r, "mRend") || "").trim()) : ""; if (rn) { const c = rend.get(mrn) || {}; c[rn] = (c[rn] || 0) + 1; rend.set(mrn, c); }
     const c = String(cell(r, "mPat") ?? "").trim().toUpperCase(); if (/^[A-Z]{6}$/.test(c)) codes.set(mrn, c);
   }
@@ -4604,8 +4628,10 @@ function callPane(fn, args) {
     const id = ++rpc.id, gone = setTimeout(() => { if (rpc.wait.delete(id)) rej(new Error("Full screen lost touch with the task pane. Keep the pane open, then check the tab before trying again.")); }, CALL_MS);
     rpc.wait.set(id, { res: v => { clearTimeout(gone); res(v); }, rej: e => { clearTimeout(gone); rej(e); } });
     try { Office.context.ui.messageParent(JSON.stringify({ k: "call", id, fn, args })); } catch (e) { clearTimeout(gone); rpc.wait.delete(id); rej(e); }
-  });
+  }).then(v => v);
 }
+/* full screen's calls show the busy bar too (refresh is counted by refresh itself) */
+{ const raw = callPane; callPane = (fn, args) => fn === "refresh" ? raw(fn, args) : track(raw(fn, args)); }
 /* what a pop-out may ask the pane to do: reads and writes need the workbook, settings need the document */
 const PANE_FNS = {
   refresh: () => refresh(), applyOps: (ops, g, log) => applyOps(ops, g, log), importStart: l => importStart(l), importEnd: (id, d, s) => importEnd(id, d, s), undoEdit: id => undoEdit(id), fixCheck: (t, k, r) => fixCheck(t, k, r), growLogs: x => growLogs(x), arrangeLogs: x => arrangeLogs(x), formatLogs: x => formatLogs(x), writeList: x => writeList(x), rebuildActive: () => rebuildActiveClick(), mkSchedSheet: () => mkSchedSheet(),
@@ -4618,7 +4644,7 @@ async function onPopMessage(arg) {
   let m; try { m = JSON.parse(arg.message); } catch { return; }
   if (m.k === "ready") return sendSnap();
   if (m.k === "close") { closePopout(); return; }
-  if (m.k === "ui") { mergeUi(m); renderBanners(); return; }
+  if (m.k === "ui") { mergeUi(m); renderBanners(); renderDash(); return; }
   if (window.DevUpdates && DevUpdates.receive(m)) return;
   if (m.k !== "call" || !PANE_FNS[m.fn]) return;
   pop.calls++; let ok = true, err = "", result = null;
@@ -4651,7 +4677,8 @@ function onPaneMessage(a) {
       if (m.ok) w.res(m.result); else w.rej(new Error(m.err || "The task pane could not do that."));
     } else if (m.k === "toast") toast(m.msg, m.err, m.sticky);
     else if (m.k === "user") { state.users = m.users || state.users; applyUser(m.name); }
-    else if (m.k === "ui") { mergeUi(m); renderBanners(); }
+    else if (m.k === "ui") { mergeUi(m); renderBanners(); renderDash(); }
+    else if (m.k === "setting") { if (applySetting(m.key, m.v)) { renderBanners(); renderDash(); } }
     else if (window.DevUpdates) DevUpdates.receive(m);
 }
 function initPopout() {
@@ -4671,10 +4698,22 @@ function syncFs() {
   { const f = TBAR && TBAR.querySelector("#tbFull"), l = FULL ? "Exit full screen" : "Full screen"; if (f) { f.dataset.tip = l; f.setAttribute("aria-label", l); } }
   $("conn").lastChild.textContent = FULL ? "Saving through the task pane" : "Connected to the workbook";
 }
-/* settings live in the document, which only the task pane can save */
+/* settings live in the document, which only the task pane can save. Both sides apply a change at once, and the pane passes every
+   saved setting on to full screen, so Don't ask again, snoozes, dismissals and Settings read the same in either view. */
+const SET_APPLY = {
+  tms_cfg: v => { state.cfg = { ...state.cfg, ...v }; syncCfgInputs(); },
+  tms_report: v => { state.report = v; },
+  tms_nolink: v => { state.noLink = v || []; },
+  tms_newsnooze: v => { state.newSnz = v || {}; },
+  tms_newno: v => { state.newNo = v || []; },
+  tms_noask: v => { state.noAsk = v || []; if (state.asks) { const moved = state.asks.filter(a => state.noAsk.includes(a.mrn)); state.asks = state.asks.filter(a => !state.noAsk.includes(a.mrn)); state.guests = [...(state.guests || []), ...moved.filter(a => !(state.guests || []).some(g => g.mrn === a.mrn)).map(a => ({ ...a, kind: "guest" }))]; } },
+};
+function applySetting(k, v) { const f = SET_APPLY[k]; if (!f) return false; f(v); state.patients.forEach(p => p.d = derive(p)); return true; }
 function saveSetting(k, v) {
-  if (POPOUT) return callPane("saveSetting", [k, v]);
+  if (POPOUT) { if (applySetting(k, v)) { renderBanners(); renderDash(); } return callPane("saveSetting", [k, v]); }
   const s = Office.context.document.settings; s.set(k, v); s.saveAsync();
+  if (k !== "tms_cfg" && applySetting(k, v)) { renderBanners(); renderDash(); }
+  toChild({ k: "setting", key: k, v });
   if (k === "tms_cfg") { state.cfg = v; state.patients.forEach(p => p.d = derive(p)); renderBanners(); renderDash(); syncCfgInputs(); }
   if (k === "tms_report") state.report = v;
 }
@@ -4721,7 +4760,7 @@ function syncTheme() {
 function setTheme(t) {
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem("tms_theme", t); } catch { /* this session only */ }
-  syncTheme();
+  syncTheme(); shareUi();
 }
 const CFG_IDS = { cfgLoc: "location", cfgDevice: "device", cfgAuth: "authDays", cfgProto: "protoDays", cfgRecent: "recentDays", cfgOpenTab: "openTab", cfgCutoff: "cutoff", cfgElig: "eligUrl", cfgDigestCc: "digestCc" };
 function syncCfgInputs() { Object.entries(CFG_IDS).forEach(([id, k]) => { if ($(id) && document.activeElement !== $(id)) $(id).value = state.cfg[k]; }); }
@@ -4760,7 +4799,7 @@ Office.onReady(info => {
     const a = document.activeElement;
     if (!POPOUT && state.usersRead && whoMem().day !== TmsCore.dayKey()) checkWho();   // a new day with the pane still open
     if (document.hidden || !$("modal").hidden || !$("who").hidden || (a && a.matches && a.matches("input,select,textarea")) || !["today", "schedule"].includes(state.view)) return;
-    focusWant = focusKey(a); pullSess().catch(e => console.error(e)).then(() => { renderDash(); refocus(); });
+    focusWant = focusKey(a); quietly(() => pullSess()).catch(e => console.error(e)).then(() => { renderDash(); refocus(); });
   }, 30000);
   document.addEventListener("click", e => {
     const ctl = e.target.closest("button,input,select"); if (ctl) focusWant = focusKey(ctl);
@@ -4780,9 +4819,9 @@ Office.onReady(info => {
     const d = x.dataset;
     if (d.act) return act(d.act, x, e);
     if (d.view) { if (d.view === "patients" && state.view === "add") resetAddPatient(); return show(d.view); }
-    if (d.mode) { state.chair = d.mode; state.sel = null; try { localStorage.setItem("tms_chair", d.mode); } catch { /* this session only */ } return renderDash(); }
+    if (d.mode) { state.chair = d.mode; state.sel = null; try { localStorage.setItem("tms_chair", d.mode); } catch { /* this session only */ } shareUi(); return renderDash(); }
     /* selecting a visit also opens its tab at that row, unless Settings turns it off */
-    if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") openTabName(v.tab, v.row); if (d.go) return show("today"); return renderDash(); }
+    if (d.k) { state.sel = { k: d.k }; const v = findVisit(d.k); if (v && state.chair !== "all" && v.chair !== state.chair) state.chair = "all"; if (v && state.cfg.openTab !== "off") { if (!v.guest) openTabName(v.tab, v.row); else if (v.guest.kind === "local" && v.guest.local) openTabName(v.guest.local, null); } if (d.go) return show("today"); return renderDash(); }
     if (d.chair) { state.sel = { chair: d.chair }; return renderDash(); }
     if (d.course) return openPt(d.course);
     if (d.ptshow) return setPtShow(d.ptshow);
