@@ -1,6 +1,19 @@
 {
   "updates": [
     {
+      "id": "2026-11-13-digest-layout-new-patients",
+      "date": "2026-11-13",
+      "bullets": [
+        "Changed: Weekly digests list this clinic's rendering clinicians first, ticked to send. External providers come after them and aren't sent one unless you tick them.",
+        "Changed: In the digest, Course reads 17/36 (from the tracker's # of TXs) with the last PHQ-9 and GAD-7 and their date. This week reads 3/3 kept.",
+        "Changed: Each day in the digest shows the PHQ-9 and GAD-7 recorded that day instead of \"Measures\". Follow-ups are one column: Last and Next. Dates are centered.",
+        "New: Patients who completed their course this week are in the digest, marked Complete.",
+        "Changed: A follow-up on the schedule no longer asks for a new tracker.",
+        "New: New patients can be snoozed for 3 hours, 1 day, 7 days or until a date, or dismissed for good. Create tracker sits in the middle of each row.",
+        "New: Add patient lists every patient already detected in NextGen, soonest booking first, so a snoozed or dismissed one can still get a tracker."
+      ]
+    },
+    {
       "id": "2026-11-12-digest-telnotes",
       "date": "2026-11-12",
       "bullets": [

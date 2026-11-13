@@ -115,6 +115,11 @@ h3{margin:18px 0 0;font-size:15px;font-weight:600}
 .bctl{display:flex;gap:4px;justify-content:flex-end;margin-top:6px}
 .nrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px}
 .nrow + .nrow{box-shadow:0 -1px 0 rgba(0,0,0,.06)}
+.nprow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;min-height:48px}
+.nprow + .nprow{box-shadow:0 -1px 0 rgba(0,0,0,.06)}
+.nprow .npmid{justify-self:center}
+.nprow .npend{justify-self:end;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
+@media (max-width:560px){.nprow{grid-template-columns:1fr}.nprow .npmid,.nprow .npend{justify-self:center;justify-content:center}}
 
 /* chair board */
 .board{padding:8px}
@@ -702,6 +707,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
       <header class="top"><div><h1>Add patient</h1><p class="sub">Copies New Template and names the tab by LASFIR (SMIJAN, then SMIJAN 2 for a later course). Names are not saved. The protocol is chosen at the MT.</p></div><button class="btn ghost" id="apBack">Back to Courses</button></header>
       <div class="card form">
         <p class="hint" id="apNote"></p>
+        <label class="fld" for="apDetected" id="apDetectedWrap" hidden><span>Already detected in NextGen</span><select id="apDetected"></select></label>
         <div class="row2">
           <label class="fld" for="apLast"><span>Last name</span><input id="apLast" autocomplete="off"></label>
           <label class="fld" for="apFirst"><span>First name</span><input id="apFirst" autocomplete="off"></label>
