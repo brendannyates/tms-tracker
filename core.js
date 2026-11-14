@@ -212,7 +212,9 @@
     });
     d.overdue.forEach(r => add("pulses", `No pulses for ${f(r.date)}`, ["Enter pulses", "pastpulses"], { row: r.row }));
     d.noTech.forEach(r => add("tech", `No technician on ${f(r.date)}`, ["Add technician", "pasttech"], { row: r.row }));
-    (x.noAppt || []).forEach(r => add("noappt", `Pulses on ${f(r.date)}, no visit in NextGen that day`, ["Edit pulses", "editPulses"], { row: r.row }));
+    const mis = x.misdated || [];
+    mis.forEach(m => add("misdated", `Pulses on ${f(m.date)}, NextGen has the visit on ${f(m.to)}`, [`Move to ${f(m.to)}`, "movedate"], { row: m.row, v: m.to }));
+    (x.noAppt || []).filter(r => !mis.some(m => m.row === r.row)).forEach(r => add("noappt", `Pulses on ${f(r.date)}, no visit in NextGen that day`, ["Edit pulses", "editPulses"], { row: r.row }));
     /* earlier days' measures can't be collected now: one reminder to look in NextGen, only while the course is active */
     if (A && d.measDue.length) add("measures", "Check NextGen for PHQ-9 and GAD-7", ["Enter scores", "pastmeas"], { row: d.measDue.reduce((a, b) => b.date > a.date ? b : a).row });
     if (A && d.noProto) add("noproto", "Protocol not confirmed", ["Confirm protocol", "proto"]);
@@ -440,6 +442,30 @@
     if (!l) return null;
     return { code: l[1].toUpperCase(), course: +(l[2] || l[3] || l[4] || 1), std: false };
   }
+  /* pulses entered a day or so off: a treated row on a day NextGen has no visit of that kind, and a kept NextGen visit of that kind
+     within MISDATED_DAYS calendar days with no row of its own. Each kept visit pairs with the nearest such row once. These are
+     usually pulses typed on the wrong row; the import leaves them for someone to check instead of adding a second row for the
+     NextGen day. appts: { date, type, status } from the list; lo..hi: the days the list covers, through today. Returns
+     [{ row, date, to, type }] */
+  const MISDATED_DAYS = 3;
+  function misdated(rows, appts, lo, hi) {
+    if (lo == null) return [];
+    const on = (list, d, p) => list.some(x => x.date === d && pool(x.type) === p);
+    const ng = (appts || []).filter(a => a.status !== "Cancelled" && a.date != null);
+    const off = rows.filter(r => r.delivered && !r.alt && r.date != null && r.date >= lo && r.date <= hi && !on(ng, r.date, pool(r.type)))
+      .sort((a, b) => a.date - b.date);
+    const free = ng.filter(a => a.status === "Kept" && a.date >= lo && a.date <= hi && !rows.some(r => r.date === a.date && pool(r.type) === pool(a.type) && !r.miss));
+    /* nearest pairs first, so a kept visit goes to the row closest to it */
+    const pairs = [];
+    off.forEach(r => free.forEach(a => { const g = Math.abs(a.date - r.date); if (pool(a.type) === pool(r.type) && g <= MISDATED_DAYS) pairs.push({ r, a, g }); }));
+    pairs.sort((x, y) => x.g - y.g || x.r.date - y.r.date);
+    const usedA = new Set(), usedR = new Set(), out = [];
+    for (const { r, a } of pairs) {
+      const k = `${a.date}|${pool(a.type)}`; if (usedA.has(k) || usedR.has(r.row)) continue;
+      usedA.add(k); usedR.add(r.row); out.push({ row: r.row, date: r.date, to: a.date, type: r.type });
+    }
+    return out.sort((x, y) => x.date - y.date);
+  }
   /* the clinic in a tracker's name: "Castro MagV Patient Tracker" -> "Castro", "Walnut Creek TMS Pt Tracker 2026" -> "Walnut Creek" */
   function clinicFromName(name) {
     const s = String(name || "").replace(/\.(xlsx|xlsm|xls)$/i, "").replace(/[_-]+/g, " ");
@@ -624,6 +650,6 @@
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("") === ADMIN_HASH;
   }
 
-  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, clinician, clinicianName, telNote, telMissLine, telFuLine, telCxLine, cancelNote, CX_WINDOW, bizDays, fuRebook, REBOOK_DAYS, FU_NEXT, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel, tabName,
+  return { LATE_MIN, SOON_MIN, pool, clinicNames, atClinic, homeHere, USER_SHEET, USER_HDR, userKey, parseUsers, userSet, AUTO_SHOW, autoFullOf, autoAny, cleanUserName, pickOrder, wbKey, dayKey, adminOk, ADMIN_MIN, sessKey, visitNames, txNumbers, KAISER_NOTE, dropKaiser, logChecks, apptGaps, pulsesNoAppt, hashRows, phase, chairState, chairStatus, isLate, moveState, ngForMove, missStreak, missRun, mapEvent, clinician, clinicianName, telNote, telMissLine, telFuLine, telCxLine, cancelNote, CX_WINDOW, bizDays, fuRebook, REBOOK_DAYS, FU_NEXT, fuGaps, mrnsIn, needs, loud, chairLabel, planMeasures, providerLast, clinicFromName, clinicRole, ASK_MIN, needsTracker, noTabRole, rankTabs, cellLabel, tabName, misdated, MISDATED_DAYS,
     copayOf, withCopayLine, consentLine, consentOf, withConsentLine, flagOn, isTreatment, copaysToConfirm, copayTally, owes, rollover, siteOf, SITE_LABEL, SITE_CELL, pulseCol, protoMatch, protoPulses };
 });
